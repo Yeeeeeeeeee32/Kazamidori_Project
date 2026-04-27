@@ -1,0 +1,22 @@
+{
+    "version": 2,
+    "airframe": {
+        "mass": 0.0872,
+        "cg": 0.21,
+        "length": 0.383,
+        "radius": 0.015,
+        "nose_length": 0.08,
+        "fin_root": 0.04,
+        "fin_tip": 0.02,
+        "fin_span": 0.03,
+        "fin_pos": 0.35,
+        "motor_pos": 0.38,
+        "motor_dry_mass": 0.015,
+        "backfire_delay": 4.0
+    },
+    "parachute": {
+        "cd": 0.8,
+        "area": 0.126,
+        "lag": 0.5
+    }
+}
