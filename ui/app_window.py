@@ -149,6 +149,13 @@ class AppWindow(tk.Tk):
         self._mc_wind_profiles   = None
         self._kde_contours       = None
 
+        # ── Single simulation thread state ────────────────────────────────────
+        self._sim_running = False
+        self._sim_queue   = queue.Queue()
+
+        # ── Application alive flag (set False in on_closing) ──────────────────
+        self._alive = True
+
         # ── Build UI ───────────────────────────────────────────────────────────
         self.create_data_section()
         self.plot_view = PlotView(self)
@@ -165,12 +172,19 @@ class AppWindow(tk.Tk):
 
     def on_closing(self) -> None:
         if messagebox.askokcancel("Quit", "Are you sure you want to quit?"):
+            # Signal all recurring after() callbacks to stop rescheduling
+            self._alive = False
+            self._sim_running = False
             self._p1_stop_flag.set()
-            if self._p2_after_id is not None:
-                try:
-                    self.after_cancel(self._p2_after_id)
-                except Exception:
-                    pass
+            # Cancel every tracked after() ID
+            for _id in (self._p2_after_id, self._monitor_after_id):
+                if _id is not None:
+                    try:
+                        self.after_cancel(_id)
+                    except Exception:
+                        pass
+            self._p2_after_id      = None
+            self._monitor_after_id = None
             import matplotlib.pyplot as plt
             plt.close('all')
             self.quit()
@@ -180,11 +194,31 @@ class AppWindow(tk.Tk):
     # ── Location ──────────────────────────────────────────────────────────────
 
     def get_current_location(self, manual: bool = False) -> None:
+        """Start a background thread for geo-IP lookup to avoid blocking the UI."""
+        _q: queue.Queue = queue.Queue()
+
+        def _fetch():
+            try:
+                resp = requests.get('https://ipinfo.io/json', timeout=3)
+                _q.put(('ok', resp.json().get('loc', '')))
+            except Exception as exc:
+                _q.put(('err', str(exc)))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+        self.after(300, lambda: self._poll_loc_queue(_q, manual))
+
+    def _poll_loc_queue(self, q: queue.Queue, manual: bool) -> None:
+        """Main-thread poller for geo-IP results."""
+        if not self._alive:
+            return
         try:
-            response = requests.get('https://ipinfo.io/json', timeout=3)
-            loc = response.json().get('loc', '')
-            if loc:
-                lat, lon = loc.split(',')
+            status, payload = q.get_nowait()
+        except queue.Empty:
+            self.after(300, lambda: self._poll_loc_queue(q, manual))
+            return
+        if status == 'ok' and payload:
+            try:
+                lat, lon = payload.split(',')
                 self.launch_lat, self.launch_lon = float(lat), float(lon)
                 self.lat_entry.delete(0, tk.END)
                 self.lat_entry.insert(0, lat)
@@ -197,13 +231,16 @@ class AppWindow(tk.Tk):
                 if manual:
                     messagebox.showinfo("Location Retrieved",
                                         f"Location acquired:\nLat: {lat}\nLon: {lon}")
-        except Exception as e:
-            if manual:
-                messagebox.showerror("Fetch Error", f"Failed to get location.\n{e}")
+            except Exception:
+                pass
+        elif status == 'err' and manual:
+            messagebox.showerror("Fetch Error", f"Failed to get location.\n{payload}")
 
     # ── Realtime wind simulation ──────────────────────────────────────────────
 
     def simulate_realtime_wind(self) -> None:
+        if not self._alive:
+            return
         base_wind = (sum(self.surf_wind_history) / len(self.surf_wind_history)
                      if self.surf_wind_history else self._sim_base_wind)
         current_wind = max(0.0, random.gauss(base_wind, base_wind * 0.15))
@@ -430,25 +467,74 @@ class AppWindow(tk.Tk):
         self._last_optimization_info = None
         self._render_current_params()
 
-    def _render_current_params(self, override_r90=None) -> bool:
+    def _render_current_params(self, override_r90=None) -> None:
+        """Launch simulate_once in a background thread; result delivered via queue."""
+        if self._sim_running:
+            return
         params = self._gather_sim_params()
         if params is None:
-            return False
-        res = simulate_once(params['elev'], params['azi'], params)
+            return
+        self._sim_running = True
+        try:
+            self.main_action_btn.state(['disabled'])
+        except Exception:
+            pass
+        threading.Thread(
+            target=self._sim_worker,
+            args=(params, override_r90, self._sim_queue),
+            daemon=True,
+        ).start()
+        self.after(200, self._poll_sim_queue)
+
+    def _sim_worker(self, params: dict, override_r90,
+                    q: queue.Queue) -> None:
+        """Pure-computation worker — no Tk calls allowed here."""
+        try:
+            res = simulate_once(params['elev'], params['azi'], params)
+            q.put(('sim_ok', res, params, override_r90))
+        except Exception as exc:
+            q.put(('sim_err', str(exc), None, None))
+
+    def _poll_sim_queue(self) -> None:
+        """Main-thread poller: pick up sim result and drive all UI updates."""
+        if not self._alive:
+            self._sim_running = False
+            return
+        try:
+            msg = self._sim_queue.get_nowait()
+        except queue.Empty:
+            if self._sim_running:
+                self.after(200, self._poll_sim_queue)
+            return
+
+        kind = msg[0]
+        self._sim_running = False
+        try:
+            self.main_action_btn.state(['!disabled'])
+        except Exception:
+            pass
+
+        if kind == 'sim_err':
+            messagebox.showerror('Sim Error',
+                                 f'Simulation error:\n{msg[1]}')
+            return
+
+        res, params, override_r90 = msg[1], msg[2], msg[3]
         if not res['ok']:
-            if "ZeroDivisionError" in res.get('error', ''):
+            if 'ZeroDivisionError' in res.get('error', ''):
                 messagebox.showerror(
-                    "Launch Failure / Unstable Attitude",
-                    "Simulation diverged and could not complete.\n\n"
-                    "Likely causes:\n"
-                    "1. Motor thrust too weak to leave the rail\n"
-                    "2. Aerodynamic parameters (CG, fins) make the rocket highly unstable\n\n"
-                    f"Selected engine: {self.selected_motor_name}\n")
+                    'Launch Failure / Unstable Attitude',
+                    'Simulation diverged and could not complete.\n\n'
+                    'Likely causes:\n'
+                    '1. Motor thrust too weak to leave the rail\n'
+                    '2. Aerodynamic parameters (CG, fins) make the rocket highly unstable\n\n'
+                    f'Selected engine: {self.selected_motor_name}\n')
             else:
                 messagebox.showerror(
-                    "Sim Error",
+                    'Sim Error',
                     f"RocketPy execution error:\n{res.get('error', 'unknown')}")
-            return False
+            return
+
         self._apply_sim_result_to_ui(res, params, override_r90=override_r90)
         self._mc_scatter         = None
         self._mc_ellipse         = None
@@ -457,7 +543,6 @@ class AppWindow(tk.Tk):
         self._mc_cep_polygon     = None
         self._kde_contours       = None
         self._start_mc_visualization(params)
-        return True
 
     # ── MC visualization ──────────────────────────────────────────────────────
 
@@ -479,6 +564,9 @@ class AppWindow(tk.Tk):
         result_queue.put((scatter, wind_profiles))
 
     def _poll_mc_viz_queue(self) -> None:
+        if not self._alive:
+            self._mc_running = False
+            return
         try:
             result = self._mc_queue.get_nowait()
         except queue.Empty:
@@ -901,6 +989,8 @@ class AppWindow(tk.Tk):
             pass
 
     def _schedule_monitor_tick(self) -> None:
+        if not self._alive:
+            return
         self._monitor_after_id = self.after(2000, self._monitor_wind_tick)
 
     def _monitor_wind_tick(self) -> None:
@@ -1033,7 +1123,7 @@ class AppWindow(tk.Tk):
             pass
 
     def _poll_p1_queue(self) -> None:
-        if not self._p1_running:
+        if not self._alive or not self._p1_running:
             return
         try:
             while True:
