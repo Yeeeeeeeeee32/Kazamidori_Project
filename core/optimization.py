@@ -25,7 +25,7 @@ p1_ellipse_params(points) -> (cx, cy, eigvals, eigvecs)
 p1_ellipse_breaches_circle(cx, cy, eigvals, eigvecs, R, n_pts=180) -> bool
     True if the 90 % error ellipse extends beyond radius R.
 
-run_phase1(base_params, target_r, mode, sim_fn, stop_flag,
+run_phase1(base_params, target_r, mode, stop_flag,
            progress_cb) -> Phase1Result
     Full 5-step Phase-1 analysis (grid search → nominal MC → sensitivity
     → μ_max binary search → σ_max binary search).
@@ -483,6 +483,8 @@ def p1_ellipse_params(
     cx  = float(np.mean(pts[:, 0]))
     cy  = float(np.mean(pts[:, 1]))
     cov = np.cov(pts.T)
+    # Regularise: guarantee strict positive-definiteness for collinear scatter
+    cov = cov + np.eye(2) * 1e-6
     eigvals, eigvecs = np.linalg.eigh(cov)
     return cx, cy, eigvals, eigvecs
 

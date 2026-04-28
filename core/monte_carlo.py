@@ -37,11 +37,17 @@ compute_cep_polygon(scatter, launch_lat, launch_lon) -> dict | None
     Compute the CEP circle and return metric dimensions plus a (lat, lon)
     polygon ready for simultaneous use on graphs (metres) and map displays.
 
+compute_kde_contours_metric(scatter, conf_pct=90)
+        -> list[(points_m, color, width, pct_label)]
+    Compute KDE probability-mass contours in the metric East-North frame.
+    All output coordinates are (x_east_m, y_north_m) in metres.  No
+    geographic conversion is performed here.
+
 compute_kde_contours(scatter, launch_lat, launch_lon,
-                     conf_pct=90) -> list[(latlons, color, width)]
-    Compute KDE probability-mass contours in the metric frame and
-    convert to (lat, lon) polygons.  Returns an empty list if scipy is
-    unavailable or the scatter is too small.
+                     conf_pct=90) -> list[(latlons, color, width, pct_label)]
+    Geographic wrapper around compute_kde_contours_metric.  Converts each
+    metric point to (lat, lon) via offset_to_latlon.  Returns an empty
+    list if scipy is unavailable or the scatter is too small.
 
 COORDINATE CONTRACT
 -------------------
@@ -268,6 +274,9 @@ def compute_error_ellipse(
     cx  = float(arr[:, 0].mean())
     cy  = float(arr[:, 1].mean())
     cov = np.cov(arr[:, 0], arr[:, 1])
+    # Regularise: adds 1e-6 m² to the diagonal so eigenvalues are always
+    # strictly positive even when scatter is perfectly collinear.
+    cov = cov + np.eye(2) * 1e-6
 
     eigvals, eigvecs = np.linalg.eigh(cov)
     # eigh returns ascending order; index 1 = largest eigenvalue
@@ -393,36 +402,34 @@ def compute_cep_polygon(
 
 # ── KDE contours ──────────────────────────────────────────────────────────────
 
-def compute_kde_contours(
+def compute_kde_contours_metric(
     scatter: list[tuple[float, float]],
-    launch_lat: float,
-    launch_lon: float,
     conf_pct: int = 90,
-) -> list[tuple[list[tuple[float, float]], str, int]]:
-    """Compute KDE probability-mass contours as (lat, lon) polygons.
+) -> list[tuple[list[tuple[float, float]], str, int, Optional[str]]]:
+    """Compute KDE probability-mass contours in the metric East-North frame.
 
-    KDE fitting, grid evaluation, and contour extraction are all
-    performed in the metric East-North frame (metres from launch point).
-    Vertices are converted to geographic coordinates only at the final
-    step via offset_to_latlon, using *launch_lat* / *launch_lon* as the
-    conversion origin.
+    All computation and all output coordinates are in metres from the
+    launch point.  No geographic conversion is performed here; callers
+    that need (lat, lon) output should use compute_kde_contours instead.
 
     Three probability levels are computed: 50 %, 70 %, and *conf_pct* %.
+    The first (largest) polygon at each level is tagged with a
+    percentage label string; subsequent disconnected islands at the same
+    level receive None.
 
     This function requires scipy.  If scipy or matplotlib is not
     installed, or if fewer than 5 points are provided, an empty list is
     returned.
 
     Args:
-        scatter:    list of (x_east_m, y_north_m) landing positions.
-        launch_lat: Launch latitude in decimal degrees (conversion origin).
-        launch_lon: Launch longitude in decimal degrees.
-        conf_pct:   Outer contour confidence percentage (default 90).
+        scatter:   list of (x_east_m, y_north_m) landing positions.
+        conf_pct:  Outer contour confidence percentage (default 90).
 
     Returns:
-        list of (latlons, hex_colour, border_width) tuples ready for
-        direct use with a map widget (e.g. tkintermapview set_polygon).
-        latlons is a list of (lat, lon) tuples.
+        list of (points_m, hex_colour, border_width, pct_label) tuples.
+        points_m is a list of (x_east_m, y_north_m) tuples in metres.
+        pct_label is e.g. '90%' for the first polygon per level, None
+        for subsequent polygons at the same level.
     """
     try:
         from scipy.stats import gaussian_kde
@@ -434,7 +441,7 @@ def compute_kde_contours(
     if len(scatter) < 5:
         return []
 
-    # Work entirely in metres (East/North from launch point)
+    # All computation in metres (East/North from launch point)
     xs = _np.array([p[0] for p in scatter], dtype=float)
     ys = _np.array([p[1] for p in scatter], dtype=float)
 
@@ -443,7 +450,6 @@ def compute_kde_contours(
     except Exception:
         return []
 
-    # ndarray.ptp() removed in NumPy 2.0 — use explicit max-min instead
     x_range = float(xs.max() - xs.min())
     y_range = float(ys.max() - ys.min())
     pad     = max(x_range, y_range, 1.0) * 0.5
@@ -453,7 +459,6 @@ def compute_kde_contours(
     GX, GY = _np.meshgrid(gx, gy)
     Z      = kde(_np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
 
-    # Convert probability-mass fractions to KDE density thresholds
     z_flat   = Z.ravel()
     z_sorted = _np.sort(z_flat)[::-1]
     cumsum   = _np.cumsum(z_sorted)
@@ -462,11 +467,17 @@ def compute_kde_contours(
     outer_frac = max(min(conf_pct / 100.0, 0.999), 0.501)
     levels_pm  = sorted({0.50, 0.70, outer_frac})
 
+    # Compute density thresholds; track pm→threshold for percentage labels
     level_vals: list[float] = []
+    lv_to_pm:   dict        = {}   # keyed by round(lv, 10)
     for pm in levels_pm:
         idx = int(_np.searchsorted(cumsum, pm))
         idx = min(idx, len(z_sorted) - 1)
-        level_vals.append(float(z_sorted[idx]))
+        lv  = float(z_sorted[idx])
+        level_vals.append(lv)
+        key = round(lv, 10)
+        if key not in lv_to_pm:
+            lv_to_pm[key] = pm
 
     seen:        set         = set()
     unique_vals: list[float] = []
@@ -479,7 +490,6 @@ def compute_kde_contours(
     if len(unique_vals) < 2:
         return []
 
-    # Draw contours on an off-screen figure using metric (East/North) coords
     fig_tmp, ax_tmp = _plt.subplots()
     try:
         cs = ax_tmp.contour(GX, GY, Z, levels=sorted(unique_vals))
@@ -497,10 +507,8 @@ def compute_kde_contours(
         for i, lv in enumerate(sorted_lv[::-1])
     }
 
-    # Extract contour path segments before closing the figure.
-    # cs.allsegs (deprecated in mpl 3.8, removed in 3.10) is tried first;
-    # cs.collections (also deprecated 3.8) is the fallback.
-    # Both DeprecationWarnings are suppressed so neither path emits noise.
+    # Extract contour segments before closing the figure.
+    # allsegs removed in mpl 3.10; collections deprecated 3.8 — suppress both.
     segs_by_level: list = []
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', DeprecationWarning)
@@ -517,18 +525,54 @@ def compute_kde_contours(
 
     _plt.close(fig_tmp)
 
-    contours: list[tuple[list[tuple[float, float]], str, int]] = []
+    contours: list[tuple[list[tuple[float, float]], str, int, Optional[str]]] = []
     for seg_group, lv in zip(segs_by_level, sorted_lv):
-        col, bw = lv_style.get(lv, ('#ffcc00', 1))
+        col, bw    = lv_style.get(lv, ('#ffcc00', 1))
+        pm         = lv_to_pm.get(round(lv, 10))
+        base_label = (f'{int(round(pm * 100))}%'
+                      if pm is not None else None)
+        first = True
         for verts in seg_group:
             if len(verts) < 3:
                 continue
-            # Final step: convert metric (East m, North m) → geographic coords
-            latlons = [
-                offset_to_latlon(launch_lat, launch_lon,
-                                 float(v[0]), float(v[1]))
-                for v in verts
-            ]
-            contours.append((latlons, col, bw))
+            # Output in metres — no geographic conversion here
+            pts = [(float(v[0]), float(v[1])) for v in verts]
+            contours.append((pts, col, bw, base_label if first else None))
+            first = False
 
     return contours
+
+
+def compute_kde_contours(
+    scatter: list[tuple[float, float]],
+    launch_lat: float,
+    launch_lon: float,
+    conf_pct: int = 90,
+) -> list[tuple[list[tuple[float, float]], str, int, Optional[str]]]:
+    """Compute KDE probability-mass contours as (lat, lon) polygons.
+
+    Geographic wrapper around compute_kde_contours_metric.  All KDE
+    fitting, grid evaluation, and contour extraction are performed in
+    the metric East-North frame; the conversion to geographic coordinates
+    is applied here in a single final pass via offset_to_latlon.
+
+    Args:
+        scatter:    list of (x_east_m, y_north_m) landing positions.
+        launch_lat: Launch latitude in decimal degrees (conversion origin).
+        launch_lon: Launch longitude in decimal degrees.
+        conf_pct:   Outer contour confidence percentage (default 90).
+
+    Returns:
+        list of (latlons, hex_colour, border_width, pct_label) tuples.
+        latlons is a list of (lat, lon) tuples ready for map display.
+        pct_label is e.g. '90%' for the first polygon per level, None
+        for subsequent polygons at the same level.
+    """
+    metric = compute_kde_contours_metric(scatter, conf_pct)
+    return [
+        (
+            [offset_to_latlon(launch_lat, launch_lon, x, y) for x, y in pts],
+            col, bw, label,
+        )
+        for pts, col, bw, label in metric
+    ]
