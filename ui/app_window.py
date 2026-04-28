@@ -32,7 +32,9 @@ from core.simulation import simulate_once
 from core.monte_carlo import (
     run_mc_scatter,
     compute_error_ellipse,
+    compute_error_ellipse_polygon,
     compute_cep,
+    compute_cep_polygon,
     compute_kde_contours,
 )
 from monitor.wind_tracker import WindTracker
@@ -97,9 +99,10 @@ class AppWindow(tk.Tk):
         self.wind_tracker = WindTracker(maxlen=300)
 
         # ── Uncertainty / probability settings (overridable via config) ───────
-        self.wind_uncertainty   = float(_cfg.get("wind_uncertainty",   0.20))
-        self.thrust_uncertainty = float(_cfg.get("thrust_uncertainty", 0.05))
-        self.landing_prob       = int(_cfg.get("landing_prob",         90))
+        self.wind_uncertainty      = float(_cfg.get("wind_uncertainty",      0.20))
+        self.thrust_uncertainty    = float(_cfg.get("thrust_uncertainty",    0.05))
+        self.allowable_uncertainty = float(_cfg.get("allowable_uncertainty", 20.0))
+        self.landing_prob          = int(_cfg.get("landing_prob",            90))
 
         # ── Lock & Monitor state ───────────────────────────────────────────────
         self._baseline_wind    = None
@@ -135,14 +138,16 @@ class AppWindow(tk.Tk):
         self._p2_ellipse  = None
 
         # ── MC visualization state ─────────────────────────────────────────────
-        self._mc_scatter       = None
-        self._mc_ellipse       = None
-        self._mc_cep           = None
-        self._mc_running       = False
-        self._mc_queue         = queue.Queue()
-        self._mc_n_runs        = int(_cfg.get("mc_n_runs", 200))
-        self._mc_wind_profiles = None
-        self._kde_contours     = None
+        self._mc_scatter         = None
+        self._mc_ellipse         = None
+        self._mc_ellipse_polygon = None   # lat/lon polygon for map display
+        self._mc_cep             = None
+        self._mc_cep_polygon     = None   # dict with cx_m, cy_m, radius_m, latlons
+        self._mc_running         = False
+        self._mc_queue           = queue.Queue()
+        self._mc_n_runs          = int(_cfg.get("mc_n_runs", 200))
+        self._mc_wind_profiles   = None
+        self._kde_contours       = None
 
         # ── Build UI ───────────────────────────────────────────────────────────
         self.create_data_section()
@@ -412,6 +417,8 @@ class AppWindow(tk.Tk):
             'apogee_m': res['apogee_m'],
             'r_horiz': res['r_horiz'],
             'hang_time': res['hang_time'],
+            'fall_time': fall_time,
+            'surf_spd': params['surf_spd'],
         }
         self._has_sim_result = True
         self._last_sim_data  = sim_data
@@ -443,10 +450,12 @@ class AppWindow(tk.Tk):
                     f"RocketPy execution error:\n{res.get('error', 'unknown')}")
             return False
         self._apply_sim_result_to_ui(res, params, override_r90=override_r90)
-        self._mc_scatter       = None
-        self._mc_ellipse       = None
-        self._mc_cep           = None
-        self._kde_contours     = None
+        self._mc_scatter         = None
+        self._mc_ellipse         = None
+        self._mc_ellipse_polygon = None
+        self._mc_cep             = None
+        self._mc_cep_polygon     = None
+        self._kde_contours       = None
         self._start_mc_visualization(params)
         return True
 
@@ -485,16 +494,28 @@ class AppWindow(tk.Tk):
         self._mc_scatter       = scatter
         self._mc_wind_profiles = wind_profiles
 
+        # Metric ellipse for the 3-D matplotlib plot (cx/cy/a/b in metres)
         ellipse = compute_error_ellipse(scatter, prob_pct=self.landing_prob)
         if ellipse is not None:
             self._mc_ellipse = ellipse
 
-        self._mc_cep = compute_cep(scatter)
-
         if self.launch_lat is not None:
+            # Lat/lon polygon for the map — all stats in metres, converted at end
+            self._mc_ellipse_polygon = compute_error_ellipse_polygon(
+                scatter, self.launch_lat, self.launch_lon,
+                prob_pct=self.landing_prob)
+
+            # CEP circle: centroid + 50th-percentile radius, in both frames
+            cep_data = compute_cep_polygon(scatter, self.launch_lat, self.launch_lon)
+            self._mc_cep_polygon = cep_data
+            # Keep scalar for the 3D plot banner (radius in metres)
+            self._mc_cep = cep_data['radius_m'] if cep_data is not None else compute_cep(scatter)
+
             self._kde_contours = compute_kde_contours(
                 scatter, self.launch_lat, self.launch_lon,
                 conf_pct=self.landing_prob)
+        else:
+            self._mc_cep = compute_cep(scatter)
 
         if self._last_sim_data is not None:
             self.update_plots(self._last_sim_data)
@@ -564,15 +585,17 @@ class AppWindow(tk.Tk):
             r_target = 50.0
 
         self.map_view.draw_elements(
-            launch_lat     = self.launch_lat,
-            launch_lon     = self.launch_lon,
-            land_lat       = self.land_lat,
-            land_lon       = self.land_lon,
-            r_target       = r_target,
-            r90            = self.r90_radius,
-            has_sim_result = self._has_sim_result,
-            p2_ellipse     = self._p2_ellipse,
-            kde_contours   = self._kde_contours,
+            launch_lat         = self.launch_lat,
+            launch_lon         = self.launch_lon,
+            land_lat           = self.land_lat,
+            land_lon           = self.land_lon,
+            r_target           = r_target,
+            r90                = self.r90_radius,
+            has_sim_result     = self._has_sim_result,
+            p2_ellipse         = self._p2_ellipse,
+            kde_contours       = self._kde_contours,
+            mc_ellipse_polygon = self._mc_ellipse_polygon,
+            mc_cep_polygon     = self._mc_cep_polygon,
         )
 
     def fit_map_bounds(self) -> None:
@@ -651,6 +674,23 @@ class AppWindow(tk.Tk):
         _chi2s = [1.386, 2.296, 3.219, 3.794, 4.605, 5.991, 9.210]
         return math.sqrt(float(np.interp(int(prob_pct), _probs, _chi2s)))
 
+    def _recompute_r90_from_cache(self) -> None:
+        """Recompute r90_radius from cached sim data after uncertainty settings change."""
+        if self._last_sim_data is None:
+            return
+        d            = self._last_sim_data
+        fall_time    = d.get('fall_time', 0.0)
+        surf_spd     = d.get('surf_spd',  0.0)
+        horiz_dist   = d.get('r_horiz',   0.0)
+        wind_sigma   = surf_spd * self.wind_uncertainty * max(fall_time, 0.0)
+        thrust_sigma = self.thrust_uncertainty * horiz_dist
+        combined     = math.hypot(wind_sigma, thrust_sigma)
+        z_score      = self._prob_to_z(self.landing_prob)
+        new_r90 = z_score * combined
+        if new_r90 > 0:
+            self.r90_radius             = new_r90
+            self._last_sim_data['r90']  = new_r90
+
     # ── Settings window ───────────────────────────────────────────────────────
 
     def _open_settings_window(self) -> None:
@@ -665,7 +705,7 @@ class AppWindow(tk.Tk):
         win = tk.Toplevel(self)
         self._settings_win = win
         win.title("Uncertainty Settings")
-        win.geometry("380x320")
+        win.geometry("400x400")
         win.resizable(False, False)
         win.transient(self)
 
@@ -690,13 +730,19 @@ class AppWindow(tk.Tk):
         ttk.Entry(frm, textvariable=thrust_var, width=10).grid(
             row=2, column=1, sticky="e", pady=4)
 
+        ttk.Label(frm, text="Allowable Uncertainty (%):").grid(
+            row=3, column=0, sticky="w", pady=4)
+        allow_var = tk.StringVar(value=f"{self.allowable_uncertainty:.1f}")
+        ttk.Entry(frm, textvariable=allow_var, width=10).grid(
+            row=3, column=1, sticky="e", pady=4)
+
         # ── Confidence level: Spinbox (editable) + linked Scale slider ────────
         ttk.Label(frm, text="Landing circle probability (%):").grid(
-            row=3, column=0, sticky="w", pady=(4, 0))
+            row=4, column=0, sticky="w", pady=(4, 0))
         prob_var = tk.StringVar(value=str(self.landing_prob))
         prob_spin = ttk.Spinbox(frm, textvariable=prob_var, from_=50, to=99,
                                 increment=1, width=5)
-        prob_spin.grid(row=3, column=1, sticky="e", pady=(4, 0))
+        prob_spin.grid(row=4, column=1, sticky="e", pady=(4, 0))
 
         _sync = [False]
 
@@ -726,43 +772,59 @@ class AppWindow(tk.Tk):
         ttk.Scale(frm, from_=50, to=99, orient="horizontal",
                   variable=prob_slider_var,
                   command=_slider_to_spin).grid(
-            row=4, column=0, columnspan=2, sticky="ew", padx=2, pady=(2, 8))
+            row=5, column=0, columnspan=2, sticky="ew", padx=2, pady=(2, 8))
         prob_var.trace_add("write", _spin_to_slider)
 
-        ttk.Label(frm, text="(Re-run the simulation to apply the new settings.)",
+        ttk.Label(frm,
+                  text="Uncertainty changes apply immediately from cached scatter.\n"
+                       "Re-run simulation to refresh the point cloud.",
                   font=("Arial", 8), foreground="gray").grid(
-            row=5, column=0, columnspan=2, sticky="w", pady=(0, 10))
+            row=6, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         btn_f = ttk.Frame(frm)
-        btn_f.grid(row=6, column=0, columnspan=2, sticky="ew")
+        btn_f.grid(row=7, column=0, columnspan=2, sticky="ew")
         btn_f.columnconfigure(0, weight=1)
         btn_f.columnconfigure(1, weight=1)
 
         def apply_and_close():
             try:
-                w  = float(wind_var.get())   / 100.0
-                th = float(thrust_var.get()) / 100.0
-                p  = int(float(prob_var.get()))
+                w   = float(wind_var.get())   / 100.0
+                th  = float(thrust_var.get()) / 100.0
+                aw  = float(allow_var.get())
+                p   = int(float(prob_var.get()))
                 if w < 0 or th < 0:
                     raise ValueError("Uncertainty must be ≥ 0.")
+                if aw < 0:
+                    raise ValueError("Allowable Uncertainty must be ≥ 0.")
                 if not 50 <= p <= 99:
                     raise ValueError("Probability must be between 50 and 99.")
+
+                uncertainty_changed = (
+                    w  != self.wind_uncertainty or
+                    th != self.thrust_uncertainty or
+                    aw != self.allowable_uncertainty)
                 prob_changed = (p != self.landing_prob)
-                self.wind_uncertainty   = w
-                self.thrust_uncertainty = th
-                self.landing_prob       = p
-                if prob_changed:
+
+                self.wind_uncertainty      = w
+                self.thrust_uncertainty    = th
+                self.allowable_uncertainty = aw
+                self.landing_prob          = p
+
+                if prob_changed or uncertainty_changed:
                     self._release_lock_if_active(reason_label="⭘ Unlocked")
-                    # Recompute MC visualization immediately with new probability
-                    if (self._mc_scatter is not None
-                            and len(self._mc_scatter) >= 4):
-                        self._apply_mc_viz_results(
-                            self._mc_scatter, self._mc_wind_profiles)
+
+                # Smart Redraw: recompute from cached scatter, skip re-running MC
+                if (prob_changed or uncertainty_changed) and self._mc_scatter is not None:
+                    if uncertainty_changed:
+                        self._recompute_r90_from_cache()
+                    self._apply_mc_viz_results(self._mc_scatter, self._mc_wind_profiles)
+
                 messagebox.showinfo(
                     "Settings Applied",
-                    f"Wind uncertainty   : ±{w*100:.1f}%\n"
-                    f"Thrust uncertainty: ±{th*100:.1f}%\n"
-                    f"Landing confidence: {p}%",
+                    f"Wind uncertainty      : ±{w*100:.1f}%\n"
+                    f"Thrust uncertainty    : ±{th*100:.1f}%\n"
+                    f"Allowable Uncertainty : {aw:.1f}%\n"
+                    f"Landing confidence   : {p}%",
                     parent=win)
                 win.destroy()
                 self._settings_win = None
@@ -1089,18 +1151,38 @@ class AppWindow(tk.Tk):
 
         mode  = getattr(result, 'mode',       '')
         score = getattr(result, 'best_score', None)
-        if score is not None and mode:
-            if mode == 'Winged Hover':
-                score_text = f'Hover Time:  {score:.2f} s'
-            elif mode == 'Precision Landing':
-                score_text = f'Landing Radius:  {score:.1f} m'
-            else:
-                score_text = f'Apogee:  {score:.0f} m'
-            tk.Label(frm, text=score_text,
-                     font=('Arial', 18, 'bold'),
-                     foreground='#b22222',
-                     relief='groove', padx=10, pady=6).pack(
-                fill='x', pady=(0, 10))
+
+        # ── Mode-specific emphasis banner ──────────────────────────────────────
+        if mode == 'Altitude Competition':
+            emph_label = 'Apogee'
+            emph_value = f'{result.apogee_m:.0f} m'
+            banner_bg  = '#1a3a8f'
+            fg_sub     = '#aabbff'
+        elif mode == 'Precision Landing':
+            r_land    = abs(score) if score is not None else 0.0
+            r_max     = getattr(result, 'target_radius_m', 0.0)
+            score_val = r_max - r_land
+            emph_label = f'Score  (r_max − r)  [{r_max:.0f} − {r_land:.1f}]'
+            emph_value = f'{score_val:+.1f} m'
+            banner_bg  = '#7a3000'
+            fg_sub     = '#ffddaa'
+        elif mode == 'Winged Hover':
+            emph_label = 'Hang Time'
+            emph_value = f'{score:.2f} s' if score is not None else '-- s'
+            banner_bg  = '#004d00'
+            fg_sub     = '#aaffaa'
+        else:
+            emph_label = 'Apogee'
+            emph_value = f'{result.apogee_m:.0f} m'
+            banner_bg  = '#444444'
+            fg_sub     = '#cccccc'
+
+        banner_f = tk.Frame(frm, bg=banner_bg, padx=12, pady=8)
+        banner_f.pack(fill='x', pady=(0, 10))
+        tk.Label(banner_f, text=emph_label,
+                 font=('Arial', 10), fg=fg_sub, bg=banner_bg).pack(anchor='w')
+        tk.Label(banner_f, text=emph_value,
+                 font=('Arial', 28, 'bold'), fg='white', bg=banner_bg).pack(anchor='w')
 
         details = (
             f'Optimal launch angle:  elev = {result.best_elev:.1f}°'
@@ -1109,7 +1191,7 @@ class AppWindow(tk.Tk):
             f'── GO/NO-GO Limits ─────────────────\n'
             f'  μ_max  (max mean wind speed):   {result.mu_max:.2f} m/s\n'
             f'  σ_max  (max wind std dev):       {result.sigma_max:.2f} m/s\n\n'
-            f'Error ellipse (90%):  '
+            f'Error ellipse ({self.landing_prob}%):  '
             f'a = {result.ellipse_a:.1f} m   b = {result.ellipse_b:.1f} m\n\n'
             f'Phase 2 monitoring has started.'
         )
@@ -1402,7 +1484,13 @@ class AppWindow(tk.Tk):
             return "break"
         d = delta_override if delta_override is not None else getattr(event, 'delta', 0)
         try:
-            step = -1 if d > 0 else 1
+            if d == 0:
+                return "break"
+            # Divide by 60 so a standard Windows notch (±120) → ±2 units of 20 px each.
+            # Clamp to ±1 for very small trackpad nudges so the scroll still registers.
+            step = int(-d / 60)
+            if step == 0:
+                step = 1 if d < 0 else -1
             canvas.yview_scroll(step, "units")
         except Exception:
             pass
@@ -1451,7 +1539,8 @@ class AppWindow(tk.Tk):
         outer.rowconfigure(0, weight=1)
         outer.columnconfigure(0, weight=1)
 
-        self._params_canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0)
+        self._params_canvas = tk.Canvas(outer, borderwidth=0, highlightthickness=0,
+                                        yscrollincrement=20)
         self._params_canvas.grid(row=0, column=0, sticky="nsew")
         vbar = ttk.Scrollbar(outer, orient="vertical",
                              command=self._params_canvas.yview)

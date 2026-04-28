@@ -209,7 +209,7 @@ class PlotView:
         d = delta_override if delta_override is not None else getattr(event, 'delta', 0)
         if d == 0:
             return "break"
-        step = 5.0 if d > 0 else -5.0
+        step = 1.0 if d > 0 else -1.0
         self.set_azim(self._fixed_azim + step, source="code")
         return "break"
 
@@ -239,8 +239,11 @@ class PlotView:
         if azim_drift < 0.5 and elev_drift < 0.5:
             return
 
-        self._fixed_azim = ((ax_azim + 180.0) % 360.0) - 180.0
-        self._fixed_elev = ax_elev
+        new_azim = ((ax_azim + 180.0) % 360.0) - 180.0
+        self._fixed_azim = new_azim
+        # Elevation is locked — restore it if matplotlib changed it via mouse drag
+        if elev_drift >= 0.5:
+            self.ax.view_init(elev=self._fixed_elev, azim=new_azim)
 
         self._azim_updating = True
         try:
@@ -278,6 +281,7 @@ class PlotView:
         last_opt_info=None,
         operation_mode: str = "Free",
         r_max_val: Optional[float] = None,
+        kde_contours_xy=None,
     ) -> None:
         from mpl_toolkits.mplot3d import Axes3D       # noqa: F401
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -286,6 +290,15 @@ class PlotView:
         self._compass_ax = None
         self.ax = self.fig.add_subplot(111, projection='3d')
         self.ax.set_position(list(self._PLOT_RECT))
+
+        # Persistent banner strings — computed before any early return
+        if mc_running:
+            cep_str = 'computing…'
+        elif mc_cep is not None:
+            cep_str = f'{mc_cep:.1f} m'
+        else:
+            cep_str = '—'
+        _rad_str = f'{r90_radius:.1f} m' if r90_radius > 0 else '—'
 
         # ── Empty state ───────────────────────────────────────────────────────
         if not data:
@@ -300,6 +313,16 @@ class PlotView:
                            bbox_to_anchor=(0.98, 0.985),
                            bbox_transform=self.fig.transFigure,
                            ncol=2, fontsize=10, framealpha=0.85)
+            self.fig.text(
+                0.50, 0.990,
+                (f'LANDING RADIUS:  {_rad_str}  ({landing_prob}%)\n'
+                 f'CEP (50%):  {cep_str}'),
+                ha='center', va='top',
+                fontsize=14, fontweight='bold', color='#cc0000',
+                family='monospace',
+                bbox=dict(boxstyle='round,pad=0.35',
+                          facecolor='#fff0f0', edgecolor='#cc0000',
+                          linewidth=2, alpha=0.95))
             self._apply_safe_layout()
             self.draw_compass()
             self.canvas.draw()
@@ -414,6 +437,33 @@ class PlotView:
                                       alpha=0.12, facecolor='red', edgecolor='none')
             self.ax.add_collection3d(poly)
 
+        # CEP (50%) circle on ground plane
+        if mc_cep is not None and mc_cep > 0:
+            _tc = np.linspace(0, 2 * math.pi, 60)
+            self.ax.plot(impact_x + mc_cep * np.cos(_tc),
+                         impact_y + mc_cep * np.sin(_tc),
+                         np.zeros(60),
+                         color='#9933cc', lw=1.8, linestyle=':', alpha=0.85,
+                         label='CEP (50%)')
+
+        # KDE contours on ground plane
+        # Each item: (xy_points, color[, pct_label])  xy_points: list of (x,y) in metres
+        if kde_contours_xy:
+            for item in kde_contours_xy:
+                xy_pts    = item[0]
+                col       = item[1] if len(item) > 1 else '#ff8800'
+                pct_label = item[2] if len(item) > 2 else None
+                if len(xy_pts) >= 3:
+                    xs = [p[0] for p in xy_pts] + [xy_pts[0][0]]
+                    ys = [p[1] for p in xy_pts] + [xy_pts[0][1]]
+                    self.ax.plot(xs, ys, np.zeros(len(xs)),
+                                 color=col, lw=1.5, linestyle='--', alpha=0.75)
+                    if pct_label:
+                        idx = int(np.argmax([p[0] for p in xy_pts]))
+                        self.ax.text(xy_pts[idx][0], xy_pts[idx][1], 0,
+                                     f' {pct_label}', color=col,
+                                     fontsize=7, ha='left', va='center')
+
         # Ground projection
         self.ax.plot(x_vals, y_vals, np.zeros_like(z_vals),
                      color='gray', lw=0.8, alpha=0.35, linestyle='--')
@@ -450,17 +500,11 @@ class PlotView:
                                float(np.max(z_vals)) if len(z_vals) > 0 else 0.0)
         para_str    = f'{para_time:.2f} s' if para_time is not None else '— s'
         bf_str      = f'{bf_time:.2f} s'  if bf_time  is not None else '— s'
-        if mc_running:
-            cep_str = 'computing…'
-        elif mc_cep is not None:
-            cep_str = f'{mc_cep:.1f} m'
-        else:
-            cep_str = '—'
 
-        # Landing radius + CEP combined banner
+        # Landing radius + CEP combined banner (cep_str/_rad_str computed above)
         self.fig.text(
             0.50, 0.990,
-            (f'LANDING RADIUS:  {r90_radius:.1f} m  ({landing_prob}%)\n'
+            (f'LANDING RADIUS:  {_rad_str}  ({landing_prob}%)\n'
              f'CEP (50%):  {cep_str}'),
             ha='center', va='top',
             fontsize=14, fontweight='bold', color='#cc0000',

@@ -42,6 +42,7 @@ class MapView:
         launch_lat: float = 35.6828,
         launch_lon: float = 139.7590,
     ) -> None:
+        self._label_markers: list = []
         self._build(parent, launch_lat, launch_lon)
 
     # ── Construction ──────────────────────────────────────────────────────────
@@ -58,11 +59,19 @@ class MapView:
         self._fit_btn = ttk.Button(ctrl, text="[Center Map]")
         self._fit_btn.pack(side="right")
 
-        self.map_widget = tkintermapview.TkinterMapView(frame)
+        # max_zoom=22 allows street-level detail
+        self.map_widget = tkintermapview.TkinterMapView(frame, max_zoom=22)
         self.map_widget.pack(fill="both", expand=True)
         self.map_widget.set_tile_server(
             "https://mt0.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}&s=Ga")
         self.map_widget.set_position(lat, lon)
+
+        # Legend overlay (bottom-left corner, above map content)
+        self._legend_canvas = tk.Canvas(
+            frame, bg='white', highlightthickness=1,
+            highlightbackground='#aaaaaa', cursor='arrow')
+        self._draw_map_legend()
+        self._legend_canvas.place(relx=0.01, rely=0.99, anchor='sw')
 
     # ── Public helpers ────────────────────────────────────────────────────────
 
@@ -74,6 +83,41 @@ class MapView:
             self.map_widget.set_position(lat, lon)
         except Exception:
             pass
+
+    def _draw_map_legend(self) -> None:
+        c = self._legend_canvas
+        c.delete("all")
+        items = [
+            ('Launch site',    'blue',    'sq'),
+            ('Target radius',  '#0055ff', 'circ'),
+            ('Landing center', 'red',     'sq'),
+            ('Landing radius', '#cc0000', 'circ'),
+            ('CEP (50%)',      '#9933cc', 'circ'),
+            ('Error ellipse',  '#00bb00', 'oval'),
+            ('KDE contours',   '#ff8800', 'band'),
+        ]
+        lh, pad, iw, tw = 17, 5, 14, 108
+        w = pad * 2 + iw + 6 + tw
+        h = len(items) * lh + pad * 2
+        c.config(width=w, height=h)
+        for i, (label, color, style) in enumerate(items):
+            ym = pad + i * lh + lh // 2
+            x0, x1 = pad, pad + iw
+            if style == 'sq':
+                c.create_rectangle(x0 + 2, ym - 4, x1 - 2, ym + 4,
+                                   fill=color, outline=color)
+            elif style == 'circ':
+                c.create_oval(x0, ym - 5, x1, ym + 5,
+                              fill='', outline=color, width=2)
+            elif style == 'oval':
+                c.create_oval(x0, ym - 4, x1, ym + 4,
+                              fill='', outline=color, width=2)
+            elif style == 'band':
+                light = self._alpha_hex(color, 0.55)
+                c.create_rectangle(x0, ym - 4, x1, ym + 4,
+                                   fill=light, outline=color, width=1)
+            c.create_text(x1 + 6, ym, text=label, anchor='w',
+                          font=('Arial', 8), fill='#111111')
 
     def fit_bounds(
         self,
@@ -120,17 +164,27 @@ class MapView:
     def draw_elements(
         self,
         *,
-        launch_lat:    float,
-        launch_lon:    float,
-        land_lat:      float,
-        land_lon:      float,
-        r_target:      float,
-        r90:           float,
-        has_sim_result: bool,
-        p2_ellipse:    Optional[dict] = None,
+        launch_lat:         float,
+        launch_lon:         float,
+        land_lat:           float,
+        land_lon:           float,
+        r_target:           float,
+        r90:                float,
+        has_sim_result:     bool,
+        p2_ellipse:         Optional[dict] = None,
         kde_contours=None,
-        auto_fit:      bool = True,
+        mc_cep:             Optional[float] = None,
+        mc_ellipse_polygon: Optional[list]  = None,
+        mc_cep_polygon:     Optional[dict]  = None,
+        auto_fit:           bool = True,
     ) -> None:
+        # Clear previous KDE label markers and all polygons
+        for m in self._label_markers:
+            try:
+                m.delete()
+            except Exception:
+                pass
+        self._label_markers = []
         self.map_widget.delete_all_polygon()
 
         # Launch site dot + target radius ring
@@ -150,12 +204,39 @@ class MapView:
                 self._circle_coords(land_lat, land_lon, r90),
                 outline_color="red", border_width=2)
 
-        # Phase 2 live error ellipse (semi-transparent fill)
+        # CEP (50%) circle — prefer pre-computed polygon (centroid-centred),
+        # fall back to scalar radius + nominal landing position.
+        if has_sim_result:
+            cep_latlons = (mc_cep_polygon.get('latlons')
+                           if mc_cep_polygon is not None else None)
+            if cep_latlons and len(cep_latlons) >= 3:
+                cep_fill = self._alpha_hex('#9933cc', 0.85)
+                self.map_widget.set_polygon(
+                    cep_latlons, outline_color='#9933cc',
+                    fill_color=cep_fill, border_width=2)
+            elif mc_cep is not None and mc_cep > 0:
+                cep_fill = self._alpha_hex('#9933cc', 0.85)
+                self.map_widget.set_polygon(
+                    self._circle_coords(land_lat, land_lon, mc_cep),
+                    outline_color='#9933cc', fill_color=cep_fill, border_width=2)
+
+        # MC 90 % error ellipse — drawn as a pre-computed (lat, lon) polygon.
+        # All statistics were performed in the metric East-North frame inside
+        # compute_error_ellipse_polygon; no degree-scale covariance is involved.
+        if has_sim_result and mc_ellipse_polygon and len(mc_ellipse_polygon) >= 3:
+            ell_fill = self._alpha_hex('#00bb00', 0.55)
+            self.map_widget.set_polygon(
+                mc_ellipse_polygon,
+                outline_color='#00bb00', fill_color=ell_fill, border_width=2)
+
+        # Phase 2 live error ellipse (GO/NO-GO, only active after Phase 1).
+        # cx/cy are metre offsets from the LAUNCH point — use launch_lat/lon
+        # as the reference, not land_lat/lon, to avoid doubling the offset.
         if p2_ellipse is not None:
             color = '#00bb00' if p2_ellipse['go'] else '#dd0000'
             fill  = self._alpha_hex(color, 0.62)
             coords = self._ellipse_polygon(
-                land_lat, land_lon,
+                launch_lat, launch_lon,
                 p2_ellipse['cx'], p2_ellipse['cy'],
                 p2_ellipse['a'],  p2_ellipse['b'],
                 p2_ellipse['angle_rad'])
@@ -163,14 +244,28 @@ class MapView:
                 coords, outline_color=color, fill_color=fill, border_width=2)
 
         # MC KDE probability-mass contours (heatmap-style: outer → inner)
+        # Each item: (latlons, color, border_width[, pct_label])
         if kde_contours:
             n_cont = len(kde_contours)
-            for i, (latlons, col, bw) in enumerate(kde_contours):
+            for i, item in enumerate(kde_contours):
+                latlons   = item[0]
+                col       = item[1]
+                bw        = item[2]
+                pct_label = item[3] if len(item) > 3 else None
                 if len(latlons) >= 3:
                     lightness = 0.72 - 0.38 * (i / max(n_cont - 1, 1))
                     fill_col  = self._alpha_hex(col, lightness)
                     self.map_widget.set_polygon(
                         latlons, outline_color=col, fill_color=fill_col, border_width=bw)
+                    if pct_label:
+                        # Place label marker at northernmost point of contour
+                        label_pt = max(latlons, key=lambda p: p[0])
+                        try:
+                            m = self.map_widget.set_marker(
+                                label_pt[0], label_pt[1], text=pct_label)
+                            self._label_markers.append(m)
+                        except Exception:
+                            pass
 
         # Auto-fit map view to contain all drawn elements
         if auto_fit and has_sim_result:
