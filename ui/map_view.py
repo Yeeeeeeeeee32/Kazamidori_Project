@@ -129,6 +129,7 @@ class MapView:
         has_sim_result: bool,
         p2_ellipse:    Optional[dict] = None,
         kde_contours=None,
+        auto_fit:      bool = True,
     ) -> None:
         self.map_widget.delete_all_polygon()
 
@@ -149,22 +150,35 @@ class MapView:
                 self._circle_coords(land_lat, land_lon, r90),
                 outline_color="red", border_width=2)
 
-        # Phase 2 live error ellipse
+        # Phase 2 live error ellipse (semi-transparent fill)
         if p2_ellipse is not None:
             color = '#00bb00' if p2_ellipse['go'] else '#dd0000'
+            fill  = self._alpha_hex(color, 0.62)
             coords = self._ellipse_polygon(
                 land_lat, land_lon,
                 p2_ellipse['cx'], p2_ellipse['cy'],
                 p2_ellipse['a'],  p2_ellipse['b'],
                 p2_ellipse['angle_rad'])
-            self.map_widget.set_polygon(coords, outline_color=color, border_width=2)
+            self.map_widget.set_polygon(
+                coords, outline_color=color, fill_color=fill, border_width=2)
 
-        # MC KDE probability-mass contours
+        # MC KDE probability-mass contours (heatmap-style: outer → inner)
         if kde_contours:
-            for latlons, col, bw in kde_contours:
+            n_cont = len(kde_contours)
+            for i, (latlons, col, bw) in enumerate(kde_contours):
                 if len(latlons) >= 3:
+                    lightness = 0.72 - 0.38 * (i / max(n_cont - 1, 1))
+                    fill_col  = self._alpha_hex(col, lightness)
                     self.map_widget.set_polygon(
-                        latlons, outline_color=col, border_width=bw)
+                        latlons, outline_color=col, fill_color=fill_col, border_width=bw)
+
+        # Auto-fit map view to contain all drawn elements
+        if auto_fit and has_sim_result:
+            self.fit_bounds(
+                launch_lat=launch_lat, launch_lon=launch_lon,
+                land_lat=land_lat,     land_lon=land_lon,
+                r90=r90,               has_sim_result=has_sim_result,
+            )
 
     # ── Geometry helpers ──────────────────────────────────────────────────────
 
@@ -212,3 +226,19 @@ class MapView:
             lon = ref_lon + (cx + xe) / m_lon
             coords.append((lat, lon))
         return coords
+
+    @staticmethod
+    def _alpha_hex(hex_color: str, lightness: float = 0.55) -> str:
+        """Blend hex_color toward white; lightness 0 = original, 1 = white."""
+        h = hex_color.lstrip('#')
+        if len(h) == 3:
+            h = h[0] * 2 + h[1] * 2 + h[2] * 2
+        if len(h) != 6:
+            return hex_color
+        try:
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        except ValueError:
+            return hex_color
+        return (f'#{min(255, int(r + (255 - r) * lightness)):02x}'
+                f'{min(255, int(g + (255 - g) * lightness)):02x}'
+                f'{min(255, int(b + (255 - b) * lightness)):02x}')

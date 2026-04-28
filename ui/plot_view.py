@@ -457,15 +457,17 @@ class PlotView:
         else:
             cep_str = '—'
 
-        # Prominent landing-radius banner
+        # Landing radius + CEP combined banner
         self.fig.text(
-            0.50, 0.985,
-            f'Pred. Landing Radius:  {r90_radius:.1f} m  ({landing_prob}%)',
+            0.50, 0.990,
+            (f'LANDING RADIUS:  {r90_radius:.1f} m  ({landing_prob}%)\n'
+             f'CEP (50%):  {cep_str}'),
             ha='center', va='top',
-            fontsize=13, fontweight='bold', color='#cc0000',
+            fontsize=14, fontweight='bold', color='#cc0000',
             family='monospace',
-            bbox=dict(boxstyle='round,pad=0.30',
-                      facecolor='#fff0f0', edgecolor='#cc0000', alpha=0.92))
+            bbox=dict(boxstyle='round,pad=0.35',
+                      facecolor='#fff0f0', edgecolor='#cc0000',
+                      linewidth=2, alpha=0.95))
 
         # Score formula for competition modes
         r_horiz   = data.get('r_horiz', downrange_m)
@@ -473,32 +475,38 @@ class PlotView:
         ph1_mode  = getattr(phase1_result, 'mode',       None) if phase1_result else None
         ph1_score = getattr(phase1_result, 'best_score', None) if phase1_result else None
         score_lines = []
-        if operation_mode in ('Precision Landing', 'Winged Hover') and r_max_val is not None:
-            if hang_time is not None:
-                score_lines.append(
-                    f'r_max={r_max_val:.0f}  r={r_horiz:.1f}  t={hang_time:.2f}\n'
-                    f'Score = r_max - r + t = {r_max_val - r_horiz + hang_time:.2f}')
+        if operation_mode == 'Precision Landing' and r_max_val is not None and hang_time is not None:
+            _score = r_max_val - r_horiz + hang_time
+            score_lines.append(
+                f'▶  SCORE  =  R_max − r + t\n'
+                f'   {r_max_val:.0f} − {r_horiz:.1f} + {hang_time:.2f}  =  {_score:.2f}')
+        elif operation_mode == 'Winged Hover' and r_max_val is not None and hang_time is not None:
+            score_lines.append(
+                f'r_max={r_max_val:.0f}  r={r_horiz:.1f}  t={hang_time:.2f}\n'
+                f'Score = r_max - r + t = {r_max_val - r_horiz + hang_time:.2f}')
         if ph1_score is not None and ph1_mode in ('Precision Landing', 'Winged Hover'):
             label = ('★ Phase 1 best hover time: ' if ph1_mode == 'Winged Hover'
                      else '★ Phase 1 best score:      ')
             score_lines.append(f'{label}{ph1_score:.2f}' +
                                 (' s' if ph1_mode == 'Winged Hover' else ''))
         if score_lines:
+            _is_prec = operation_mode == 'Precision Landing'
             self.fig.text(
-                0.50, 0.935, '\n'.join(score_lines),
+                0.50, 0.925, '\n'.join(score_lines),
                 ha='center', va='top',
-                fontsize=9, fontweight='bold', color='#7700aa',
+                fontsize=11 if _is_prec else 9,
+                fontweight='bold', color='#7700aa',
                 family='monospace',
-                bbox=dict(boxstyle='round,pad=0.28',
-                          facecolor='#f5eeff', edgecolor='#9933cc', alpha=0.88))
+                bbox=dict(boxstyle='round,pad=0.32',
+                          facecolor='#f5eeff', edgecolor='#9933cc',
+                          linewidth=2 if _is_prec else 1, alpha=0.90))
 
-        # Stats box (top-left)
+        # Stats box (top-left) — CEP is shown in the banner above
         stats_text = (
             f'Apogee:           {apogee_m:.1f} m\n'
             f'Backfire:         {bf_str}\n'
             f'Parachute Open:   {para_str}\n'
-            f'Downrange:        {downrange_m:.1f} m\n'
-            f'CEP (50%):        {cep_str}'
+            f'Downrange:        {downrange_m:.1f} m'
         )
         if last_opt_info:
             stats_text += (f'\nBest Elevation:   {last_opt_info["elev"]:.1f}°\n'

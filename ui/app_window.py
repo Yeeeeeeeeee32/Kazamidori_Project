@@ -60,8 +60,9 @@ class AppWindow(tk.Tk):
     _CHI2_2DOF = {50: 1.386, 68: 2.296, 80: 3.219, 85: 3.794,
                   90: 4.605, 95: 5.991, 99: 9.210}
 
-    def __init__(self) -> None:
+    def __init__(self, config: dict = None) -> None:
         super().__init__()
+        _cfg = config or {}
         self.title("Kazamidori_Project - Trajectory & Landing Point Simulator")
         self.geometry("1250x880")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -95,10 +96,10 @@ class AppWindow(tk.Tk):
         # ── Wind tracker for Phase 2 (GO/NO-GO) monitoring ────────────────────
         self.wind_tracker = WindTracker(maxlen=300)
 
-        # ── Uncertainty / probability settings ───────────────────────────────
-        self.wind_uncertainty   = 0.20
-        self.thrust_uncertainty = 0.05
-        self.landing_prob       = 90
+        # ── Uncertainty / probability settings (overridable via config) ───────
+        self.wind_uncertainty   = float(_cfg.get("wind_uncertainty",   0.20))
+        self.thrust_uncertainty = float(_cfg.get("thrust_uncertainty", 0.05))
+        self.landing_prob       = int(_cfg.get("landing_prob",         90))
 
         # ── Lock & Monitor state ───────────────────────────────────────────────
         self._baseline_wind    = None
@@ -139,7 +140,7 @@ class AppWindow(tk.Tk):
         self._mc_cep           = None
         self._mc_running       = False
         self._mc_queue         = queue.Queue()
-        self._mc_n_runs        = 200
+        self._mc_n_runs        = int(_cfg.get("mc_n_runs", 200))
         self._mc_wind_profiles = None
         self._kde_contours     = None
 
@@ -641,13 +642,14 @@ class AppWindow(tk.Tk):
     # ── Uncertainty helpers ───────────────────────────────────────────────────
 
     def _prob_to_z(self, pct: int) -> float:
-        table = {50: 0.674, 68: 1.000, 80: 1.282, 85: 1.440,
-                 90: 1.645, 95: 1.960, 99: 2.576}
-        return table.get(int(pct), 1.645)
+        _probs = [50, 68, 80, 85, 90, 95, 99]
+        _zs    = [0.674, 1.000, 1.282, 1.440, 1.645, 1.960, 2.576]
+        return float(np.interp(int(pct), _probs, _zs))
 
     def _chi2_scale(self, prob_pct: int) -> float:
-        val = self._CHI2_2DOF.get(int(prob_pct), 4.605)
-        return math.sqrt(val)
+        _probs = [50, 68, 80, 85, 90, 95, 99]
+        _chi2s = [1.386, 2.296, 3.219, 3.794, 4.605, 5.991, 9.210]
+        return math.sqrt(float(np.interp(int(prob_pct), _probs, _chi2s)))
 
     # ── Settings window ───────────────────────────────────────────────────────
 
@@ -663,7 +665,7 @@ class AppWindow(tk.Tk):
         win = tk.Toplevel(self)
         self._settings_win = win
         win.title("Uncertainty Settings")
-        win.geometry("380x260")
+        win.geometry("380x320")
         win.resizable(False, False)
         win.transient(self)
 
@@ -688,20 +690,51 @@ class AppWindow(tk.Tk):
         ttk.Entry(frm, textvariable=thrust_var, width=10).grid(
             row=2, column=1, sticky="e", pady=4)
 
+        # ── Confidence level: Spinbox (editable) + linked Scale slider ────────
         ttk.Label(frm, text="Landing circle probability (%):").grid(
-            row=3, column=0, sticky="w", pady=4)
-        prob_var  = tk.StringVar(value=str(self.landing_prob))
-        prob_combo = ttk.Combobox(frm, textvariable=prob_var, width=8,
-                                  values=[50, 68, 80, 85, 90, 95, 99],
-                                  state="normal")
-        prob_combo.grid(row=3, column=1, sticky="e", pady=4)
+            row=3, column=0, sticky="w", pady=(4, 0))
+        prob_var = tk.StringVar(value=str(self.landing_prob))
+        prob_spin = ttk.Spinbox(frm, textvariable=prob_var, from_=50, to=99,
+                                increment=1, width=5)
+        prob_spin.grid(row=3, column=1, sticky="e", pady=(4, 0))
+
+        _sync = [False]
+
+        def _slider_to_spin(val):
+            if _sync[0]:
+                return
+            _sync[0] = True
+            try:
+                prob_var.set(str(int(float(val))))
+            finally:
+                _sync[0] = False
+
+        def _spin_to_slider(*_):
+            if _sync[0]:
+                return
+            _sync[0] = True
+            try:
+                v = max(50, min(99, int(float(prob_var.get()))))
+                if prob_slider_var.get() != v:
+                    prob_slider_var.set(v)
+            except Exception:
+                pass
+            finally:
+                _sync[0] = False
+
+        prob_slider_var = tk.IntVar(value=self.landing_prob)
+        ttk.Scale(frm, from_=50, to=99, orient="horizontal",
+                  variable=prob_slider_var,
+                  command=_slider_to_spin).grid(
+            row=4, column=0, columnspan=2, sticky="ew", padx=2, pady=(2, 8))
+        prob_var.trace_add("write", _spin_to_slider)
 
         ttk.Label(frm, text="(Re-run the simulation to apply the new settings.)",
                   font=("Arial", 8), foreground="gray").grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(6, 10))
+            row=5, column=0, columnspan=2, sticky="w", pady=(0, 10))
 
         btn_f = ttk.Frame(frm)
-        btn_f.grid(row=5, column=0, columnspan=2, sticky="ew")
+        btn_f.grid(row=6, column=0, columnspan=2, sticky="ew")
         btn_f.columnconfigure(0, weight=1)
         btn_f.columnconfigure(1, weight=1)
 
@@ -712,14 +745,19 @@ class AppWindow(tk.Tk):
                 p  = int(float(prob_var.get()))
                 if w < 0 or th < 0:
                     raise ValueError("Uncertainty must be ≥ 0.")
-                if not 1 <= p <= 99:
-                    raise ValueError("Probability must be between 1 and 99.")
+                if not 50 <= p <= 99:
+                    raise ValueError("Probability must be between 50 and 99.")
                 prob_changed = (p != self.landing_prob)
                 self.wind_uncertainty   = w
                 self.thrust_uncertainty = th
                 self.landing_prob       = p
                 if prob_changed:
                     self._release_lock_if_active(reason_label="⭘ Unlocked")
+                    # Recompute MC visualization immediately with new probability
+                    if (self._mc_scatter is not None
+                            and len(self._mc_scatter) >= 4):
+                        self._apply_mc_viz_results(
+                            self._mc_scatter, self._mc_wind_profiles)
                 messagebox.showinfo(
                     "Settings Applied",
                     f"Wind uncertainty   : ±{w*100:.1f}%\n"
@@ -1208,6 +1246,11 @@ class AppWindow(tk.Tk):
             base = os.path.basename(filepath)
             self.af_name_label.config(text=f"Airframe: {base}")
             self.para_name_label.config(text=f"Parachute: {base}")
+            try:
+                self.config_file_label.config(
+                    text=f"Config file: {base}", foreground="#555555")
+            except Exception:
+                pass
             messagebox.showinfo("Saved", f"Airframe + parachute config saved.\n{base}")
         except Exception as e:
             messagebox.showerror("Error", f"Save failed:\n{e}")
@@ -1245,6 +1288,11 @@ class AppWindow(tk.Tk):
                     self.para_name_label.config(text=f"Parachute: {base}")
             if not applied:
                 raise ValueError("JSON contains neither airframe nor parachute data.")
+            try:
+                self.config_file_label.config(
+                    text=f"Config file: {base}", foreground="#555555")
+            except Exception:
+                pass
             messagebox.showinfo("Loaded", f"{' + '.join(applied)} config loaded.\n{base}")
         except Exception as e:
             messagebox.showerror("Error", f"Load failed:\n{e}")
@@ -1329,11 +1377,21 @@ class AppWindow(tk.Tk):
     def on_parameter_edit_af(self, event=None) -> None:
         if self.af_name_label.cget("text") != "Airframe: (none selected)":
             self.af_name_label.config(text="Airframe: (none selected)")
+            try:
+                self.config_file_label.config(
+                    text="Config file: (modified)", foreground="#aa6600")
+            except Exception:
+                pass
         self._release_lock_if_active(reason_label="⭘ Unlocked (param changed)")
 
     def on_parameter_edit_para(self, event=None) -> None:
         if self.para_name_label.cget("text") != "Parachute: (none selected)":
             self.para_name_label.config(text="Parachute: (none selected)")
+            try:
+                self.config_file_label.config(
+                    text="Config file: (modified)", foreground="#aa6600")
+            except Exception:
+                pass
         self._release_lock_if_active(reason_label="⭘ Unlocked (param changed)")
 
     # ── Scrollable params canvas helpers ──────────────────────────────────────
@@ -1529,8 +1587,18 @@ class AppWindow(tk.Tk):
         self.area_entry.bind("<KeyRelease>", self.on_parameter_edit_para)
         self.lag_entry.bind("<KeyRelease>",  self.on_parameter_edit_para)
 
-        para_btn_f = ttk.Frame(frame)
-        para_btn_f.grid(row=9, column=0, sticky="ew", pady=(0, 2))
+        # ── Config file label + Load/Save buttons ─────────────────────────────
+        config_area = ttk.Frame(frame)
+        config_area.grid(row=9, column=0, sticky="ew", pady=(0, 2))
+        config_area.columnconfigure(0, weight=1)
+
+        self.config_file_label = ttk.Label(
+            config_area, text="Config file: (none loaded)",
+            font=("Arial", 8), foreground="#666666")
+        self.config_file_label.grid(row=0, column=0, sticky="w", padx=2, pady=(0, 2))
+
+        para_btn_f = ttk.Frame(config_area)
+        para_btn_f.grid(row=1, column=0, sticky="ew")
         para_btn_f.columnconfigure(0, weight=1); para_btn_f.columnconfigure(1, weight=1)
         ttk.Button(para_btn_f, text="Load Rocket Config",
                    command=self.load_config).grid(

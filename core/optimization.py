@@ -117,9 +117,20 @@ def build_perturbed_wind_prof(
 ) -> tuple[list, list, float, float, list]:
     """Build a stochastically perturbed wind profile for one MC trial.
 
-    Applies global speed/direction uncertainty to both surface and
-    upper-level anchors, then adds independent per-layer Gaussian noise
-    to model upper-level turbulence.
+    Three-stage perturbation model:
+
+    1. *Anchor perturbation*: surface and upper-level speeds/directions are
+       drawn independently from Gaussians.  This explores different gross
+       wind scenarios during the optimisation phase.
+
+    2. *Hellmann rebuild*: a smooth vertical profile is constructed from the
+       perturbed anchors using the power-law model.
+
+    3. *Per-level turbulence*: independent Gaussian noise is added at every
+       altitude level, scaled proportionally to the *local* wind speed at
+       that altitude (minimum 1 m/s reference).  This ensures that
+       upper-level winds fluctuate in proportion to their own magnitude,
+       not the surface wind speed.
 
     Args:
         params: Simulation params dict (must have surf_spd, up_spd,
@@ -131,24 +142,31 @@ def build_perturbed_wind_prof(
         (u_prof, v_prof, surf_spd, up_spd, spd_profile)
         where spd_profile is [(alt_m, speed_m_s), …] for spaghetti plots.
     """
-    base_surf  = max(params['surf_spd'], 0.1)
-    base_up    = max(params['up_spd'],   0.1)
-    dir_sigma  = wu * 60.0
+    base_surf = max(params['surf_spd'], 0.1)
+    base_up   = max(params['up_spd'],   0.1)
+    dir_sigma = wu * 60.0
 
+    # Stage 1: perturb anchor speeds and directions
     surf_spd = max(0.0, rng.gauss(params['surf_spd'], wu * base_surf))
     up_spd   = max(0.0, rng.gauss(params['up_spd'],   wu * base_up))
     surf_dir = params['surf_dir'] + rng.gauss(0.0, dir_sigma)
     up_dir   = params['up_dir']   + rng.gauss(0.0, dir_sigma)
 
+    # Stage 2: rebuild smooth Hellmann profile from perturbed anchors
     u_prof, v_prof = build_wind_profile(
         surf_spd, surf_dir, 3.0, up_spd, up_dir, 100.0)
 
-    layer_sigma = wu * base_surf * 0.35
-    if layer_sigma > 1e-6:
-        u_prof = [(z, u + rng.gauss(0.0, layer_sigma)) for z, u in u_prof]
-        v_prof = [(z, v + rng.gauss(0.0, layer_sigma)) for z, v in v_prof]
+    # Stage 3: per-level turbulence noise scaled to local wind speed
+    if wu > 1e-9:
+        u_new, v_new = [], []
+        for (z_u, u), (_, v) in zip(u_prof, v_prof):
+            local_spd = math.hypot(u, v)
+            sigma = wu * max(local_spd, 1.0) * 0.30
+            u_new.append((z_u, u + rng.gauss(0.0, sigma)))
+            v_new.append((z_u, v + rng.gauss(0.0, sigma)))
+        u_prof, v_prof = u_new, v_new
 
-    spd_prof = [(z_u, math.sqrt(u ** 2 + v ** 2))
+    spd_prof = [(z_u, math.hypot(u, v))
                 for (z_u, u), (_, v) in zip(u_prof, v_prof)]
 
     return u_prof, v_prof, surf_spd, up_spd, spd_prof
