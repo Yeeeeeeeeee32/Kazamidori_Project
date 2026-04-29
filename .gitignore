@@ -1,8 +1,9 @@
-main ver0.0.0.py
-main ver0.1.0.py
-main ver0.2.0.py
-main ver0.2.1.py
 Airframe.json
 Parachute.json
 定点本番機体再定義ver.ork
 memo.txt
+Estes_B6.csv
+Estes_G40.csv
+最適化計算の高度化：サロゲートモデル（代理モデル）導入.txt
+風況シミュレータの高度化：WRFを活用した3D地形効果の導入.txt
+風況実測アイデア,.txt
