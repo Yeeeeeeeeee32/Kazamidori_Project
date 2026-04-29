@@ -33,7 +33,7 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 
-from PySide6.QtCore import Qt, QSize, QPointF
+from PySide6.QtCore import Qt, QSize, QPointF, QObject, Signal
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDockWidget, QWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
@@ -45,6 +45,77 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import (
     QAction, QPainter, QPen, QColor, QLinearGradient,
 )
+
+
+# ── Reactive state model ─────────────────────────────────────────────────────
+
+class AppState(QObject):
+    """
+    Reactive simulation state model for the Kazamidori UI.
+
+    Each property setter emits ``needs_redraw`` when the value changes,
+    which drives an immediate redraw of the 3-D profile canvas without
+    any polling or manual wiring in the view layer.
+
+    Inject an instance into AppWindow at construction time:
+        state = AppState()
+        win   = AppWindow(state=state)
+
+    Or let AppWindow create its own default instance.
+    """
+
+    needs_redraw: Signal = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._wind_speed: float = 4.0
+        self._wind_dir:   float = 100.0
+        self._cep_prob:   int   = 90
+        self._sim_mode:   str   = "Point-Return"
+
+    # ── wind_speed ────────────────────────────────────────────────────────────
+    @property
+    def wind_speed(self) -> float:
+        return self._wind_speed
+
+    @wind_speed.setter
+    def wind_speed(self, v: float) -> None:
+        if self._wind_speed != v:
+            self._wind_speed = float(v)
+            self.needs_redraw.emit()
+
+    # ── wind_dir ──────────────────────────────────────────────────────────────
+    @property
+    def wind_dir(self) -> float:
+        return self._wind_dir
+
+    @wind_dir.setter
+    def wind_dir(self, v: float) -> None:
+        if self._wind_dir != v:
+            self._wind_dir = float(v)
+            self.needs_redraw.emit()
+
+    # ── cep_prob ──────────────────────────────────────────────────────────────
+    @property
+    def cep_prob(self) -> int:
+        return self._cep_prob
+
+    @cep_prob.setter
+    def cep_prob(self, v: int) -> None:
+        if self._cep_prob != v:
+            self._cep_prob = int(v)
+            self.needs_redraw.emit()
+
+    # ── sim_mode ──────────────────────────────────────────────────────────────
+    @property
+    def sim_mode(self) -> str:
+        return self._sim_mode
+
+    @sim_mode.setter
+    def sim_mode(self, v: str) -> None:
+        if self._sim_mode != v:
+            self._sim_mode = str(v)
+            self.needs_redraw.emit()
 
 
 # ── Catppuccin Mocha dark palette ─────────────────────────────────────────────
@@ -142,6 +213,27 @@ QPushButton#btn_mc   { background: #89b4fa; color: #1e1e2e; border-color: #89b4f
 QPushButton#btn_mc:hover   { background: #b4befe; }
 QPushButton#btn_stop { background: #f38ba8; color: #1e1e2e; border-color: #f38ba8; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
+
+/* ── Phase 1 run button (prominent call-to-action) ──────── */
+QPushButton#btn_phase1_run {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #cba6f7, stop:1 #89b4fa);
+    color: #1e1e2e;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 0.4px;
+    padding: 10px 16px;
+}
+QPushButton#btn_phase1_run:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #d4b5ff, stop:1 #99c0ff);
+}
+QPushButton#btn_phase1_run:pressed {
+    background: #89b4fa;
+    color: #181825;
+}
 
 /* ── Tool bar ────────────────────────────────────────────── */
 QToolBar {
@@ -494,19 +586,28 @@ class AppWindow(QMainWindow):
 
     Public widget attributes
     ------------------------
-    lat_input, lon_input            : QDoubleSpinBox
-    elev_input, azim_input          : QDoubleSpinBox
-    motor_label                     : QLabel   (loaded filename)
-    mode_combo                      : QComboBox
-    rmax_input                      : QDoubleSpinBox
-    surf_spd_input, surf_dir_input  : QDoubleSpinBox
-    up_spd_input,   up_dir_input    : QDoubleSpinBox
-    mc_runs_input                   : QSpinBox
-    landing_prob_combo              : QComboBox
-    wind_unc_input                  : QDoubleSpinBox
-    thrust_unc_input                : QDoubleSpinBox
-    allow_unc_input                 : QDoubleSpinBox
-    map_widget                      : _MapWidget
+    Simulation Setup (reactive — all bound to self.state via _bind_state):
+      wind_speed_input    : QDoubleSpinBox   wind speed  → state.wind_speed
+      wind_dir_input      : QDoubleSpinBox   wind dir    → state.wind_dir
+      cep_prob_input      : QSpinBox         CEP %       → state.cep_prob
+      sim_mode_combo      : QComboBox        mode        → state.sim_mode
+
+    Detailed parameters (advanced — not yet bound to state):
+      lat_input, lon_input            : QDoubleSpinBox
+      elev_input, azim_input          : QDoubleSpinBox
+      motor_label                     : QLabel
+      mode_combo                      : QComboBox
+      rmax_input                      : QDoubleSpinBox
+      surf_spd_input, surf_dir_input  : QDoubleSpinBox
+      up_spd_input,   up_dir_input    : QDoubleSpinBox
+      mc_runs_input                   : QSpinBox
+      landing_prob_combo              : QComboBox
+      wind_unc_input, thrust_unc_input, allow_unc_input : QDoubleSpinBox
+      map_widget                      : _MapWidget
+
+    Reactive state
+    --------------
+    state           : AppState   (injected or auto-created)
 
     Figure / canvas attributes
     --------------------------
@@ -523,9 +624,11 @@ class AppWindow(QMainWindow):
     )
     LANDING_PROBS = (50, 68, 80, 85, 90, 95, 99)
 
-    def __init__(self, state=None, parent=None):
-        super().__init__()
-        _cfg = config or {}
+    def __init__(self, state: Optional[AppState] = None,
+                 parent=None) -> None:
+        super().__init__(parent)
+        # Accept an externally-owned AppState or create a private default.
+        self.state: AppState = state if state is not None else AppState()
 
         self.setWindowTitle(
             "Kazamidori  —  Trajectory & Landing Simulator  [Qt6 / PySide6]"
@@ -540,8 +643,8 @@ class AppWindow(QMainWindow):
         self._build_status_bar()
         self._build_central_widget()   # ← must precede _build_docks (map_widget ref)
         self._build_docks()
-        self._populate_profile_placeholder()
         self._set_dock_sizes()
+        self._bind_state()             # wire widgets → state → canvas
         self._dock_params.raise_()
 
     # ── Theme ─────────────────────────────────────────────────────────────────
@@ -716,6 +819,62 @@ class AppWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
+
+        # ── Simulation Setup (reactive — bound to AppState) ──────────────────
+        grp_sim = QGroupBox("Simulation Setup")
+        sim_vbox = QVBoxLayout(grp_sim)
+        sim_vbox.setSpacing(6)
+        sim_vbox.setContentsMargins(8, 6, 8, 8)
+
+        frm_sim = QFormLayout()
+        frm_sim.setSpacing(6)
+        frm_sim.setContentsMargins(0, 0, 0, 0)
+
+        self.wind_speed_input = QDoubleSpinBox()
+        self.wind_speed_input.setRange(0.0, 50.0)
+        self.wind_speed_input.setDecimals(1)
+        self.wind_speed_input.setValue(4.0)
+        self.wind_speed_input.setSuffix(" m/s")
+        self.wind_speed_input.setToolTip(
+            "Surface wind speed — updates the 3-D profile in real time")
+
+        self.wind_dir_input = QDoubleSpinBox()
+        self.wind_dir_input.setRange(0.0, 360.0)
+        self.wind_dir_input.setDecimals(1)
+        self.wind_dir_input.setValue(100.0)
+        self.wind_dir_input.setSuffix("°")
+        self.wind_dir_input.setWrapping(True)
+        self.wind_dir_input.setToolTip(
+            "Meteorological wind direction (FROM, 0° = North, CW)")
+
+        self.cep_prob_input = QSpinBox()
+        self.cep_prob_input.setRange(50, 99)
+        self.cep_prob_input.setValue(90)
+        self.cep_prob_input.setSuffix(" %")
+        self.cep_prob_input.setToolTip(
+            "CEP confidence level — sets the radius of the landing circle")
+
+        self.sim_mode_combo = QComboBox()
+        self.sim_mode_combo.addItems(["Point-Return", "Altitude", "Glider"])
+        self.sim_mode_combo.setCurrentText("Point-Return")
+        self.sim_mode_combo.setToolTip(
+            "Trajectory model for Phase 1 optimisation")
+
+        frm_sim.addRow("Wind Speed:",  self.wind_speed_input)
+        frm_sim.addRow("Wind From:",   self.wind_dir_input)
+        frm_sim.addRow("CEP Prob:",    self.cep_prob_input)
+        frm_sim.addRow("Sim Mode:",    self.sim_mode_combo)
+        sim_vbox.addLayout(frm_sim)
+
+        btn_phase1 = QPushButton("🚀   RUN SIMULATION  (Phase 1)")
+        btn_phase1.setObjectName("btn_phase1_run")
+        btn_phase1.setMinimumHeight(42)
+        btn_phase1.setToolTip(
+            "Execute Phase 1 trajectory optimisation with the settings above")
+        btn_phase1.clicked.connect(self._on_phase1)
+        sim_vbox.addWidget(btn_phase1)
+
+        layout.addWidget(grp_sim)
 
         # ── Launch Site ───────────────────────────────────────────────────────
         grp_site = QGroupBox("Launch Site")
@@ -969,6 +1128,118 @@ class AppWindow(QMainWindow):
         self.resizeDocks(
             [self._dock_profile], [420], Qt.Orientation.Horizontal)
         self._dock_profile.setMinimumWidth(300)
+
+    # ── Reactive binding ──────────────────────────────────────────────────────
+
+    def _bind_state(self) -> None:
+        """
+        Wire every Simulation Setup widget to self.state, then connect
+        self.state.needs_redraw to the profile canvas slot.
+
+        Pattern mirrors the task spec:
+            widget.signal.connect(lambda v: setattr(self.state, 'prop', v))
+        """
+        s = self.state
+
+        # ── Widget → state (each setter emits needs_redraw) ───────────────────
+        self.wind_speed_input.valueChanged.connect(
+            lambda v: setattr(s, "wind_speed", v))
+        self.wind_dir_input.valueChanged.connect(
+            lambda v: setattr(s, "wind_dir", v))
+        self.cep_prob_input.valueChanged.connect(
+            lambda v: setattr(s, "cep_prob", v))
+        self.sim_mode_combo.currentTextChanged.connect(
+            lambda v: setattr(s, "sim_mode", v))
+
+        # ── State → canvas ────────────────────────────────────────────────────
+        s.needs_redraw.connect(self.update_profile_plot)
+
+        # Draw initial state immediately (no user interaction needed)
+        self.update_profile_plot()
+
+    # ── Profile canvas slot ───────────────────────────────────────────────────
+
+    def update_profile_plot(self) -> None:
+        """
+        Clear and redraw the 3-D profile canvas from the current AppState.
+
+        Called automatically whenever any bound state property changes via
+        self.state.needs_redraw.  Also callable directly to force a repaint.
+
+        Draws:
+            • Wind-deflected ballistic arc  (blue)
+            • Ground-shadow projection      (dotted grey)
+            • Apogee marker + altitude label (yellow star)
+            • Launch  ▲  (green)
+            • Landing ▼  (red)
+            • CEP probability ring          (purple dashed)
+        """
+        ax = self.profile_ax
+        ax.cla()
+        _style_3d(ax, self.profile_fig)
+
+        s  = self.state
+        t  = np.linspace(0.0, 1.0, 120)
+
+        # ── Simplified ballistic arc ──────────────────────────────────────────
+        vz  = 120.0                           # representative muzzle speed (m/s)
+        tof = 2.0 * vz / 9.81                 # total flight time (s), t ∈ [0, 1]
+
+        wind_e = s.wind_speed * np.sin(np.radians(s.wind_dir))
+        wind_n = s.wind_speed * np.cos(np.radians(s.wind_dir))
+
+        traj_x = wind_e * t * tof
+        traj_y = wind_n * t * tof
+        traj_z = vz * (t * tof) - 0.5 * 9.81 * (t * tof) ** 2
+        traj_z = np.clip(traj_z, 0.0, None)
+
+        land_x, land_y = float(traj_x[-1]), float(traj_y[-1])
+
+        # ── CEP circle at ground level ────────────────────────────────────────
+        cep_r = max(s.cep_prob * 0.45, 5.0)   # visual proxy in metres
+        theta = np.linspace(0.0, 2.0 * np.pi, 72)
+
+        # ── Ground-shadow projection ──────────────────────────────────────────
+        ax.plot(traj_x, traj_y, np.zeros_like(traj_z),
+                color="#45475a", lw=0.8, linestyle=":", alpha=0.55)
+
+        # ── Trajectory line ───────────────────────────────────────────────────
+        ax.plot(traj_x, traj_y, traj_z,
+                color="#89b4fa", lw=2.0, alpha=0.92)
+
+        # ── Apogee marker ─────────────────────────────────────────────────────
+        apex_i = int(np.argmax(traj_z))
+        apex_z = float(traj_z[apex_i])
+        ax.scatter([traj_x[apex_i]], [traj_y[apex_i]], [apex_z],
+                   c="#f9e2af", s=70, marker="*", zorder=6)
+        ax.text(traj_x[apex_i], traj_y[apex_i], apex_z * 1.04,
+                f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
+
+        # ── Launch (▲) and landing (▼) ────────────────────────────────────────
+        ax.scatter([0], [0], [0],
+                   c="#a6e3a1", s=110, marker="^", zorder=7)
+        ax.scatter([land_x], [land_y], [0],
+                   c="#f38ba8", s=110, marker="v", zorder=7)
+
+        # ── CEP probability ring ──────────────────────────────────────────────
+        ax.plot(land_x + cep_r * np.cos(theta),
+                land_y + cep_r * np.sin(theta),
+                np.zeros(72),
+                color="#cba6f7", lw=1.4, linestyle="--", alpha=0.85)
+
+        # ── Axis labels, title & view ─────────────────────────────────────────
+        ax.set_xlabel("East  (m)",  color="#6c7086", fontsize=8, labelpad=4)
+        ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
+        ax.set_zlabel("Alt  (m)",   color="#6c7086", fontsize=8, labelpad=4)
+        ax.set_title(
+            f"Mode: {s.sim_mode}   ·   "
+            f"Wind: {s.wind_speed:.1f} m/s @ {s.wind_dir:.0f}°   ·   "
+            f"CEP: {s.cep_prob} %",
+            color="#a6adc8", fontsize=9, pad=8,
+        )
+        ax.view_init(elev=22, azim=45)
+        self.profile_fig.tight_layout(pad=0.6)
+        self.profile_canvas.draw()
 
     # ── Action handlers (stubs — wire to AppController later) ────────────────
 
