@@ -18,7 +18,13 @@ SimResult (TypedDict, informational)
 
 params dict keys expected by simulate_once
 -------------------------------------------
-  launch_lat, launch_lon   float   geodetic degrees
+  launch_lat               float   geodetic degrees  (optional, default 35.0)
+  launch_lon               float   geodetic degrees  (optional, default 135.0)
+    Note: lat/lon are used only to initialise RocketPy's Environment
+    atmospheric model.  All trajectory outputs (impact_x, impact_y,
+    x_vals, y_vals, z_vals) are in the metric East-North-Up frame
+    centred on the launch point.  The specific geographic location has
+    negligible effect on short-range rocket physics.
   elev, azi                float   degrees
   rail                     float   metres
   airframe_mass            float   kg
@@ -121,8 +127,10 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         para_area      = params['para_area']
         para_lag       = params['para_lag']
         rail           = params['rail']
-        launch_lat     = params['launch_lat']
-        launch_lon     = params['launch_lon']
+        # lat/lon are optional: only used for RocketPy's atmospheric model
+        # initialisation, not in any trajectory calculation.
+        launch_lat     = params.get('launch_lat', 35.0)
+        launch_lon     = params.get('launch_lon', 135.0)
         wind_u_prof    = params['wind_u_prof']
         wind_v_prof    = params['wind_v_prof']
         thrust_data    = params['thrust_data']

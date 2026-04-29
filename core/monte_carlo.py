@@ -421,6 +421,9 @@ def compute_kde_contours_metric(
     installed, or if fewer than 5 points are provided, an empty list is
     returned.
 
+    Uses matplotlib.figure.Figure() directly (no TkAgg canvas) so it is
+    safe to call from any thread, including background workers.
+
     Args:
         scatter:   list of (x_east_m, y_north_m) landing positions.
         conf_pct:  Outer contour confidence percentage (default 90).
@@ -433,7 +436,7 @@ def compute_kde_contours_metric(
     """
     try:
         from scipy.stats import gaussian_kde
-        import matplotlib.pyplot as _plt
+        from matplotlib.figure import Figure as _MplFigure
         import numpy as _np
     except ImportError:
         return []
@@ -490,11 +493,13 @@ def compute_kde_contours_metric(
     if len(unique_vals) < 2:
         return []
 
-    fig_tmp, ax_tmp = _plt.subplots()
+    # Use Figure() directly — does NOT register with pyplot figure manager
+    # and does NOT create a TkAgg canvas.  Safe to call from any thread.
+    _fig = _MplFigure()
+    _ax  = _fig.add_subplot(111)
     try:
-        cs = ax_tmp.contour(GX, GY, Z, levels=sorted(unique_vals))
+        cs = _ax.contour(GX, GY, Z, levels=sorted(unique_vals))
     except Exception:
-        _plt.close(fig_tmp)
         return []
 
     sorted_lv = sorted(unique_vals)
@@ -507,7 +512,7 @@ def compute_kde_contours_metric(
         for i, lv in enumerate(sorted_lv[::-1])
     }
 
-    # Extract contour segments before closing the figure.
+    # Extract contour segments.
     # allsegs removed in mpl 3.10; collections deprecated 3.8 — suppress both.
     segs_by_level: list = []
     with warnings.catch_warnings():
@@ -523,7 +528,8 @@ def compute_kde_contours_metric(
             except Exception:
                 pass
 
-    _plt.close(fig_tmp)
+    # _fig is not registered with pyplot, so no plt.close() needed;
+    # it will be garbage-collected normally.
 
     contours: list[tuple[list[tuple[float, float]], str, int, Optional[str]]] = []
     for seg_group, lv in zip(segs_by_level, sorted_lv):

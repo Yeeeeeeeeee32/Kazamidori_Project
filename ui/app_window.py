@@ -559,9 +559,51 @@ class AppWindow(tk.Tk):
 
     def _mc_viz_worker(self, params: dict, n_runs: int,
                        result_queue: queue.Queue) -> None:
+        """Pure-computation worker — no Tk calls allowed here.
+
+        Runs Monte Carlo scatter, then computes all statistical overlays
+        (error ellipse, CEP, KDE contours) in the background thread.
+        compute_kde_contours uses matplotlib.figure.Figure() internally,
+        which does not touch the TkAgg canvas or Tcl, so it is thread-safe.
+        """
+        # Snapshot per-call values so main-thread changes mid-run don't matter.
+        wind_unc   = self.wind_uncertainty
+        thrust_unc = self.thrust_uncertainty
+        land_prob  = self.landing_prob
+        lat        = self.launch_lat
+        lon        = self.launch_lon
+
         scatter, wind_profiles = run_mc_scatter(
-            params, n_runs, self.wind_uncertainty, self.thrust_uncertainty)
-        result_queue.put((scatter, wind_profiles))
+            params, n_runs, wind_unc, thrust_unc)
+
+        ellipse      = None
+        ellipse_poly = None
+        cep_data     = None
+        kde          = None
+
+        if len(scatter) >= 4:
+            try:
+                ellipse = compute_error_ellipse(scatter, prob_pct=land_prob)
+            except Exception:
+                pass
+            if lat is not None:
+                try:
+                    ellipse_poly = compute_error_ellipse_polygon(
+                        scatter, lat, lon, prob_pct=land_prob)
+                except Exception:
+                    pass
+                try:
+                    cep_data = compute_cep_polygon(scatter, lat, lon)
+                except Exception:
+                    pass
+                try:
+                    kde = compute_kde_contours(
+                        scatter, lat, lon, conf_pct=land_prob)
+                except Exception:
+                    pass
+
+        result_queue.put(
+            (scatter, wind_profiles, ellipse, ellipse_poly, cep_data, kde))
 
     def _poll_mc_viz_queue(self) -> None:
         if not self._alive:
@@ -573,35 +615,60 @@ class AppWindow(tk.Tk):
             self.after(400, self._poll_mc_viz_queue)
             return
         self._mc_running = False
-        scatter, wind_profiles = result
-        self._apply_mc_viz_results(scatter, wind_profiles)
+        scatter, wind_profiles, ellipse, ellipse_poly, cep_data, kde = result
+        self._apply_mc_viz_results(
+            scatter, wind_profiles,
+            ellipse=ellipse, ellipse_poly=ellipse_poly,
+            cep_data=cep_data, kde=kde)
 
-    def _apply_mc_viz_results(self, scatter, wind_profiles=None) -> None:
+    def _apply_mc_viz_results(
+        self,
+        scatter,
+        wind_profiles=None,
+        *,
+        ellipse=None,
+        ellipse_poly=None,
+        cep_data=None,
+        kde=None,
+    ) -> None:
+        """Store MC results and refresh plots/map.
+
+        When called from _poll_mc_viz_queue, all statistical overlays arrive
+        pre-computed from the background worker (no heavy work in main thread).
+        When called from the Settings Smart-Redraw path (scatter+wind_profiles
+        only), the overlays are recomputed inline — safe because
+        compute_kde_contours_metric now uses Figure() with no TkAgg canvas.
+        """
         if len(scatter) < 4:
             return
         self._mc_scatter       = scatter
         self._mc_wind_profiles = wind_profiles
 
-        # Metric ellipse for the 3-D matplotlib plot (cx/cy/a/b in metres)
-        ellipse = compute_error_ellipse(scatter, prob_pct=self.landing_prob)
+        # ── Use pre-computed values when available; compute inline otherwise ─
+        if ellipse is None:
+            ellipse = compute_error_ellipse(scatter, prob_pct=self.landing_prob)
         if ellipse is not None:
             self._mc_ellipse = ellipse
 
         if self.launch_lat is not None:
-            # Lat/lon polygon for the map — all stats in metres, converted at end
-            self._mc_ellipse_polygon = compute_error_ellipse_polygon(
-                scatter, self.launch_lat, self.launch_lon,
-                prob_pct=self.landing_prob)
+            if ellipse_poly is None:
+                ellipse_poly = compute_error_ellipse_polygon(
+                    scatter, self.launch_lat, self.launch_lon,
+                    prob_pct=self.landing_prob)
+            self._mc_ellipse_polygon = ellipse_poly
 
-            # CEP circle: centroid + 50th-percentile radius, in both frames
-            cep_data = compute_cep_polygon(scatter, self.launch_lat, self.launch_lon)
+            if cep_data is None:
+                cep_data = compute_cep_polygon(
+                    scatter, self.launch_lat, self.launch_lon)
             self._mc_cep_polygon = cep_data
-            # Keep scalar for the 3D plot banner (radius in metres)
-            self._mc_cep = cep_data['radius_m'] if cep_data is not None else compute_cep(scatter)
+            self._mc_cep = (cep_data['radius_m'] if cep_data is not None
+                            else compute_cep(scatter))
 
-            self._kde_contours = compute_kde_contours(
-                scatter, self.launch_lat, self.launch_lon,
-                conf_pct=self.landing_prob)
+            if kde is None:
+                kde = compute_kde_contours(
+                    scatter, self.launch_lat, self.launch_lon,
+                    conf_pct=self.landing_prob)
+            self._kde_contours = kde
         else:
             self._mc_cep = compute_cep(scatter)
 
