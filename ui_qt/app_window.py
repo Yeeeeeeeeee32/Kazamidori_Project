@@ -485,7 +485,7 @@ class _MapWidget(QWidget):
 
 # ── Main window ───────────────────────────────────────────────────────────────
 
-class MainWindow(QMainWindow):
+class AppWindow(QMainWindow):
     """
     Top-level PySide6 window for the Kazamidori Project.
 
@@ -523,7 +523,7 @@ class MainWindow(QMainWindow):
     )
     LANDING_PROBS = (50, 68, 80, 85, 90, 95, 99)
 
-    def __init__(self, config: Optional[dict] = None) -> None:
+    def __init__(self, state=None, parent=None):
         super().__init__()
         _cfg = config or {}
 
