@@ -1,0 +1,31 @@
+You are an expert in aerospace physics, spatial statistics, and Python performance optimization.
+Your task is to implement a highly optimized wind profile generation module for the "Kazamidori Project" (a model rocket trajectory simulator). 
+
+This function will be called every step inside a Runge-Kutta simulation loop, so it MUST be extremely lightweight. Do NOT use NumPy; use only the standard `math` module.
+
+### TARGET FILE
+Place this logic inside `core/utils/geo_math.py` (or output as a standalone utility module). NEVER touch `ui/` or `main.py`.
+
+### ARCHITECTURE: FACTORY FUNCTION (CLOSURE)
+Do NOT calculate everything on every step. You must implement a factory function that performs heavy pre-calculations once and returns a lightweight callback function:
+`def create_wind_profile_func(gpv_data, obs_speed, obs_dir):`
+-> Returns: `def wind_profile(z):` (which returns a tuple of `(calculated_speed, calculated_dir)`)
+
+### ALGORITHM & STRICT REQUIREMENTS
+1. Pre-calculation Phase (Inside the factory function):
+   - `gpv_data` is a list of dicts: `[{'height': 10, 'speed': 4.0, 'dir': 90}, ...]`. Sort this list by height.
+   - **Vector Decomposition (CRITICAL):** To completely avoid the 0-degree crossover bug (e.g., interpolating between 350 deg and 10 deg), convert all GPV wind speed and direction data into U (East) and V (North) vector components immediately during pre-calculation. 
+   - Extract the baseline GPV values at the lowest altitude (e.g., ~10m).
+   - **Zero-Division Failsafe:** If the baseline GPV speed (`U_gpv(10)`) is extremely small (e.g., `< 0.5` m/s), set a boolean flag to disable ratio scaling. This prevents infinite divergence or division-by-zero errors.
+
+2. Callback Execution Phase (Inside the returned `wind_profile(z)` closure):
+   - **Interpolation:** Linearly interpolate the U and V components for the target altitude `z`. 
+   - **Clipping/Extrapolation:** If `z` is below the minimum or above the maximum GPV height, use the exact vector values of the nearest boundary (do not throw an error).
+   - **Recombination:** Convert the interpolated U/V vectors back to speed (using `math.hypot`) and direction (using `math.atan2`, converted back to degrees).
+   - **Scaling (Speed):** - If the zero-division failsafe is triggered: `U_calc(z) = obs_speed` (keep it constant).
+     - Otherwise: `U_calc(z) = obs_speed * (U_gpv(z) / U_gpv(10))`
+   - **Offset (Direction):** - `\theta_calc(z) = (obs_dir + (\theta_gpv(z) - \theta_gpv(10))) % 360`
+     - Ensure the final angle is strictly wrapped between 0.0 and 360.0.
+
+### OUTPUT FORMAT
+Provide ONLY the complete, well-commented Python code for this module. Include a brief `if __name__ == "__main__":` block with a simple test case to prove the vector interpolation and zero-division failsafe work correctly.
