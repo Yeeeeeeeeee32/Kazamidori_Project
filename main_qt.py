@@ -71,6 +71,12 @@ class SimController(QObject):
 
         self._rewire_buttons()
 
+        # ── Cross-state signal bridge ──────────────────────────────────────────
+        # When a simulation result lands in the shared AppState, automatically
+        # drive the AppWindow's internal reactive state so its 3-D canvas
+        # repaints without the controller knowing anything about the canvas.
+        state.needs_redraw.connect(window.state.needs_redraw)
+
     # ── Button rewiring ────────────────────────────────────────────────────────
 
     def _rewire_buttons(self) -> None:
@@ -108,6 +114,19 @@ class SimController(QObject):
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+        
+        # 1. 現在のパラメータを取得
+        params = self._gather_params()
+
+        # 2. Workerのインスタンス化
+        self._worker = SimulationWorker(params)
+
+        # 3. シグナルの結線 (ここが最重要です)
+        # 進行状況やエラーのシグナル結線が他にあれば、それらと一緒に記述します
+        self._worker.finished.connect(self._on_worker_finished)
+        
+        # 4. バックグラウンドスレッドの開始
+        self._worker.start()
 
     # ── Stop ───────────────────────────────────────────────────────────────────
 
@@ -138,35 +157,48 @@ class SimController(QObject):
             self._set_run_buttons_enabled(True)
             return
 
-        # ── Convert metric offsets → geographic coordinates ────────────────────
-        lat      = self._window.lat_input.value()
-        lon      = self._window.lon_input.value()
-        off_e    = result.get("land_offset_e", 0.0)
-        off_n    = result.get("land_offset_n", 0.0)
-        cos_lat  = math.cos(math.radians(lat))
+        # ── Convert metric impact offsets → geographic coordinates ─────────────
+        # impact_x = East offset (m), impact_y = North offset (m) from launch.
+        lat     = self._window.lat_input.value()
+        lon     = self._window.lon_input.value()
+        off_e   = result.get("impact_x", 0.0)
+        off_n   = result.get("impact_y", 0.0)
+        cos_lat = math.cos(math.radians(lat))
 
         land_lat = lat + off_n / 111_320.0
         land_lon = (lon + off_e / (111_320.0 * cos_lat)
                     if cos_lat > 1e-9 else lon)
 
-        # ── Persist in the shared data-bus AppState ────────────────────────────
+        # ── Push scalar summaries into individual AppState properties ─────────
+        # These allow fine-grained observation by future views (map circles,
+        # Phase 2 overlay, …) without them needing to unpack the full dict.
         self._state.land_lat       = land_lat
         self._state.land_lon       = land_lon
-        self._state.r90_radius     = result.get("r90_radius",    0.0)
-        self._state.mc_cep         = result.get("mc_cep",        0.0)
+        self._state.r90_radius     = result.get("r_N_radius",  0.0)
+        self._state.mc_cep         = result.get("cep",         0.0)
         self._state.has_sim_result = True
+        self._state.mc_scatter     = result.get("scatter",      [])
+        self._state.mc_ellipse     = result.get("ellipse")
+        self._state.kde_contours   = result.get("kde_contours", [])
 
         # ── Refresh AppWindow's public-API widgets ─────────────────────────────
         self._window.map_widget.update_landing(land_lat, land_lon)
-        # Trigger the window's internal reactive state to repaint the 3-D plot.
-        self._window.state.needs_redraw.emit()
 
-        r90 = self._state.r90_radius
-        cep = self._state.mc_cep
+        # ── Write unified result last — this emits simulation_result_changed
+        #    AND needs_redraw, which (via the signal bridge) triggers
+        #    AppWindow.update_profile_plot() without the controller touching
+        #    the window's canvas directly. ──────────────────────────────────────
+        self._state.simulation_result = result
+
+        r90    = self._state.r90_radius
+        cep    = self._state.mc_cep
+        apogee = result.get("apogee_m",  0.0)
+        tof    = result.get("hang_time", 0.0)
+        n      = result.get("n_runs",    0)
+        prob   = result.get("landing_prob", int(self._window.cep_prob_input.value()))
         self._window.set_status(
-            f"Done  —  R90: {r90:.1f} m   |   CEP50: {cep:.1f} m   |   "
-            f"Apogee: {result.get('apogee_alt', 0.0):.0f} m   "
-            f"({result.get('n_runs', 0)} runs)",
+            f"Done  —  R{prob}: {r90:.1f} m   |   CEP50: {cep:.1f} m   |   "
+            f"Apogee: {apogee:.0f} m   |   ToF: {tof:.1f} s   ({n} MC runs)",
             "#a6e3a1",
         )
         self._window.set_progress(100, "Done")
@@ -178,27 +210,50 @@ class SimController(QObject):
         self._window.set_progress(0, "Error")
         self._set_run_buttons_enabled(True)
 
+    @Slot(dict)
+    def _on_worker_finished(self, payload: dict) -> None:
+        """
+        Callback when the background worker completes or is cancelled.
+        Routes the final computed data back into the central AppState.
+        """
+        self._set_run_buttons_enabled(True)
+        self._worker = None
+
+        if payload.get("cancelled", False):
+            print("Simulation cancelled by user.")
+            return
+
+        if payload.get("has_sim_result", False):
+            # 1. Update the AppState global data bus with the new simulation payload
+            self.app_state.simulation_result = payload
+            
+            # 2. Trigger the "Smart Redraw" so dependent views update instantly
+            self.app_state.needs_redraw.emit()
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _collect_params(self) -> dict:
         """Read every relevant input widget and return a flat params dict."""
         w = self._window
         return {
-            "wind_speed":  w.wind_speed_input.value(),
-            "wind_dir":    w.wind_dir_input.value(),
-            "cep_prob":    w.cep_prob_input.value(),
-            "sim_mode":    w.sim_mode_combo.currentText(),
-            "launch_lat":  w.lat_input.value(),
-            "launch_lon":  w.lon_input.value(),
-            "elev":        w.elev_input.value(),
-            "azim":        w.azim_input.value(),
-            "mc_runs":     w.mc_runs_input.value(),
-            "surf_spd":    w.surf_spd_input.value(),
-            "surf_dir":    w.surf_dir_input.value(),
-            "up_spd":      w.up_spd_input.value(),
-            "up_dir":      w.up_dir_input.value(),
-            "wind_unc":    w.wind_unc_input.value(),
-            "thrust_unc":  w.thrust_unc_input.value(),
+            # Simulation setup
+            "cep_prob":   w.cep_prob_input.value(),      # percentile (50–99)
+            "sim_mode":   w.sim_mode_combo.currentText(),
+            # Launch site
+            "launch_lat": w.lat_input.value(),
+            "launch_lon": w.lon_input.value(),
+            # Launch geometry
+            "elev":       w.elev_input.value(),           # elevation angle (°)
+            "azim":       w.azim_input.value(),           # azimuth (°)
+            # Wind observations (used by _build_wind_profiles)
+            "surf_spd":   w.surf_spd_input.value(),       # surface speed (m/s)
+            "surf_dir":   w.surf_dir_input.value(),       # surface FROM dir (°)
+            "up_spd":     w.up_spd_input.value(),         # upper speed (m/s)
+            "up_dir":     w.up_dir_input.value(),         # upper FROM dir (°)
+            "upper_alt":  500.0,                          # assumed upper obs alt (m AGL)
+            # Monte Carlo settings
+            "mc_runs":    w.mc_runs_input.value(),
+            "wind_unc":   w.wind_unc_input.value(),       # fractional 1-σ
+            "thrust_unc": w.thrust_unc_input.value(),     # fractional 1-σ
         }
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:

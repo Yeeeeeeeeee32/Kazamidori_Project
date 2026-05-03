@@ -70,6 +70,18 @@ class AppState(QObject):
     upper_wind_dir_changed   = Signal(float)
     gust_speed_changed       = Signal(float)
 
+    # ── Unified simulation result ──────────────────────────────────────────────
+    # simulation_result holds the complete payload dict emitted by
+    # SimulationWorker.finished.  Any component that needs the full result
+    # (trajectory arrays, scatter, ellipse, KDE contours, …) connects to
+    # simulation_result_changed rather than observing individual properties.
+    simulation_result_changed = Signal(object)
+
+    # needs_redraw is a broadcast notification: "the canvas should repaint".
+    # Setting simulation_result automatically emits this signal; it can also
+    # be emitted independently (e.g. when only wind params change).
+    needs_redraw = Signal()
+
     # ──────────────────────────────────────────────────────────────────────────
 
     def __init__(self, config: Optional[dict] = None, parent=None) -> None:
@@ -118,6 +130,9 @@ class AppState(QObject):
         self._upper_wind_speed = 0.0
         self._upper_wind_dir   = 0.0
         self._gust_speed       = 0.0
+
+        # Unified simulation result (full worker payload dict)
+        self._simulation_result = None
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
@@ -441,3 +456,27 @@ class AppState(QObject):
         if self._gust_speed != value:
             self._gust_speed = value
             self.gust_speed_changed.emit(value)
+
+    # ── Unified simulation result ──────────────────────────────────────────────
+
+    @Property(object, notify=simulation_result_changed)
+    def simulation_result(self):
+        """Complete payload dict from the last successful SimulationWorker run.
+
+        Keys: cancelled, has_sim_result, t_vals, x_vals, y_vals, z_vals,
+              apogee_m, hang_time, impact_x, impact_y, r_horiz,
+              scatter, r_N_radius, cep, ellipse, kde_contours,
+              n_runs, landing_prob.
+
+        Setting this property always emits both simulation_result_changed
+        (with the new dict) and needs_redraw (no payload), so any connected
+        canvas or overlay repaints automatically.
+        """
+        return self._simulation_result
+
+    @simulation_result.setter
+    def simulation_result(self, value) -> None:
+        self._simulation_result = value
+        self.simulation_result_changed.emit(value)
+        # Broadcast a unified redraw notification after every new result.
+        self.needs_redraw.emit()
