@@ -182,8 +182,13 @@ class SimulationWorker(QThread):
         stats    = self._compute_stats(scatter, prob_pct)
 
         self.progress.emit(98)
-        return self._package_result(nominal, scatter, stats, prob_pct,
-                                    cancelled=self._stop_event.is_set())
+        result = self._package_result(nominal, scatter, stats, prob_pct,
+                                      cancelled=self._stop_event.is_set())
+        # Embed the nominal surface wind so the controller can establish the
+        # Phase 2 tolerance baseline without re-reading the UI after the fact.
+        result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
+        result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
+        return result
 
     # ── Step helpers ───────────────────────────────────────────────────────────
 

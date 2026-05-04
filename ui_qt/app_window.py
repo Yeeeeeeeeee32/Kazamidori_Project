@@ -161,7 +161,7 @@ QMainWindow, QWidget {
     background-color: #1e1e2e;
     color: #cdd6f4;
     font-family: "Segoe UI", "SF Pro Text", Arial, sans-serif;
-    font-size: 11px;
+    font-size: 9pt;
 }
 
 /* ── Dock widgets ────────────────────────────────────────── */
@@ -186,7 +186,7 @@ QToolBox::tab {
     background: #313244;
     color: #89b4fa;
     font-weight: bold;
-    font-size: 10px;
+    font-size: 8pt;
     padding: 6px 10px;
     border: 1px solid #45475a;
     border-radius: 4px;
@@ -217,7 +217,7 @@ QGroupBox {
     margin-top: 10px;
     padding: 8px 6px 6px 6px;
     font-weight: bold;
-    font-size: 10px;
+    font-size: 8pt;
     color: #89b4fa;
 }
 QGroupBox::title {
@@ -285,7 +285,7 @@ QPushButton#btn_phase1_run {
     color: #1e1e2e;
     border: none;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 10pt;
     font-weight: bold;
     letter-spacing: 0.4px;
     padding: 10px 16px;
@@ -340,7 +340,7 @@ QStatusBar {
     background: #181825;
     color: #a6adc8;
     border-top: 1px solid #313244;
-    font-size: 10px;
+    font-size: 8pt;
 }
 QStatusBar::item { border: none; }
 
@@ -368,7 +368,7 @@ QProgressBar {
     border-radius: 4px;
     text-align: center;
     color: #cdd6f4;
-    font-size: 10px;
+    font-size: 8pt;
     max-height: 18px;
 }
 QProgressBar::chunk { background: #89b4fa; border-radius: 3px; }
@@ -558,8 +558,8 @@ class AppWindow(QMainWindow):
         self._build_menu_bar()
         self._build_tool_bar()
         self._build_status_bar()
-        self._build_central_widget()   # sets self.map_widget — before docks
-        self._build_docks()
+        self._build_central_widget()   # 3-D profile + wind splitter
+        self._build_docks()            # _build_map_dock_widget sets self.map_widget
         self._set_dock_sizes()
         self._bind_state()
         self._dock_params.raise_()
@@ -683,60 +683,53 @@ class AppWindow(QMainWindow):
         sb.addWidget(self._status_label, stretch=1)
         sb.addPermanentWidget(self._wind_status)
 
-    # ── Central widget — 2-D map ───────────────────────────────────────────────
+    # ── Central widget — vertical splitter (3-D profile / wind graph) ─────────
 
     def _build_central_widget(self) -> None:
-        central = QWidget()
-        lay = QVBoxLayout(central)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setHandleWidth(5)
 
-        # Info bar (launch / landing lat-lon readout)
-        info = QFrame()
-        info.setObjectName("MapInfoBar")
-        info.setFixedHeight(32)
-        info.setStyleSheet(
-            "QFrame#MapInfoBar {"
-            "  background: #181825;"
-            "  border-bottom: 1px solid #313244;"
-            "}"
-        )
-        ilay = QHBoxLayout(info)
-        ilay.setContentsMargins(14, 0, 14, 0)
-        ilay.setSpacing(6)
+        # Top pane: 3-D flight profile
+        top = QWidget()
+        tl  = QVBoxLayout(top)
+        tl.setContentsMargins(2, 2, 2, 2)
+        tl.setSpacing(0)
+        nav3d = NavigationToolbar2QT(self.profile_canvas, top)
+        nav3d.setIconSize(QSize(14, 14))
+        tl.addWidget(nav3d)
+        tl.addWidget(self.profile_canvas)
 
-        self._map_launch_lbl = QLabel("Launch:  35.682800°N, 139.759000°E")
-        self._map_launch_lbl.setStyleSheet(
-            "color: #89b4fa; font-size: 11px; background: transparent;")
+        # Bottom pane: wind profile + 60-s time-series
+        bot = QWidget()
+        bl  = QVBoxLayout(bot)
+        bl.setContentsMargins(2, 2, 2, 2)
+        bl.setSpacing(0)
+        hdr = QLabel("  Wind Profile  ·  Time-Series (60 s)")
+        hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 2px 4px;")
+        nav_w = NavigationToolbar2QT(self.wind_canvas, bot)
+        nav_w.setIconSize(QSize(14, 14))
+        bl.addWidget(hdr)
+        bl.addWidget(nav_w)
+        bl.addWidget(self.wind_canvas)
 
-        _sep = QLabel("|")
-        _sep.setStyleSheet("color: #45475a; background: transparent;")
-
-        self._map_landing_lbl = QLabel("Landing:  —")
-        self._map_landing_lbl.setStyleSheet(
-            "color: #f38ba8; font-size: 11px; background: transparent;")
-
-        ilay.addWidget(self._map_launch_lbl)
-        ilay.addStretch()
-        ilay.addWidget(_sep)
-        ilay.addStretch()
-        ilay.addWidget(self._map_landing_lbl)
-
-        nav = NavigationToolbar2QT(self.map_canvas, central)
-        nav.setIconSize(QSize(14, 14))
-
-        lay.addWidget(info)
-        lay.addWidget(nav)
-        lay.addWidget(self.map_canvas, stretch=1)
-
-        self.map_widget = _MapCoordProxy(
-            self._map_launch_lbl, self._map_landing_lbl)
-        self.setCentralWidget(central)
+        splitter.addWidget(top)
+        splitter.addWidget(bot)
+        splitter.setSizes([580, 320])
+        self.setCentralWidget(splitter)
 
     # ── Dock widgets ───────────────────────────────────────────────────────────
 
     def _build_docks(self) -> None:
         _ALL = Qt.DockWidgetArea.AllDockWidgetAreas
+
+        # RIGHT — Map view.  Built FIRST so self.map_widget exists before
+        # _build_parameters_panel() wires the lat/lon lambda closures.
+        self._dock_map = QDockWidget("Map View", self)
+        self._dock_map.setObjectName("MapDock")
+        self._dock_map.setAllowedAreas(_ALL)
+        self._dock_map.setWidget(self._build_map_dock_widget())
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
+                           self._dock_map)
 
         # LEFT — Parameters (QToolBox + RUN button)
         self._dock_params = QDockWidget("Parameters", self)
@@ -746,15 +739,7 @@ class AppWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,
                            self._dock_params)
 
-        # RIGHT — 3-D profile + wind graph (QSplitter)
-        self._dock_profile = QDockWidget("Flight Profile  &  Wind", self)
-        self._dock_profile.setObjectName("ProfileDock")
-        self._dock_profile.setAllowedAreas(_ALL)
-        self._dock_profile.setWidget(self._build_right_dock_widget())
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
-                           self._dock_profile)
-
-        for dock in (self._dock_params, self._dock_profile):
+        for dock in (self._dock_params, self._dock_map):
             self._view_menu.addAction(dock.toggleViewAction())
 
     # ── Parameters panel (left dock) ───────────────────────────────────────────
@@ -777,7 +762,7 @@ class AppWindow(QMainWindow):
         self._go_nogo_label = QLabel("●  STANDBY")
         self._go_nogo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._go_nogo_label.setStyleSheet(
-            "font-size: 16px; font-weight: bold; color: #6c7086; padding: 6px;")
+            "font-size: 12pt; font-weight: bold; color: #6c7086; padding: 6px;")
         lay.addWidget(self._go_nogo_label)
 
         # Primary action button
@@ -966,7 +951,7 @@ class AppWindow(QMainWindow):
         note = QLabel(
             "These values are not yet wired to the\n"
             "simulation engine in this release.")
-        note.setStyleSheet("color: #45475a; font-size: 9px;")
+        note.setStyleSheet("color: #45475a; font-size: 7pt;")
         frm.addRow(note)
         return w
 
@@ -1052,48 +1037,65 @@ class AppWindow(QMainWindow):
         self._on_mode_changed("Free")
         return w
 
-    # ── Right dock: splitter ────────────────────────────────────────────────────
+    # ── Map dock widget (right dock) ───────────────────────────────────────────
 
-    def _build_right_dock_widget(self) -> QSplitter:
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setHandleWidth(5)
+    def _build_map_dock_widget(self) -> QWidget:
+        """2-D map canvas with coordinate info bar — right dock content."""
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        # Top: 3-D profile
-        top = QWidget()
-        tl  = QVBoxLayout(top)
-        tl.setContentsMargins(2, 2, 2, 2)
-        tl.setSpacing(0)
-        nav3d = NavigationToolbar2QT(self.profile_canvas, top)
-        nav3d.setIconSize(QSize(14, 14))
-        tl.addWidget(nav3d)
-        tl.addWidget(self.profile_canvas)
+        # Info bar: live launch / landing coordinate readout
+        info = QFrame()
+        info.setObjectName("MapInfoBar")
+        info.setFixedHeight(32)
+        info.setStyleSheet(
+            "QFrame#MapInfoBar {"
+            "  background: #181825;"
+            "  border-bottom: 1px solid #313244;"
+            "}"
+        )
+        ilay = QHBoxLayout(info)
+        ilay.setContentsMargins(14, 0, 14, 0)
+        ilay.setSpacing(6)
 
-        # Bottom: wind graph
-        bot = QWidget()
-        bl  = QVBoxLayout(bot)
-        bl.setContentsMargins(2, 2, 2, 2)
-        bl.setSpacing(0)
-        hdr = QLabel("  Wind Profile  ·  Time-Series (60 s)")
-        hdr.setStyleSheet("color: #6c7086; font-size: 9px; padding: 2px 4px;")
-        nav_w = NavigationToolbar2QT(self.wind_canvas, bot)
-        nav_w.setIconSize(QSize(14, 14))
-        bl.addWidget(hdr)
-        bl.addWidget(nav_w)
-        bl.addWidget(self.wind_canvas)
+        self._map_launch_lbl = QLabel("Launch:  35.682800°N, 139.759000°E")
+        self._map_launch_lbl.setStyleSheet(
+            "color: #89b4fa; font-size: 9pt; background: transparent;")
 
-        splitter.addWidget(top)
-        splitter.addWidget(bot)
-        splitter.setSizes([380, 230])
-        return splitter
+        _sep = QLabel("|")
+        _sep.setStyleSheet("color: #45475a; background: transparent;")
+
+        self._map_landing_lbl = QLabel("Landing:  —")
+        self._map_landing_lbl.setStyleSheet(
+            "color: #f38ba8; font-size: 9pt; background: transparent;")
+
+        ilay.addWidget(self._map_launch_lbl)
+        ilay.addStretch()
+        ilay.addWidget(_sep)
+        ilay.addStretch()
+        ilay.addWidget(self._map_landing_lbl)
+
+        nav = NavigationToolbar2QT(self.map_canvas, container)
+        nav.setIconSize(QSize(14, 14))
+
+        lay.addWidget(info)
+        lay.addWidget(nav)
+        lay.addWidget(self.map_canvas, stretch=1)
+
+        self.map_widget = _MapCoordProxy(
+            self._map_launch_lbl, self._map_landing_lbl)
+        return container
 
     # ── Dock sizing ────────────────────────────────────────────────────────────
 
     def _set_dock_sizes(self) -> None:
-        self.resizeDocks([self._dock_params],  [300], Qt.Orientation.Horizontal)
+        self.resizeDocks([self._dock_params], [300], Qt.Orientation.Horizontal)
         self._dock_params.setMinimumWidth(240)
         self._dock_params.setMaximumWidth(460)
-        self.resizeDocks([self._dock_profile], [440], Qt.Orientation.Horizontal)
-        self._dock_profile.setMinimumWidth(300)
+        self.resizeDocks([self._dock_map],   [480], Qt.Orientation.Horizontal)
+        self._dock_map.setMinimumWidth(320)
 
     # ── Reactive binding ───────────────────────────────────────────────────────
 
@@ -1347,6 +1349,22 @@ class AppWindow(QMainWindow):
                            c="#fab387", s=4, alpha=0.30, marker=".", zorder=3,
                            label=f"MC landings  (n = {n})")
 
+            # KDE probability-mass contours (outermost → innermost)
+            _kde_palette = ["#89b4fa", "#cba6f7", "#f38ba8", "#fab387", "#f9e2af"]
+            for i, contour in enumerate(res.get("kde_contours", [])):
+                pts = contour.get("points_m", [])
+                if len(pts) < 2:
+                    continue
+                cx_pts = [float(p[0]) for p in pts]
+                cy_pts = [float(p[1]) for p in pts]
+                col = _kde_palette[i % len(_kde_palette)]
+                lbl = contour.get("label",
+                                  f"KDE {int(contour.get('prob_frac', 0) * 100)} %")
+                # Close the contour path
+                ax.plot(cx_pts + [cx_pts[0]], cy_pts + [cy_pts[0]],
+                        color=col, lw=1.0, linestyle="-", alpha=0.55,
+                        zorder=4, label=lbl)
+
             # CEP ellipses — highlight the one matching cep_prob
             target_prob = self.state.cep_prob
             for ell in res.get("cep_ellipses", []):
@@ -1565,12 +1583,12 @@ class AppWindow(QMainWindow):
         if go:
             self._go_nogo_label.setText("✔   GO")
             self._go_nogo_label.setStyleSheet(
-                "font-size: 16px; font-weight: bold;"
+                "font-size: 12pt; font-weight: bold;"
                 "color: #a6e3a1; padding: 6px;")
         else:
             self._go_nogo_label.setText("✘   NO-GO")
             self._go_nogo_label.setStyleSheet(
-                "font-size: 16px; font-weight: bold;"
+                "font-size: 12pt; font-weight: bold;"
                 "color: #f38ba8; padding: 6px;")
 
     def set_progress(self, value: int, label: str = "") -> None:

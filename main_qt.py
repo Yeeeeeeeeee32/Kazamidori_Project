@@ -79,9 +79,18 @@ class SimController(QObject):
         # repaints without the controller knowing anything about the canvas.
         state.needs_redraw.connect(window.state.needs_redraw)
 
-        # ── Phase 2 wind monitor ───────────────────────────────────────────────
-        # Ticks every second; generates a perturbed wind reading and pushes it
-        # into AppState so the wind-history graph can update continuously.
+        # ── Phase 2 tolerance monitoring ───────────────────────────────────────
+        # tolerance_exceeded fires every tick the bound is breached; update the
+        # status bar with current numbers each time so the operator sees the
+        # live drift estimate.
+        state.tolerance_exceeded.connect(self._on_tolerance_exceeded)
+        # tolerance_status_changed fires only on transitions (✓ → ⚠ or back);
+        # use it to flip the GO/NO-GO indicator without visual chatter.
+        state.tolerance_status_changed.connect(self._on_tolerance_status_changed)
+
+        # ── Continuous wind monitor ────────────────────────────────────────────
+        # Ticks every second from application start — runs before and during
+        # Phase 1, and drives Phase 2 tolerance evaluation after Phase 1.
         self._wind_timer = QTimer(self)
         self._wind_timer.setInterval(1000)
         self._wind_timer.timeout.connect(self._on_wind_tick)
@@ -194,6 +203,17 @@ class SimController(QObject):
         # renders from its own state object; this write supplies the data.
         self._window.state.simulation_result = self._adapt_for_window(result)
 
+        # ── Transition to Phase 2 (monitoring mode) ────────────────────────────
+        # Store the nominal wind baseline so check_tolerance has a reference,
+        # then activate the Phase 2 flag.  The wind timer is already running;
+        # from this point every tick evaluates tolerance against these bounds.
+        self._state.set_simulation_baseline(
+            result.get("nominal_surf_spd", self._window.surf_spd_input.value()),
+            result.get("nominal_surf_dir", self._window.surf_dir_input.value()),
+        )
+        self._state.phase2_active = True
+        self._window.set_go_nogo(True)
+
         r90    = self._state.r90_radius
         cep    = self._state.mc_cep
         apogee = result.get("apogee_m",  0.0)
@@ -216,6 +236,34 @@ class SimController(QObject):
         self._window.set_progress(0, "Error")
         self._worker = None
         self._set_run_buttons_enabled(True)
+
+    # ── Phase 2 tolerance slots ────────────────────────────────────────────────
+
+    @Slot(str)
+    def _on_tolerance_exceeded(self, msg: str) -> None:
+        """Fires every tick while the wind-drift bound is breached.
+
+        Continuously refreshes the status bar so the operator sees the live
+        drift estimate update each second.  GO/NO-GO is handled by the
+        transition slot below to avoid flickering on every tick.
+        """
+        self._window.set_status(f"⚠  TOLERANCE EXCEEDED  —  {msg}", "#f38ba8")
+
+    @Slot(str)
+    def _on_tolerance_status_changed(self, status: str) -> None:
+        """Fires only when tolerance status *transitions* (breach starts or clears).
+
+        Using the transition signal (not the per-tick exceeded signal) to drive
+        GO/NO-GO eliminates visual chatter: the indicator flips exactly once
+        per transition, not once per second.
+        """
+        in_bounds = status.startswith("✓")
+        self._window.set_go_nogo(in_bounds)
+        if in_bounds:
+            # Restore a clean status bar message when tolerance recovers.
+            self._window.set_status(
+                f"Phase 2  (monitoring)  —  {status}", "#a6e3a1"
+            )
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -266,6 +314,9 @@ class SimController(QObject):
             self._window.up_spd_input.value(),
             self._window.up_dir_input.value(),
         )
+
+        # Phase 2 tolerance evaluation — no-op until phase2_active is True.
+        self._state.check_tolerance(speed, direction)
 
     @staticmethod
     def _adapt_for_window(result: dict) -> dict:

@@ -20,6 +20,7 @@ Categories
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from typing import Optional
 
@@ -89,6 +90,21 @@ class AppState(QObject):
     # be emitted independently (e.g. when only wind params change).
     needs_redraw = Signal()
 
+    # ── Wind / Phase 2 operational signals ────────────────────────────────────
+    # wind_updated: lightweight ping after every append_wind_reading call.
+    # Observers that only need to know "new data arrived" connect here instead
+    # of wind_history_updated (which carries the full deque payload).
+    wind_updated = Signal()
+
+    # tolerance_exceeded: emitted every wind tick while Phase 2 is active and
+    # the estimated landing drift exceeds the allowable_uncertainty bound.
+    # Payload: human-readable warning string with current Δwind and drift.
+    tolerance_exceeded = Signal(str)
+
+    # tolerance_status_changed: emitted only when the status string transitions
+    # (e.g. "✓ In bounds" → "⚠ EXCEEDED" or back).  Used to toggle GO/NO-GO.
+    tolerance_status_changed = Signal(str)
+
     # ──────────────────────────────────────────────────────────────────────────
 
     def __init__(self, config: Optional[dict] = None, parent=None) -> None:
@@ -146,6 +162,15 @@ class AppState(QObject):
 
         # CEP probability — UI-driven percentile; changing it redraws, not re-simulates
         self._cep_probability: float = 90.0
+
+        # Phase 2 baseline — nominal wind at the moment Phase 1 was executed.
+        # Stored so the tolerance monitor can compute Δwind vs. the simulation.
+        self._nominal_surf_speed: float = 0.0
+        self._nominal_surf_dir:   float = 0.0
+
+        # Current human-readable tolerance status string (compared on every
+        # tick to avoid emitting tolerance_status_changed on every second).
+        self._tolerance_status: str = ""
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
@@ -480,8 +505,69 @@ class AppState(QObject):
         """Append one (speed, direction) sample and broadcast the updated deque."""
         self._wind_history.append((float(speed), float(direction)))
         self.wind_history_updated.emit(self._wind_history)
+        self.wind_updated.emit()          # lightweight ping for simple observers
         self.surf_wind_speed = float(speed)
         self.surf_wind_dir   = float(direction)
+
+    # ── Phase 2 baseline + tolerance monitoring ───────────────────────────────
+
+    def set_simulation_baseline(self, surf_speed: float, surf_dir: float) -> None:
+        """Record the nominal surface wind used for Phase 1 as the Phase 2 reference.
+
+        Called by SimController immediately after a successful simulation run.
+        The stored values define the "expected" wind; any live deviation from
+        them is evaluated by check_tolerance every wind tick.
+        """
+        self._nominal_surf_speed = float(surf_speed)
+        self._nominal_surf_dir   = float(surf_dir)
+        self._tolerance_status   = ""   # reset so first tick always emits
+
+    def check_tolerance(self, speed: float, direction: float) -> None:
+        """Evaluate one live wind reading against the Phase 1 allowable bounds.
+
+        Called every wind tick while Phase 2 is active.  Computes an estimated
+        additional landing drift caused by the deviation of the live wind from
+        the simulation baseline, then compares it against allowable_uncertainty.
+
+        Signals emitted
+        ---------------
+        tolerance_exceeded        — every tick the bound is breached (with msg)
+        tolerance_status_changed  — only when the status string changes
+                                    (i.e. on the tick a breach starts or clears)
+        """
+        if not self._phase2_active or not self._has_sim_result:
+            return
+
+        # ── Wind vector delta (live − baseline) ───────────────────────────────
+        nom_u  = self._nominal_surf_speed * math.sin(math.radians(self._nominal_surf_dir))
+        nom_v  = self._nominal_surf_speed * math.cos(math.radians(self._nominal_surf_dir))
+        live_u = speed * math.sin(math.radians(direction))
+        live_v = speed * math.cos(math.radians(direction))
+        wind_delta = math.hypot(live_u - nom_u, live_v - nom_v)
+
+        # ── Estimated additional drift: δwind × flight_time ───────────────────
+        hang_time = 0.0
+        if self._simulation_result:
+            hang_time = float(self._simulation_result.get("hang_time", 0.0))
+        est_drift = wind_delta * max(hang_time, 1.0)
+
+        allowable = self._allowable_uncertainty
+        margin    = allowable - est_drift
+
+        # ── Classify and emit ──────────────────────────────────────────────────
+        if margin < 0:
+            msg = (
+                f"Δwind {wind_delta:.1f} m/s → "
+                f"est. drift {est_drift:.0f} m  (limit {allowable:.0f} m)"
+            )
+            self.tolerance_exceeded.emit(msg)
+            new_status = f"⚠  EXCEEDED  +{-margin:.0f} m over limit"
+        else:
+            new_status = f"✓  In bounds  ({margin:.0f} m margin)"
+
+        if new_status != self._tolerance_status:
+            self._tolerance_status = new_status
+            self.tolerance_status_changed.emit(new_status)
 
     # ── CEP probability ────────────────────────────────────────────────────────
 
