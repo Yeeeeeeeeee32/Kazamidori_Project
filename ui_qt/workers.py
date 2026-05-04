@@ -130,42 +130,11 @@ class SimulationWorker(QThread):
     # ── QThread entry point ────────────────────────────────────────────────────
 
     def run(self) -> None:
-            """
-            Execute the heavy physical simulations (RocketPy + Monte Carlo)
-            off the main thread.
-            """
-            try:
-                if self._is_cancelled:
-                    self.finished.emit(self._package_result(None, None, None, cancelled=True))
-                    return
-
-                self.progress.emit(10)
-
-                # 1. Phase 1: Nominal trajectory calculation (RocketPy)
-                nominal = simulate_once(self.params)
-                
-                if self._is_cancelled:
-                    self.finished.emit(self._package_result(None, None, None, cancelled=True))
-                    return
-                    
-                self.progress.emit(50)
-
-                # 2. Phase 1: Monte Carlo Simulation (Scatter & Ellipses)
-                scatter, stats = run_monte_carlo(self.params)
-                
-                if self._is_cancelled:
-                    self.finished.emit(self._package_result(None, None, None, cancelled=True))
-                    return
-
-                self.progress.emit(100)
-
-                # 3. Package and dispatch results securely to the UI thread
-                payload = self._package_result(nominal, scatter, stats, cancelled=False)
-                self.finished.emit(payload)
-
-            except Exception as e:
-                # Safely catch mathematical or physics engine exceptions without crashing Qt
-                self.error.emit(f"Simulation Error: {str(e)}")
+        try:
+            result = self._run_physics()
+            self.finished.emit(result)
+        except Exception:
+            self.error.emit(traceback.format_exc())
 
     # ── Physics pipeline ───────────────────────────────────────────────────────
 
@@ -365,14 +334,19 @@ class SimulationWorker(QThread):
         def _to_list(v):
             return v.tolist() if hasattr(v, "tolist") else list(v)
 
+        t_vals = _to_list(nominal["t_vals"])
+        x_vals = _to_list(nominal["x_vals"])
+        y_vals = _to_list(nominal["y_vals"])
+        z_vals = _to_list(nominal["z_vals"])
+
         return {
             "cancelled":      cancelled,
             "has_sim_result": not cancelled,
-            # Nominal trajectory
-            "t_vals":    _to_list(nominal["t_vals"]),
-            "x_vals":    _to_list(nominal["x_vals"]),
-            "y_vals":    _to_list(nominal["y_vals"]),
-            "z_vals":    _to_list(nominal["z_vals"]),
+            # Nominal trajectory (separate arrays)
+            "t_vals":    t_vals,
+            "x_vals":    x_vals,
+            "y_vals":    y_vals,
+            "z_vals":    z_vals,
             "apogee_m":  float(nominal["apogee_m"]),
             "hang_time": float(nominal["hang_time"]),
             "impact_x":  float(nominal["impact_x"]),   # East offset (m)
@@ -382,8 +356,14 @@ class SimulationWorker(QThread):
             "scatter":      scatter,
             "r_N_radius":   float(stats.get("r_N_radius", 0.0)),
             "cep":          float(stats.get("cep", 0.0)),
-            "ellipse":      stats.get("ellipse"),       # dict or None
+            "ellipse":      stats.get("ellipse"),
             "kde_contours": stats.get("kde_contours", []),
             "n_runs":       len(scatter),
             "landing_prob": prob_pct,
+            # ── Alias keys consumed by General B / future views ────────────────
+            # trajectory_3d: list of [East_m, North_m, Up_m] per time-step
+            "trajectory_3d":     list(zip(x_vals, y_vals, z_vals)),
+            "mc_scatter_points": scatter,                   # alias for scatter
+            "apogee":            float(nominal["apogee_m"]),
+            "impact_distance":   float(nominal["r_horiz"]),
         }

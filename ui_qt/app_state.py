@@ -20,6 +20,7 @@ Categories
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Property
@@ -69,6 +70,12 @@ class AppState(QObject):
     upper_wind_speed_changed = Signal(float)
     upper_wind_dir_changed   = Signal(float)
     gust_speed_changed       = Signal(float)
+
+    # ── Wind history ───────────────────────────────────────────────────────────
+    wind_history_updated    = Signal(object)   # deque snapshot after each append
+
+    # ── CEP probability ────────────────────────────────────────────────────────
+    cep_probability_changed = Signal(float)
 
     # ── Unified simulation result ──────────────────────────────────────────────
     # simulation_result holds the complete payload dict emitted by
@@ -133,6 +140,12 @@ class AppState(QObject):
 
         # Unified simulation result (full worker payload dict)
         self._simulation_result = None
+
+        # Wind history — rolling 60-second buffer of (speed_m/s, dir_deg) tuples
+        self._wind_history: deque = deque(maxlen=60)
+
+        # CEP probability — UI-driven percentile; changing it redraws, not re-simulates
+        self._cep_probability: float = 90.0
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
@@ -456,6 +469,33 @@ class AppState(QObject):
         if self._gust_speed != value:
             self._gust_speed = value
             self.gust_speed_changed.emit(value)
+
+    # ── Wind history ──────────────────────────────────────────────────────────
+
+    @Property(object, notify=wind_history_updated)
+    def wind_history(self) -> deque:
+        return self._wind_history
+
+    def append_wind_reading(self, speed: float, direction: float) -> None:
+        """Append one (speed, direction) sample and broadcast the updated deque."""
+        self._wind_history.append((float(speed), float(direction)))
+        self.wind_history_updated.emit(self._wind_history)
+        self.surf_wind_speed = float(speed)
+        self.surf_wind_dir   = float(direction)
+
+    # ── CEP probability ────────────────────────────────────────────────────────
+
+    @Property(float, notify=cep_probability_changed)
+    def cep_probability(self) -> float:
+        return self._cep_probability
+
+    @cep_probability.setter
+    def cep_probability(self, value: float) -> None:
+        value = float(value)
+        if self._cep_probability != value:
+            self._cep_probability = value
+            self.cep_probability_changed.emit(value)
+            self.needs_redraw.emit()   # redraw only — never triggers SimulationWorker
 
     # ── Unified simulation result ──────────────────────────────────────────────
 

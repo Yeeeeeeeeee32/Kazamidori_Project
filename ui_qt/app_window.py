@@ -1379,7 +1379,7 @@ class AppWindow(QMainWindow):
 
         ax.set_xlim(-xlim, xlim)
         ax.set_ylim(-ylim, ylim)
-        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel("East  (m)",  color="#6c7086", fontsize=8, labelpad=4)
         ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
         ax.set_title("Landing Zone Map  (ENU frame, launch at origin)",

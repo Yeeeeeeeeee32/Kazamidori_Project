@@ -24,9 +24,11 @@ writes to both.
 from __future__ import annotations
 
 import math
+import random
 import sys
+import time as _time
 
-from PySide6.QtCore import QObject, Slot
+from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from ui_qt.app_state import AppState
@@ -77,6 +79,14 @@ class SimController(QObject):
         # repaints without the controller knowing anything about the canvas.
         state.needs_redraw.connect(window.state.needs_redraw)
 
+        # ── Phase 2 wind monitor ───────────────────────────────────────────────
+        # Ticks every second; generates a perturbed wind reading and pushes it
+        # into AppState so the wind-history graph can update continuously.
+        self._wind_timer = QTimer(self)
+        self._wind_timer.setInterval(1000)
+        self._wind_timer.timeout.connect(self._on_wind_tick)
+        self._wind_timer.start()
+
     # ── Button rewiring ────────────────────────────────────────────────────────
 
     def _rewire_buttons(self) -> None:
@@ -103,6 +113,7 @@ class SimController(QObject):
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
 
+        self._state.mc_running = True
         self._set_run_buttons_enabled(False)
         self._window.set_status("Simulation running…", "#f9e2af")
         self._window.set_progress(0, "Simulating…")
@@ -113,19 +124,6 @@ class SimController(QObject):
         self._worker.error.connect(self._on_error)
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.start()
-        
-        # 1. 現在のパラメータを取得
-        params = self._gather_params()
-
-        # 2. Workerのインスタンス化
-        self._worker = SimulationWorker(params)
-
-        # 3. シグナルの結線 (ここが最重要です)
-        # 進行状況やエラーのシグナル結線が他にあれば、それらと一緒に記述します
-        self._worker.finished.connect(self._on_worker_finished)
-        
-        # 4. バックグラウンドスレッドの開始
         self._worker.start()
 
     # ── Stop ───────────────────────────────────────────────────────────────────
@@ -151,9 +149,12 @@ class SimController(QObject):
 
     @Slot(dict)
     def _on_finished(self, result: dict) -> None:
+        self._state.mc_running = False
+
         if result.get("cancelled"):
             self._window.set_status("Simulation cancelled.", "#a6adc8")
             self._window.set_progress(0, "Idle")
+            self._worker = None
             self._set_run_buttons_enabled(True)
             return
 
@@ -184,11 +185,14 @@ class SimController(QObject):
         # ── Refresh AppWindow's public-API widgets ─────────────────────────────
         self._window.map_widget.update_landing(land_lat, land_lon)
 
-        # ── Write unified result last — this emits simulation_result_changed
-        #    AND needs_redraw, which (via the signal bridge) triggers
-        #    AppWindow.update_profile_plot() without the controller touching
-        #    the window's canvas directly. ──────────────────────────────────────
+        # ── Write to global AppState last — emits simulation_result_changed
+        #    AND needs_redraw (via signal bridge → window.state.needs_redraw).
         self._state.simulation_result = result
+
+        # ── Write adapted payload to AppWindow's local state ───────────────────
+        # The global AppState signal bridge fires needs_redraw but the window
+        # renders from its own state object; this write supplies the data.
+        self._window.state.simulation_result = self._adapt_for_window(result)
 
         r90    = self._state.r90_radius
         cep    = self._state.mc_cep
@@ -202,33 +206,17 @@ class SimController(QObject):
             "#a6e3a1",
         )
         self._window.set_progress(100, "Done")
+        self._worker = None
         self._set_run_buttons_enabled(True)
 
     @Slot(str)
     def _on_error(self, msg: str) -> None:
+        self._state.mc_running = False
         self._window.set_status(f"Simulation error: {msg}", "#f38ba8")
         self._window.set_progress(0, "Error")
-        self._set_run_buttons_enabled(True)
-
-    @Slot(dict)
-    def _on_worker_finished(self, payload: dict) -> None:
-        """
-        Callback when the background worker completes or is cancelled.
-        Routes the final computed data back into the central AppState.
-        """
-        self._set_run_buttons_enabled(True)
         self._worker = None
+        self._set_run_buttons_enabled(True)
 
-        if payload.get("cancelled", False):
-            print("Simulation cancelled by user.")
-            return
-
-        if payload.get("has_sim_result", False):
-            # 1. Update the AppState global data bus with the new simulation payload
-            self.app_state.simulation_result = payload
-            
-            # 2. Trigger the "Smart Redraw" so dependent views update instantly
-            self.app_state.needs_redraw.emit()
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _collect_params(self) -> dict:
@@ -255,6 +243,64 @@ class SimController(QObject):
             "wind_unc":   w.wind_unc_input.value(),       # fractional 1-σ
             "thrust_unc": w.thrust_unc_input.value(),     # fractional 1-σ
         }
+
+    @Slot()
+    def _on_wind_tick(self) -> None:
+        base_spd  = self._window.surf_spd_input.value()
+        base_dir  = self._window.surf_dir_input.value()
+        speed     = max(0.0, base_spd + random.gauss(0.0, base_spd * 0.05 + 0.1))
+        direction = (base_dir + random.gauss(0.0, 3.0)) % 360.0
+
+        # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
+        self._state.append_wind_reading(speed, direction)
+
+        # AppWindow local state: (timestamp_s, speed_m_s) tuples for the plot.
+        ts = _time.monotonic()
+        history = list(self._window.state.wind_history)
+        history.append((ts, speed))
+        self._window.state.wind_history = history   # setter emits needs_redraw
+
+        # Keep the status-bar readout current.
+        self._window.update_wind_readout(
+            speed, direction,
+            self._window.up_spd_input.value(),
+            self._window.up_dir_input.value(),
+        )
+
+    @staticmethod
+    def _adapt_for_window(result: dict) -> dict:
+        """Remap worker payload keys to the schema AppWindow renderers expect.
+
+        The worker emits generic physics keys (x_vals, scatter, impact_x, …).
+        AppWindow's _draw_real_result / update_map_plot read UI-centric aliases
+        (trajectory_x, mc_scatter_x, land_x, cep_ellipses, …).  All values are
+        converted to native Python types so no numpy scalars reach the Qt layer.
+        """
+        sc   = result.get("scatter", [])
+        prob = result.get("landing_prob", 90)
+
+        cep_ellipses: list[dict] = []
+        ell = result.get("ellipse")
+        if ell and "a" in ell and "b" in ell:
+            cep_ellipses.append({
+                **ell,
+                "color": "#cba6f7",
+                "lw":    2.0,
+                "label": f"R{prob}",
+            })
+
+        adapted = dict(result)   # preserve all original keys for global AppState
+        adapted.update({
+            "trajectory_x": [float(v) for v in result.get("x_vals", [])],
+            "trajectory_y": [float(v) for v in result.get("y_vals", [])],
+            "trajectory_z": [float(v) for v in result.get("z_vals", [])],
+            "mc_scatter_x": [float(p[0]) for p in sc],
+            "mc_scatter_y": [float(p[1]) for p in sc],
+            "land_x":       float(result.get("impact_x", 0.0)),
+            "land_y":       float(result.get("impact_y", 0.0)),
+            "cep_ellipses": cep_ellipses,
+        })
+        return adapted
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
         for btn in self._window.findChildren(QPushButton, "btn_run"):
