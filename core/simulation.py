@@ -13,9 +13,6 @@ simulate_once(elev, azi, params) -> dict
     On success:  {'ok': True,  ...trajectory arrays and event indices...}
     On failure:  {'ok': False, 'error': <str>}
 
-SimResult (TypedDict, informational)
-    Documents every key returned by simulate_once on success.
-
 params dict keys expected by simulate_once
 -------------------------------------------
   launch_lat               float   geodetic degrees  (optional, default 35.0)
@@ -23,19 +20,18 @@ params dict keys expected by simulate_once
     Note: lat/lon are used only to initialise RocketPy's Environment
     atmospheric model.  All trajectory outputs (impact_x, impact_y,
     x_vals, y_vals, z_vals) are in the metric East-North-Up frame
-    centred on the launch point.  The specific geographic location has
-    negligible effect on short-range rocket physics.
+    centred on the launch point.
   elev, azi                float   degrees
   rail                     float   metres
   airframe_mass            float   kg
-  airframe_cg              float   metres from nose
+  airframe_cg              float   metres from nose tip  (positive toward tail)
   airframe_len             float   metres
   radius                   float   metres
   nose_len                 float   metres
   fin_root, fin_tip        float   metres
   fin_span                 float   metres
-  fin_pos                  float   metres from nose
-  motor_pos                float   metres from nose
+  fin_pos                  float   metres from nose tip  (positive toward tail)
+  motor_pos                float   metres from nose tip  (nozzle exit, positive toward tail)
   motor_dry_mass           float   kg
   backfire_delay           float   seconds after burn-out
   para_cd                  float   drag coefficient
@@ -45,6 +41,13 @@ params dict keys expected by simulate_once
   wind_v_prof              list[(alt_m, v_m_s)]   north component profile
   thrust_data              list[[t, T]]
   motor_burn_time          float   seconds
+
+Coordinate system
+-----------------
+The Rocket is instantiated with ``coordinate_system_orientation="nose_to_tail"``.
+Position 0 is the nose tip; positive values increase toward the tail.
+UI parameters (airframe_cg, motor_pos, fin_pos) are all measured from the
+nose tip and map directly to RocketPy positions without sign inversion.
 """
 
 from __future__ import annotations
@@ -97,6 +100,10 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
 
     Pass 2 (full flight) runs with the altitude-triggered parachute and
     produces the full trajectory arrays.
+
+    The Rocket is built with ``coordinate_system_orientation="nose_to_tail"``
+    so all position parameters map directly from the UI (measured from the
+    nose tip, positive toward the tail) with no sign inversions.
 
     Returns a dict with 'ok' True/False.  On success the following keys
     are present:
@@ -170,17 +177,24 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
                 grains_center_of_mass_position=0.0,
                 center_of_dry_mass_position=0.0,
             )
+            # coordinate_system_orientation="nose_to_tail":
+            #   Position 0 is the nose tip; positive values run toward the tail.
+            #   All UI position parameters (measured from the nose) map here
+            #   directly — no minus signs needed.
             rk = Rocket(
-                radius=radius, mass=airframe_mass,
+                radius=radius,
+                mass=airframe_mass,
                 inertia=(I_xy, I_xy, I_z),
-                power_off_drag=para_cd, power_on_drag=para_cd,
-                center_of_mass_without_motor=-airframe_cg,
+                power_off_drag=para_cd,
+                power_on_drag=para_cd,
+                center_of_mass_without_motor=airframe_cg,
+                coordinate_system_orientation="nose_to_tail",
             )
-            rk.add_motor(motor, position=-motor_pos)
+            rk.add_motor(motor, position=motor_pos)
             rk.add_nose(length=nose_len, kind="vonKarman", position=0.0)
             rk.add_trapezoidal_fins(
                 n=4, root_chord=fin_root, tip_chord=fin_tip,
-                span=fin_span, position=-fin_pos,
+                span=fin_span, position=fin_pos,
             )
             return rk
 
@@ -196,7 +210,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         if backfire_time >= t1_arr[-1]:
             backfire_alt = float(z1_arr[-1])
         else:
-            idx_bf_p1   = int((np.abs(t1_arr - backfire_time)).argmin())
+            idx_bf_p1    = int((np.abs(t1_arr - backfire_time)).argmin())
             backfire_alt = float(z1_arr[idx_bf_p1])
         backfire_alt = max(backfire_alt, 1.0)
 

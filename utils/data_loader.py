@@ -169,6 +169,57 @@ class MotorData:
         return (f"MotorData({self.name!r}, burn={self.burn_time:.3f}s, "
                 f"avg={self.avg_thrust:.1f}N, max={self.max_thrust:.1f}N)")
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return all attributes as a plain dict (JSON-serialisable)."""
+        return {
+            "name":          self.name,
+            "filepath":      self.filepath,
+            "thrust_points": self.thrust_points,
+            "burn_time":     self.burn_time,
+            "max_thrust":    self.max_thrust,
+            "avg_thrust":    self.avg_thrust,
+            "total_impulse": self.total_impulse,
+        }
+
+
+# ── CGS → SI normalisation ───────────────────────────────────────────────────
+
+_CGS_LENGTH_KEYS: frozenset[str] = frozenset({
+    "airframe_cg", "airframe_len", "radius", "nose_len",
+    "fin_root", "fin_tip", "fin_span", "fin_pos", "motor_pos", "rail",
+})
+
+_CGS_MASS_KEYS: frozenset[str] = frozenset({
+    "airframe_mass", "motor_dry_mass",
+})
+
+
+def normalize_rocket_parameters(raw_params: dict) -> dict:
+    """Convert rocket parameters from CGS units to SI units in-place copy.
+
+    Length keys (cm → m, ÷ 100): airframe_cg, airframe_len, radius,
+        nose_len, fin_root, fin_tip, fin_span, fin_pos, motor_pos, rail.
+
+    Mass keys (g → kg, ÷ 1000): airframe_mass, motor_dry_mass.
+
+    All other keys are passed through unchanged.
+
+    Args:
+        raw_params: Flat parameter dict with values in CGS units.
+
+    Returns:
+        New dict with length keys divided by 100 and mass keys divided
+        by 1000.  The original dict is not mutated.
+    """
+    out = dict(raw_params)
+    for key in _CGS_LENGTH_KEYS:
+        if key in out:
+            out[key] = float(out[key]) / 100.0
+    for key in _CGS_MASS_KEYS:
+        if key in out:
+            out[key] = float(out[key]) / 1000.0
+    return out
+
 
 def load_motor_csv(filepath: str) -> MotorData:
     """Parse a RockSim-format motor CSV file and return a :class:`MotorData`.

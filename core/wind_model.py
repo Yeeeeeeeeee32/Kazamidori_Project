@@ -46,6 +46,7 @@ then converting back at the end.  atan2 handles the zero-vector case.
 from __future__ import annotations
 
 import math
+import random as _random_mod
 from typing import NamedTuple, Union
 
 
@@ -100,6 +101,51 @@ def uv_to_speed_dir(u: float, v: float) -> tuple[float, float]:
         return 0.0, 0.0
     dir_deg = math.degrees(math.atan2(-u, -v)) % 360.0
     return speed, dir_deg
+
+
+# ── Gust layer ────────────────────────────────────────────────────────────────
+
+def apply_gust(
+    u_prof: list[tuple[float, float]],
+    v_prof: list[tuple[float, float]],
+    gust_intensity: float,
+    rng: _random_mod.Random,
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """Apply independent per-level Gaussian gust noise to a U/V wind profile.
+
+    Unlike the synoptic perturbation in ``_perturb_wind_profile`` (which
+    applies a single coherent speed-scale and direction rotation across all
+    altitudes), this function adds *independent* additive noise at every
+    level.  This models sub-grid turbulence that a rocket experiences as it
+    passes through each altitude band.
+
+    The noise is disabled when *gust_intensity* is zero or negative so that
+    callers can unconditionally call this function without a guard.
+
+    Args:
+        u_prof:         list of (alt_m, u_m_s) — east wind component.
+        v_prof:         list of (alt_m, v_m_s) — north wind component.
+        gust_intensity: 1-σ absolute gust noise in m/s.  Values ≤ 0 are
+                        treated as "no gust" and the input profiles are
+                        returned unchanged.
+        rng:            Seeded :class:`random.Random` instance.
+
+    Returns:
+        ``(u_out, v_out)`` — new profile lists with gust noise applied.
+        The altitude coordinates are preserved exactly.
+    """
+    if gust_intensity <= 0.0 or not u_prof:
+        return list(u_prof), list(v_prof)
+
+    sigma  = float(gust_intensity)
+    u_out: list[tuple[float, float]] = []
+    v_out: list[tuple[float, float]] = []
+
+    for (alt_u, u), (_, v) in zip(u_prof, v_prof):
+        u_out.append((alt_u, u + rng.gauss(0.0, sigma)))
+        v_out.append((alt_u, v + rng.gauss(0.0, sigma)))
+
+    return u_out, v_out
 
 
 # ── Wind profile factory ───────────────────────────────────────────────────────

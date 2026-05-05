@@ -63,6 +63,7 @@ from typing import Optional
 import numpy as np
 
 from .simulation import simulate_once
+from .wind_model import apply_gust
 
 
 # ── Chi-squared 2-DOF quantile table ─────────────────────────────────────────
@@ -110,8 +111,9 @@ def _perturb_wind_profile(
     v_prof: list[tuple[float, float]],
     rng: _random_mod.Random,
     wind_uncertainty: float,
+    gust_intensity: float = 0.0,
 ) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
-    """Perturb a wind profile at every altitude level with two-component noise.
+    """Perturb a wind profile at every altitude level with three-layer noise.
 
     *Global layer* (synoptic variability):
         A single speed-scale factor and direction rotation are sampled
@@ -121,11 +123,17 @@ def _perturb_wind_profile(
         Independent additive Gaussian noise at each level, scaled to the
         local wind speed so jet-stream layers are perturbed proportionally.
 
+    *Gust layer* (sub-grid turbulence):
+        Independent absolute Gaussian noise at each level with 1-σ =
+        *gust_intensity* m/s.  Applied after the synoptic and mesoscale
+        layers.  Disabled when gust_intensity ≤ 0.
+
     Args:
         u_prof:           list of (alt_m, u_m_s) — east wind component.
         v_prof:           list of (alt_m, v_m_s) — north wind component.
         rng:              seeded Random instance.
         wind_uncertainty: fractional 1-σ uncertainty (e.g. 0.10 = ±10 %).
+        gust_intensity:   absolute 1-σ gust noise in m/s (default 0 = off).
 
     Returns:
         (u_perturbed, v_perturbed, speed_profile)
@@ -140,9 +148,8 @@ def _perturb_wind_profile(
     dir_rot      = rng.gauss(0.0, wu * math.pi / 6.0)
     cos_r, sin_r = math.cos(dir_rot), math.sin(dir_rot)
 
-    u_new:   list[tuple[float, float]] = []
-    v_new:   list[tuple[float, float]] = []
-    spd_out: list[tuple[float, float]] = []
+    u_new: list[tuple[float, float]] = []
+    v_new: list[tuple[float, float]] = []
 
     for (alt_u, u_nom), (_, v_nom) in zip(u_prof, v_prof):
         u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
@@ -150,12 +157,13 @@ def _perturb_wind_profile(
 
         local_spd = math.hypot(u_nom, v_nom)
         sigma     = wu * max(local_spd, 1.0) * 0.30
-        u_p = u_g + rng.gauss(0.0, sigma)
-        v_p = v_g + rng.gauss(0.0, sigma)
+        u_new.append((alt_u, u_g + rng.gauss(0.0, sigma)))
+        v_new.append((alt_u, v_g + rng.gauss(0.0, sigma)))
 
-        u_new.append((alt_u, u_p))
-        v_new.append((alt_u, v_p))
-        spd_out.append((alt_u, math.hypot(u_p, v_p)))
+    # Gust layer: per-level independent noise applied after synoptic+mesoscale
+    u_new, v_new = apply_gust(u_new, v_new, gust_intensity, rng)
+
+    spd_out = [(alt, math.hypot(u, v)) for (alt, u), (_, v) in zip(u_new, v_new)]
 
     return u_new, v_new, spd_out
 
@@ -167,6 +175,7 @@ def run_mc_scatter(
     n_runs: int,
     wind_uncertainty: float,
     thrust_uncertainty: float,
+    gust_intensity: float = 0.0,
     stop_flag: Optional[threading.Event] = None,
 ) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
     """Run n_runs Monte-Carlo simulations and return landing scatter.
@@ -181,6 +190,8 @@ def run_mc_scatter(
         n_runs:              Number of MC trials.
         wind_uncertainty:    Fractional 1-σ wind uncertainty (e.g. 0.10).
         thrust_uncertainty:  Fractional 1-σ thrust uncertainty (e.g. 0.05).
+        gust_intensity:      Absolute 1-σ per-level gust noise in m/s
+                             (default 0 = disabled).
         stop_flag:           Optional threading.Event; set to abort early.
 
     Returns:
@@ -195,6 +206,7 @@ def run_mc_scatter(
     rng        = _random_mod.Random()
     wu         = max(wind_uncertainty,   0.0)
     tu         = max(thrust_uncertainty, 0.0)
+    gi         = max(gust_intensity,     0.0)
     raw_thrust = params['thrust_data']
     elev       = params['elev']
     azi        = params['azi']
@@ -205,7 +217,9 @@ def run_mc_scatter(
         if stop_flag is not None and stop_flag.is_set():
             break
 
-        u_prof, v_prof, spd_prof = _perturb_wind_profile(base_u, base_v, rng, wu)
+        u_prof, v_prof, spd_prof = _perturb_wind_profile(
+            base_u, base_v, rng, wu, gust_intensity=gi
+        )
 
         thrust_scale = max(0.1, 1.0 + rng.gauss(0.0, tu))
         perturbed    = [[t, T * thrust_scale] for (t, T) in raw_thrust]
