@@ -90,6 +90,22 @@ class AppState(QObject):
     # be emitted independently (e.g. when only wind params change).
     needs_redraw = Signal()
 
+    # ── Smart redraw signals ───────────────────────────────────────────────────
+    # needs_full_redraw: new simulation data arrived — full canvas repaint needed.
+    needs_full_redraw    = Signal(dict)
+    # needs_partial_redraw: UI-only param changed (e.g. landing_probability) —
+    # only recompute overlays from cached_mc_scatter, never re-run simulation.
+    needs_partial_redraw = Signal()
+    # simulation_started / simulation_finished bracket each worker run so views
+    # can transition between idle / busy / results states cleanly.
+    simulation_started   = Signal()
+    simulation_finished  = Signal(dict)
+
+    # ── Overlay display parameter signals ─────────────────────────────────────
+    landing_probability_changed       = Signal(int)
+    wind_uncertainty_display_changed  = Signal(float)
+    cached_mc_scatter_changed         = Signal(object)
+
     # ── Wind / Phase 2 operational signals ────────────────────────────────────
     # wind_updated: lightweight ping after every append_wind_reading call.
     # Observers that only need to know "new data arrived" connect here instead
@@ -104,6 +120,12 @@ class AppState(QObject):
     # tolerance_status_changed: emitted only when the status string transitions
     # (e.g. "✓ In bounds" → "⚠ EXCEEDED" or back).  Used to toggle GO/NO-GO.
     tolerance_status_changed = Signal(str)
+
+    # ── Simulation busy flag ───────────────────────────────────────────────────
+    # Emitted True the instant a worker thread is launched; False the instant it
+    # finishes, errors, or is cancelled.  Views subscribe here to wipe stale
+    # simulation artifacts before new results arrive, eliminating data ghosting.
+    is_calculating_changed = Signal(bool)
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -163,6 +185,12 @@ class AppState(QObject):
         # CEP probability — UI-driven percentile; changing it redraws, not re-simulates
         self._cep_probability: float = 90.0
 
+        # Overlay display parameters — drive partial redraws without re-simulation
+        self._landing_probability      = int(cfg.get("landing_prob", 90))
+        self._wind_uncertainty_display = float(cfg.get("wind_uncertainty", 0.20))
+        # Stores the raw MC scatter as a numpy array; None until first simulation.
+        self._cached_mc_scatter        = None
+
         # Phase 2 baseline — nominal wind at the moment Phase 1 was executed.
         # Stored so the tolerance monitor can compute Δwind vs. the simulation.
         self._nominal_surf_speed: float = 0.0
@@ -171,6 +199,9 @@ class AppState(QObject):
         # Current human-readable tolerance status string (compared on every
         # tick to avoid emitting tolerance_status_changed on every second).
         self._tolerance_status: str = ""
+
+        # Simulation busy flag — True while a SimulationWorker thread is live.
+        self._is_calculating: bool = False
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
@@ -606,3 +637,63 @@ class AppState(QObject):
         self.simulation_result_changed.emit(value)
         # Broadcast a unified redraw notification after every new result.
         self.needs_redraw.emit()
+
+    # ── Overlay display parameters ─────────────────────────────────────────────
+
+    @Property(int, notify=landing_probability_changed)
+    def landing_probability(self) -> int:
+        """Percentile used for error-ellipse and KDE overlays (default 90).
+
+        Changing this emits needs_partial_redraw so overlays are recomputed
+        from cached_mc_scatter without triggering a new simulation run.
+        """
+        return self._landing_probability
+
+    @landing_probability.setter
+    def landing_probability(self, value: int) -> None:
+        value = int(value)
+        if self._landing_probability != value:
+            self._landing_probability = value
+            self.landing_probability_changed.emit(value)
+            self.needs_partial_redraw.emit()
+
+    @Property(float, notify=wind_uncertainty_display_changed)
+    def wind_uncertainty_display(self) -> float:
+        """Scaling factor for the wind-induced dispersion display overlay."""
+        return self._wind_uncertainty_display
+
+    @wind_uncertainty_display.setter
+    def wind_uncertainty_display(self, value: float) -> None:
+        value = float(value)
+        if self._wind_uncertainty_display != value:
+            self._wind_uncertainty_display = value
+            self.wind_uncertainty_display_changed.emit(value)
+
+    @Property(object, notify=cached_mc_scatter_changed)
+    def cached_mc_scatter(self):
+        """Raw MC landing scatter as numpy.ndarray of shape (N, 2).
+
+        Columns: [x_east_m, y_north_m] in the ENU metric frame.
+        None until the first simulation run completes.  Never cleared by a
+        partial redraw — the controller only replaces this on a new full run.
+        """
+        return self._cached_mc_scatter
+
+    @cached_mc_scatter.setter
+    def cached_mc_scatter(self, value) -> None:
+        self._cached_mc_scatter = value
+        self.cached_mc_scatter_changed.emit(value)
+
+    # ── Simulation busy flag ───────────────────────────────────────────────────
+
+    @Property(bool, notify=is_calculating_changed)
+    def is_calculating(self) -> bool:
+        """True while a SimulationWorker thread is live, False otherwise."""
+        return self._is_calculating
+
+    @is_calculating.setter
+    def is_calculating(self, value: bool) -> None:
+        value = bool(value)
+        if self._is_calculating != value:
+            self._is_calculating = value
+            self.is_calculating_changed.emit(value)

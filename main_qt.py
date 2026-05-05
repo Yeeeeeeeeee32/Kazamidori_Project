@@ -7,7 +7,7 @@ Responsibilities
 1. Construct QApplication.
 2. Build the shared AppState (cross-component data bus for computed results).
 3. Show AppWindow (which owns its own reactive plot-state internally).
-4. Wire RUN / STOP buttons → SimulationWorker via SimController.
+4. Wire RUN / STOP buttons -> SimulationWorker via SimController.
 5. Route worker signals back to AppWindow public API and AppState properties.
 6. Start the Qt event loop.
 
@@ -50,8 +50,8 @@ class SimController(QObject):
 
     Does not contain any simulation logic.  Its only job:
 
-        button click  →  disable UI  →  build worker  →  start thread
-        worker signal →  update AppState / AppWindow public API  →  re-enable UI
+        button click  ->  disable UI  ->  build worker  ->  start thread
+        worker signal ->  update AppState / AppWindow public API  ->  re-enable UI
 
     Stop semantics
     --------------
@@ -67,8 +67,8 @@ class SimController(QObject):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._window: AppWindow         = window
-        self._state:  AppState          = state
+        self._window: AppWindow               = window
+        self._state:  AppState                = state
         self._worker: SimulationWorker | None = None
 
         self._rewire_buttons()
@@ -84,8 +84,8 @@ class SimController(QObject):
         # status bar with current numbers each time so the operator sees the
         # live drift estimate.
         state.tolerance_exceeded.connect(self._on_tolerance_exceeded)
-        # tolerance_status_changed fires only on transitions (✓ → ⚠ or back);
-        # use it to flip the GO/NO-GO indicator without visual chatter.
+        # tolerance_status_changed fires only on transitions (OK -> breach or
+        # back); use it to flip the GO/NO-GO indicator without visual chatter.
         state.tolerance_status_changed.connect(self._on_tolerance_status_changed)
 
         # ── Continuous wind monitor ────────────────────────────────────────────
@@ -124,8 +124,8 @@ class SimController(QObject):
 
         self._state.mc_running = True
         self._set_run_buttons_enabled(False)
-        self._window.set_status("Simulation running…", "#f9e2af")
-        self._window.set_progress(0, "Simulating…")
+        self._window.set_status("Simulation running...", "#f9e2af")
+        self._window.set_progress(0, "Simulating...")
 
         self._worker = SimulationWorker(self._collect_params(), parent=self)
         self._worker.progress.connect(self._on_progress)
@@ -146,15 +146,15 @@ class SimController(QObject):
         """
         if self._worker and self._worker.isRunning():
             self._worker.stop()
-            self._window.set_status("Stop requested — waiting for current run…",
-                                    "#f38ba8")
-            self._window.set_progress(0, "Stopping…")
+            self._window.set_status(
+                "Stop requested — waiting for current run...", "#f38ba8")
+            self._window.set_progress(0, "Stopping...")
 
     # ── Worker signal slots (invoked on the GUI thread via queued connection) ──
 
     @Slot(int)
     def _on_progress(self, value: int) -> None:
-        self._window.set_progress(value, f"Simulating…  {value}%")
+        self._window.set_progress(value, f"Simulating...  {value}%")
 
     @Slot(dict)
     def _on_finished(self, result: dict) -> None:
@@ -167,7 +167,7 @@ class SimController(QObject):
             self._set_run_buttons_enabled(True)
             return
 
-        # ── Convert metric impact offsets → geographic coordinates ─────────────
+        # ── Convert metric impact offsets -> geographic coordinates ───────────
         # impact_x = East offset (m), impact_y = North offset (m) from launch.
         lat     = self._window.lat_input.value()
         lon     = self._window.lon_input.value()
@@ -180,22 +180,20 @@ class SimController(QObject):
                     if cos_lat > 1e-9 else lon)
 
         # ── Push scalar summaries into individual AppState properties ─────────
-        # These allow fine-grained observation by future views (map circles,
-        # Phase 2 overlay, …) without them needing to unpack the full dict.
         self._state.land_lat       = land_lat
         self._state.land_lon       = land_lon
         self._state.r90_radius     = result.get("r_N_radius",  0.0)
         self._state.mc_cep         = result.get("cep",         0.0)
         self._state.has_sim_result = True
-        self._state.mc_scatter     = result.get("scatter",      [])
+        self._state.mc_scatter     = result.get("scatter",     [])
         self._state.mc_ellipse     = result.get("ellipse")
         self._state.kde_contours   = result.get("kde_contours", [])
 
-        # ── Refresh AppWindow's public-API widgets ─────────────────────────────
+        # ── Refresh AppWindow coordinate labels ────────────────────────────────
         self._window.map_widget.update_landing(land_lat, land_lon)
 
         # ── Write to global AppState last — emits simulation_result_changed
-        #    AND needs_redraw (via signal bridge → window.state.needs_redraw).
+        #    AND needs_redraw (via signal bridge -> window.state.needs_redraw).
         self._state.simulation_result = result
 
         # ── Write adapted payload to AppWindow's local state ───────────────────
@@ -247,7 +245,7 @@ class SimController(QObject):
         drift estimate update each second.  GO/NO-GO is handled by the
         transition slot below to avoid flickering on every tick.
         """
-        self._window.set_status(f"⚠  TOLERANCE EXCEEDED  —  {msg}", "#f38ba8")
+        self._window.set_status(f"WARNING  TOLERANCE EXCEEDED  —  {msg}", "#f38ba8")
 
     @Slot(str)
     def _on_tolerance_status_changed(self, status: str) -> None:
@@ -257,10 +255,9 @@ class SimController(QObject):
         GO/NO-GO eliminates visual chatter: the indicator flips exactly once
         per transition, not once per second.
         """
-        in_bounds = status.startswith("✓")
+        in_bounds = status.startswith("✓")  # "✓"
         self._window.set_go_nogo(in_bounds)
         if in_bounds:
-            # Restore a clean status bar message when tolerance recovers.
             self._window.set_status(
                 f"Phase 2  (monitoring)  —  {status}", "#a6e3a1"
             )
@@ -271,25 +268,20 @@ class SimController(QObject):
         """Read every relevant input widget and return a flat params dict."""
         w = self._window
         return {
-            # Simulation setup
-            "cep_prob":   w.cep_prob_input.value(),      # percentile (50–99)
+            "cep_prob":   w.cep_prob_input.value(),
             "sim_mode":   w.sim_mode_combo.currentText(),
-            # Launch site
             "launch_lat": w.lat_input.value(),
             "launch_lon": w.lon_input.value(),
-            # Launch geometry
-            "elev":       w.elev_input.value(),           # elevation angle (°)
-            "azim":       w.azim_input.value(),           # azimuth (°)
-            # Wind observations (used by _build_wind_profiles)
-            "surf_spd":   w.surf_spd_input.value(),       # surface speed (m/s)
-            "surf_dir":   w.surf_dir_input.value(),       # surface FROM dir (°)
-            "up_spd":     w.up_spd_input.value(),         # upper speed (m/s)
-            "up_dir":     w.up_dir_input.value(),         # upper FROM dir (°)
-            "upper_alt":  500.0,                          # assumed upper obs alt (m AGL)
-            # Monte Carlo settings
+            "elev":       w.elev_input.value(),
+            "azim":       w.azim_input.value(),
+            "surf_spd":   w.surf_spd_input.value(),
+            "surf_dir":   w.surf_dir_input.value(),
+            "up_spd":     w.up_spd_input.value(),
+            "up_dir":     w.up_dir_input.value(),
+            "upper_alt":  500.0,
             "mc_runs":    w.mc_runs_input.value(),
-            "wind_unc":   w.wind_unc_input.value(),       # fractional 1-σ
-            "thrust_unc": w.thrust_unc_input.value(),     # fractional 1-σ
+            "wind_unc":   w.wind_unc_input.value(),
+            "thrust_unc": w.thrust_unc_input.value(),
         }
 
     @Slot()
@@ -322,10 +314,10 @@ class SimController(QObject):
     def _adapt_for_window(result: dict) -> dict:
         """Remap worker payload keys to the schema AppWindow renderers expect.
 
-        The worker emits generic physics keys (x_vals, scatter, impact_x, …).
+        The worker emits generic physics keys (x_vals, scatter, impact_x, ...).
         AppWindow's _draw_real_result / update_map_plot read UI-centric aliases
-        (trajectory_x, mc_scatter_x, land_x, cep_ellipses, …).  All values are
-        converted to native Python types so no numpy scalars reach the Qt layer.
+        (trajectory_x, mc_scatter_x, land_x, cep_ellipses, ...).  All values
+        are converted to native Python types so no numpy scalars reach Qt.
         """
         sc   = result.get("scatter", [])
         prob = result.get("landing_prob", 90)
