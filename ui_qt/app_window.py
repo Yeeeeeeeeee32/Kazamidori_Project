@@ -240,6 +240,8 @@ QProgressBar::chunk { background: #89b4fa; border-radius: 3px; }
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: #1e1e2e; }
 QFormLayout QLabel { color: #a6adc8; }
+QMainWindow::separator { width: 2px; height: 2px; background: #313244; }
+QMainWindow::separator:hover { background: #45475a; }
 """
 
 
@@ -554,11 +556,11 @@ class AppWindow(QMainWindow):
 
     def _build_profile_dock_widget(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setHandleWidth(5)
+        splitter.setHandleWidth(2)
 
         top = QWidget(splitter)
         tl  = QVBoxLayout(top)
-        tl.setContentsMargins(2, 2, 2, 2)
+        tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(0)
         nav3d = NavigationToolbar2QT(self.profile_canvas, top)
         nav3d.setIconSize(QSize(14, 14))
@@ -567,10 +569,10 @@ class AppWindow(QMainWindow):
 
         bot = QWidget(splitter)
         bl  = QVBoxLayout(bot)
-        bl.setContentsMargins(2, 2, 2, 2)
+        bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(0)
-        hdr = QLabel("  Wind Profile  ·  Time-Series (60 s)", bot)
-        hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 2px 4px;")
+        hdr = QLabel("  Wind Profile  ·  60-s Spaghetti", bot)
+        hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
         nav_w = NavigationToolbar2QT(self.wind_canvas, bot)
         nav_w.setIconSize(QSize(14, 14))
         bl.addWidget(hdr)
@@ -579,7 +581,7 @@ class AppWindow(QMainWindow):
 
         splitter.addWidget(top)
         splitter.addWidget(bot)
-        splitter.setSizes([580, 320])
+        splitter.setSizes([600, 300])
         return splitter
 
     # ── Parameters panel (settings dock) ──────────────────────────────────────
@@ -587,8 +589,8 @@ class AppWindow(QMainWindow):
     def _build_parameters_panel(self) -> QWidget:
         container = QWidget()
         lay = QVBoxLayout(container)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 0, 0, 4)
+        lay.setSpacing(2)
 
         tb = QToolBox(container)
         tb.addItem(self._build_settings_page(),     "⚙   Settings")
@@ -703,54 +705,103 @@ class AppWindow(QMainWindow):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(8)
 
-        self.motor_label = QLabel("(none selected)", w)
-        self.motor_label.setStyleSheet(
-            "color: #fab387; font-style: italic; padding: 4px;")
-        self.motor_label.setWordWrap(True)
-
-        btn_motor = QPushButton("📂  Load Motor File", w)
+        btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
         btn_motor.clicked.connect(self._on_load_motor)
 
-        grp     = QGroupBox("Thrust Curve", w)
-        grp_lay = QFormLayout(grp)
-        grp_lay.setSpacing(5)
-        self._motor_isp_lbl    = QLabel("—", grp)
-        self._motor_thrust_lbl = QLabel("—", grp)
-        self._motor_burn_lbl   = QLabel("—", grp)
-        grp_lay.addRow("Motor:",      self.motor_label)
-        grp_lay.addRow("Avg Thrust:", self._motor_thrust_lbl)
-        grp_lay.addRow("Burn Time:",  self._motor_burn_lbl)
-        grp_lay.addRow("Total Isp:",  self._motor_isp_lbl)
+        self.motor_label = QLabel("(none selected)", w)
+        self.motor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.motor_label.setStyleSheet(
+            "color: #fab387; font-style: italic; font-size: 8pt; padding: 2px 4px;")
+        self.motor_label.setWordWrap(True)
 
-        lay.addWidget(grp)
+        # ── Read-only motor spec summary ──────────────────────────────────────
+        grp     = QGroupBox("Motor Specifications", w)
+        grp_lay = QFormLayout(grp)
+        grp_lay.setSpacing(6)
+        grp_lay.setContentsMargins(10, 10, 10, 8)
+
+        _tag = (
+            "QLabel { color: #cdd6f4; background: #181825; font-weight: bold; "
+            "font-family: 'Consolas', monospace; padding: 3px 8px; "
+            "border-radius: 4px; border: 1px solid #45475a; }"
+        )
+
+        self.lbl_avg_thrust    = QLabel("—", grp)
+        self.lbl_max_thrust    = QLabel("—", grp)
+        self.lbl_burn_time     = QLabel("—", grp)
+        self.lbl_total_impulse = QLabel("—", grp)
+        for _lbl in (self.lbl_avg_thrust, self.lbl_max_thrust,
+                     self.lbl_burn_time, self.lbl_total_impulse):
+            _lbl.setStyleSheet(_tag)
+
+        grp_lay.addRow("Avg Thrust:",    self.lbl_avg_thrust)
+        grp_lay.addRow("Max Thrust:",    self.lbl_max_thrust)
+        grp_lay.addRow("Burn Time:",     self.lbl_burn_time)
+        grp_lay.addRow("Total Impulse:", self.lbl_total_impulse)
+
         lay.addWidget(btn_motor)
+        lay.addWidget(self.motor_label)
+        lay.addWidget(grp)
         lay.addStretch()
         return w
 
     # ── Airframe page ──────────────────────────────────────────────────────────
+    # Units: CGMS — lengths in cm (from nose tip), mass in g, delay in s.
 
-    def _build_airframe_page(self) -> QWidget:
+    def _build_airframe_page(self) -> QScrollArea:
         w   = QWidget()
         frm = QFormLayout(w)
-        frm.setSpacing(6)
+        frm.setSpacing(5)
         frm.setContentsMargins(8, 8, 8, 8)
 
-        self._mass_input = QDoubleSpinBox(w)
-        self._mass_input.setRange(0.1, 50.0); self._mass_input.setDecimals(3)
-        self._mass_input.setValue(0.500);      self._mass_input.setSuffix(" kg")
+        def _dsb(lo, hi, val, dec, suffix, parent=w):
+            sb = QDoubleSpinBox(parent)
+            sb.setRange(lo, hi); sb.setDecimals(dec)
+            sb.setValue(val);    sb.setSuffix(suffix)
+            return sb
 
-        self._cd_input = QDoubleSpinBox(w)
-        self._cd_input.setRange(0.01, 5.0); self._cd_input.setDecimals(3)
-        self._cd_input.setValue(0.470)
+        # ── Mass / balance ────────────────────────────────────────────────────
+        self.af_mass_input   = _dsb(1,   50_000, 1000.0, 1, " g")
+        self.af_cg_input     = _dsb(0,     500,    50.0, 1, " cm")
 
-        self._area_input = QDoubleSpinBox(w)
-        self._area_input.setRange(0.0001, 0.5); self._area_input.setDecimals(6)
-        self._area_input.setValue(0.007854);     self._area_input.setSuffix(" m²")
+        # ── Body geometry ─────────────────────────────────────────────────────
+        self.af_len_input    = _dsb(1,     500,   110.0, 1, " cm")
+        self.af_radius_input = _dsb(0.5,    30,     3.5, 2, " cm")
+        self.af_nose_input   = _dsb(1,     200,    20.0, 1, " cm")
 
-        frm.addRow("Dry Mass:",   self._mass_input)
-        frm.addRow("Drag Coeff:", self._cd_input)
-        frm.addRow("Ref. Area:",  self._area_input)
-        return w
+        # ── Fins (measured from nose tip per CGS spec) ────────────────────────
+        self.af_finroot_input = _dsb(0.5,  100,  12.0, 1, " cm")
+        self.af_fintip_input  = _dsb(0.5,  100,   6.0, 1, " cm")
+        self.af_finspan_input = _dsb(0.5,  100,   8.0, 1, " cm")
+        self.af_finpos_input  = _dsb(0,    500,  95.0, 1, " cm")
+
+        # ── Motor mount ───────────────────────────────────────────────────────
+        self.af_motorpos_input  = _dsb(0,   500,  100.0, 1, " cm")
+        self.af_motormass_input = _dsb(0, 5_000,  100.0, 1, " g")
+        self.af_backfire_input  = _dsb(0,    10,    0.5, 2, " s")
+
+        frm.addRow("Mass:",               self.af_mass_input)
+        frm.addRow("CG (from nose):",     self.af_cg_input)
+        frm.addRow(QLabel(""))
+        frm.addRow("Airframe Length:",    self.af_len_input)
+        frm.addRow("Airframe Radius:",    self.af_radius_input)
+        frm.addRow("Nose Length:",        self.af_nose_input)
+        frm.addRow(QLabel(""))
+        frm.addRow("Fin Root Chord:",     self.af_finroot_input)
+        frm.addRow("Fin Tip Chord:",      self.af_fintip_input)
+        frm.addRow("Fin Semi-Span:",      self.af_finspan_input)
+        frm.addRow("Fin LE Position:",    self.af_finpos_input)
+        frm.addRow(QLabel(""))
+        frm.addRow("Motor CG Position:",  self.af_motorpos_input)
+        frm.addRow("Motor Dry Mass:",     self.af_motormass_input)
+        frm.addRow("Backfire Delay:",     self.af_backfire_input)
+
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setFrameShape(QFrame.Shape.NoFrame)
+        sa.setWidget(w)
+        return sa
 
     # ── Launch Point page ──────────────────────────────────────────────────────
 
@@ -1286,13 +1337,54 @@ class AppWindow(QMainWindow):
 
     def _on_load_motor(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Motor File", "", "Thrust CSV (*.csv);;All Files (*)")
-        if path:
-            import os
-            name = os.path.basename(path)
-            self.motor_label.setText(name)
-            self.motor_label.setStyleSheet("color: #a6e3a1; font-style: normal;")
-            self.set_status(f"Motor loaded: {name}")
+            self, "Load Thrust Curve", "",
+            "Thrust CSV (*.csv);;All Files (*)")
+        if not path:
+            return
+
+        import os, csv as _csv
+
+        name = os.path.basename(path)
+        try:
+            thrust_data: list[tuple[float, float]] = []
+            with open(path, newline='', encoding='utf-8-sig') as f:
+                for row in _csv.reader(f):
+                    if not row or row[0].strip().startswith(('#', ';', '!')):
+                        continue
+                    try:
+                        thrust_data.append((float(row[0]), float(row[1])))
+                    except (ValueError, IndexError):
+                        continue
+
+            if len(thrust_data) >= 2:
+                burn_time = thrust_data[-1][0] - thrust_data[0][0]
+                max_thrust = max(F for _, F in thrust_data)
+                # Trapezoidal total impulse
+                total_impulse = sum(
+                    (thrust_data[i + 1][1] + thrust_data[i][1]) * 0.5
+                    * (thrust_data[i + 1][0] - thrust_data[i][0])
+                    for i in range(len(thrust_data) - 1)
+                )
+                avg_thrust = (total_impulse / burn_time) if burn_time > 0 else 0.0
+
+                self.lbl_avg_thrust.setText(f"{avg_thrust:.1f} N")
+                self.lbl_max_thrust.setText(f"{max_thrust:.1f} N")
+                self.lbl_burn_time.setText(f"{burn_time:.3f} s")
+                self.lbl_total_impulse.setText(f"{total_impulse:.1f} Ns")
+                self.motor_label.setText(name)
+                self.motor_label.setStyleSheet(
+                    "color: #a6e3a1; font-style: normal; font-size: 8pt; padding: 2px 4px;")
+                self.set_status(
+                    f"Motor: {name}  ·  Avg {avg_thrust:.1f} N  ·  "
+                    f"Max {max_thrust:.1f} N  ·  Burn {burn_time:.3f} s",
+                    "#a6e3a1")
+            else:
+                self.motor_label.setText(f"{name}  (no data)")
+                self.set_status(f"No valid thrust rows found in {name}", "#f38ba8")
+
+        except Exception as exc:
+            self.motor_label.setText(f"{name}  (error)")
+            self.set_status(f"Motor load error: {exc}", "#f38ba8")
 
     def _on_mode_changed(self, mode: str) -> None:
         visible = mode in ("Precision Landing", "Winged Hover", "Altitude Competition")

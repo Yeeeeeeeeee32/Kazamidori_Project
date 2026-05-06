@@ -28,11 +28,14 @@ import random
 import sys
 import time as _time
 
+import numpy as np
 from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
+from ui_qt.plot_view import PlotView
+from ui_qt.map_view import MapView
 from ui_qt.workers import SimulationWorker
 
 DEFAULT_CONFIG: dict = {
@@ -96,6 +99,23 @@ class SimController(QObject):
         self._wind_timer.timeout.connect(self._on_wind_tick)
         self._wind_timer.start()
 
+        # ── Inject dedicated PlotView and MapView into docks ──────────────────
+        # Replace the placeholder matplotlib canvases built by AppWindow with
+        # reactive QWidget views that subscribe directly to AppState signals.
+        self._plot_view = PlotView(state)
+        window.profile_dock.setWidget(self._plot_view)
+
+        self._map_view = MapView(state)
+        window.map_dock.setWidget(self._map_view)
+
+        # ── Partial-redraw wiring (no re-simulation) ───────────────────────────
+        # cep_prob_input value change → update landing_probability on AppState →
+        # needs_partial_redraw → _on_partial_redraw recomputes overlays only.
+        state.needs_partial_redraw.connect(self._on_partial_redraw)
+        _cep_input = getattr(window, 'cep_prob_input', None)
+        if _cep_input is not None:
+            _cep_input.valueChanged.connect(self._on_landing_prob_changed)
+
     # ── Button rewiring ────────────────────────────────────────────────────────
 
     def _rewire_buttons(self) -> None:
@@ -123,6 +143,8 @@ class SimController(QObject):
             return  # guard against double-click spam
 
         self._state.mc_running = True
+        self._state.simulation_started.emit()
+        self._state.is_calculating = True
         self._set_run_buttons_enabled(False)
         self._window.set_status("Simulation running...", "#f9e2af")
         self._window.set_progress(0, "Simulating...")
@@ -161,6 +183,7 @@ class SimController(QObject):
         self._state.mc_running = False
 
         if result.get("cancelled"):
+            self._state.is_calculating = False
             self._window.set_status("Simulation cancelled.", "#a6adc8")
             self._window.set_progress(0, "Idle")
             self._worker = None
@@ -224,12 +247,26 @@ class SimController(QObject):
             "#a6e3a1",
         )
         self._window.set_progress(100, "Done")
+
+        # Cache scatter as numpy so partial redraws (cep_prob change) can
+        # recompute the error ellipse without re-running the simulation.
+        _scatter_raw = result.get("scatter", [])
+        self._state.cached_mc_scatter = (
+            np.array(_scatter_raw, dtype=np.float64) if _scatter_raw else None
+        )
+
+        # Broadcast smart-redraw lifecycle signals.
+        self._state.needs_full_redraw.emit(result)
+        self._state.simulation_finished.emit(result)
+        self._state.is_calculating = False
+
         self._worker = None
         self._set_run_buttons_enabled(True)
 
     @Slot(str)
     def _on_error(self, msg: str) -> None:
         self._state.mc_running = False
+        self._state.is_calculating = False
         self._window.set_status(f"Simulation error: {msg}", "#f38ba8")
         self._window.set_progress(0, "Error")
         self._worker = None
@@ -294,6 +331,10 @@ class SimController(QObject):
         # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
         self._state.append_wind_reading(speed, direction)
 
+        # Keep upper-wind state current so PlotView spaghetti/quiver are calibrated.
+        self._state.upper_wind_speed = self._window.up_spd_input.value()
+        self._state.upper_wind_dir   = self._window.up_dir_input.value()
+
         # AppWindow local state: (timestamp_s, speed_m_s) tuples for the plot.
         ts = _time.monotonic()
         history = list(self._window.state.wind_history)
@@ -344,6 +385,16 @@ class SimController(QObject):
             "cep_ellipses": cep_ellipses,
         })
         return adapted
+
+    @Slot()
+    def _on_partial_redraw(self) -> None:
+        """Recompute overlays at the new landing_probability without re-simulating."""
+        self._window.update_visual_overlays(self._state)
+
+    @Slot(int)
+    def _on_landing_prob_changed(self, value: int) -> None:
+        """Propagate cep_prob_input change to AppState.landing_probability."""
+        self._state.landing_probability = value
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
         for btn in self._window.findChildren(QPushButton, "btn_run"):
