@@ -116,6 +116,30 @@ class SimController(QObject):
         if _cep_input is not None:
             _cep_input.valueChanged.connect(self._on_landing_prob_changed)
 
+        # ── Mode ComboBox → AppState.flight_mode ───────────────────────────────
+        # UI → AppState binding: sim_mode_combo drives flight_mode so the worker
+        # never reads the widget directly.
+        _mode_combo = getattr(window, 'sim_mode_combo', None)
+        if _mode_combo is not None:
+            state.flight_mode = _mode_combo.currentText()   # sync initial value
+            _mode_combo.currentTextChanged.connect(self._on_flight_mode_changed)
+
+        # ── Gust Input → AppState.gust_speed ───────────────────────────────────
+        # Accepts both QDoubleSpinBox (valueChanged→float) and QLineEdit
+        # (textChanged→str).  QDoubleSpinBox is preferred; QLineEdit fallback
+        # converts the text via float() with a silent no-op on parse failure.
+        _gust_input = getattr(window, 'gust_input', None)
+        if _gust_input is not None:
+            if hasattr(_gust_input, 'valueChanged'):
+                state.gust_speed = float(_gust_input.value())
+                _gust_input.valueChanged.connect(self._on_gust_speed_changed)
+            elif hasattr(_gust_input, 'textChanged'):
+                try:
+                    state.gust_speed = float(_gust_input.text())
+                except ValueError:
+                    pass
+                _gust_input.textChanged.connect(self._on_gust_speed_text_changed)
+
     # ── Button rewiring ────────────────────────────────────────────────────────
 
     def _rewire_buttons(self) -> None:
@@ -302,11 +326,18 @@ class SimController(QObject):
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _collect_params(self) -> dict:
-        """Read every relevant input widget and return a flat params dict."""
+        """Build the flat params dict passed to SimulationWorker.
+
+        Unidirectional flow: UI widgets → AppState (via bound slots) → here.
+        flight_mode, gust_speed, and all 12 rocket geometry properties are
+        read from AppState (never from widgets) to keep the worker thread
+        free of any UI coupling.
+        """
         w = self._window
+        s = self._state
         return {
+            # ── Simulation / wind config (widget-sourced) ──────────────────────
             "cep_prob":   w.cep_prob_input.value(),
-            "sim_mode":   w.sim_mode_combo.currentText(),
             "launch_lat": w.lat_input.value(),
             "launch_lon": w.lon_input.value(),
             "elev":       w.elev_input.value(),
@@ -319,7 +350,43 @@ class SimController(QObject):
             "mc_runs":    w.mc_runs_input.value(),
             "wind_unc":   w.wind_unc_input.value(),
             "thrust_unc": w.thrust_unc_input.value(),
+            # ── Mode and gust — sourced from AppState ──────────────────────────
+            "flight_mode": s.flight_mode,
+            "gust_speed":  s.gust_speed,
+            # ── 12 rocket geometry params — sourced from AppState ──────────────
+            # Key names match _DEFAULT_ROCKET in workers.py so SimulationWorker
+            # merges them directly without translation.
+            "airframe_mass":  s.rocket_dry_mass,
+            "airframe_cg":    s.rocket_cg,
+            "airframe_len":   s.rocket_length,
+            "radius":         s.rocket_diameter / 2.0,  # AppState stores diameter
+            "nose_len":       s.nose_length,
+            "fin_root":       s.fin_root_chord,
+            "fin_tip":        s.fin_tip_chord,
+            "fin_span":       s.fin_span,
+            "fin_pos":        s.fin_position,
+            "motor_pos":      s.motor_cg,
+            "motor_dry_mass": s.motor_dry_mass,
+            "para_area":      s.parachute_area,
         }
+
+    @Slot(str)
+    def _on_flight_mode_changed(self, mode: str) -> None:
+        """Propagate Mode ComboBox selection to AppState.flight_mode."""
+        self._state.flight_mode = mode
+
+    @Slot(float)
+    def _on_gust_speed_changed(self, value: float) -> None:
+        """Propagate QDoubleSpinBox gust value to AppState.gust_speed."""
+        self._state.gust_speed = value
+
+    @Slot(str)
+    def _on_gust_speed_text_changed(self, text: str) -> None:
+        """Propagate QLineEdit gust text to AppState.gust_speed (silent on parse fail)."""
+        try:
+            self._state.gust_speed = float(text)
+        except ValueError:
+            pass
 
     @Slot()
     def _on_wind_tick(self) -> None:

@@ -127,6 +127,31 @@ class AppState(QObject):
     # simulation artifacts before new results arrive, eliminating data ghosting.
     is_calculating_changed = Signal(bool)
 
+    # ── Rocket geometry parameters ─────────────────────────────────────────────
+    # One signal per physical dimension so views can bind selectively.
+    rocket_dry_mass_changed = Signal(float)   # airframe dry mass (kg)
+    rocket_cg_changed       = Signal(float)   # airframe CG from nose (m)
+    rocket_length_changed   = Signal(float)   # total airframe length (m)
+    rocket_diameter_changed = Signal(float)   # body diameter in metres (= 2×radius)
+    nose_length_changed     = Signal(float)   # nose cone length (m)
+    fin_root_chord_changed  = Signal(float)   # fin root chord (m)
+    fin_tip_chord_changed   = Signal(float)   # fin tip chord (m)
+    fin_span_changed        = Signal(float)   # fin semi-span (m)
+    fin_position_changed    = Signal(float)   # fin leading-edge position from nose (m)
+    motor_cg_changed        = Signal(float)   # motor CG from nose (m)
+    motor_dry_mass_changed  = Signal(float)   # motor dry mass (kg)
+    parachute_area_changed  = Signal(float)   # parachute reference area (m²)
+
+    # ── Engine / motor metadata ────────────────────────────────────────────────
+    # Emitted when load_engine() is called with a parsed motor CSV.
+    # Payload: {"file_path": str, "avg_thrust": float,
+    #           "burn_time": float, "curve_data": list}
+    engine_loaded = Signal(dict)
+
+    # ── Flight mode ────────────────────────────────────────────────────────────
+    # Mission profile selected by the operator (e.g. "Altitude", "Precision").
+    flight_mode_changed = Signal(str)
+
     # ──────────────────────────────────────────────────────────────────────────
 
     def __init__(self, config: Optional[dict] = None, parent=None) -> None:
@@ -202,6 +227,23 @@ class AppState(QObject):
 
         # Simulation busy flag — True while a SimulationWorker thread is live.
         self._is_calculating: bool = False
+
+        # Rocket geometry parameters (defaults mirror _DEFAULT_ROCKET in workers.py)
+        self._rocket_dry_mass  = float(cfg.get("rocket_dry_mass",  1.0))
+        self._rocket_cg        = float(cfg.get("rocket_cg",        0.50))
+        self._rocket_length    = float(cfg.get("rocket_length",    1.10))
+        self._rocket_diameter  = float(cfg.get("rocket_diameter",  0.070))  # 70 mm diameter
+        self._nose_length      = float(cfg.get("nose_length",      0.20))
+        self._fin_root_chord   = float(cfg.get("fin_root_chord",   0.12))
+        self._fin_tip_chord    = float(cfg.get("fin_tip_chord",    0.06))
+        self._fin_span         = float(cfg.get("fin_span",         0.08))
+        self._fin_position     = float(cfg.get("fin_position",     0.95))
+        self._motor_cg         = float(cfg.get("motor_cg",         1.00))
+        self._motor_dry_mass   = float(cfg.get("motor_dry_mass",   0.10))
+        self._parachute_area   = float(cfg.get("parachute_area",   0.28))
+
+        # Flight mode — mission profile selected by the operator
+        self._flight_mode: str = str(cfg.get("flight_mode", "Altitude"))
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
@@ -697,3 +739,193 @@ class AppState(QObject):
         if self._is_calculating != value:
             self._is_calculating = value
             self.is_calculating_changed.emit(value)
+
+    # ── Rocket geometry parameters ─────────────────────────────────────────────
+
+    @Property(float, notify=rocket_dry_mass_changed)
+    def rocket_dry_mass(self) -> float:
+        """Airframe dry mass in kg (maps to 'airframe_mass' in workers.py)."""
+        return self._rocket_dry_mass
+
+    @rocket_dry_mass.setter
+    def rocket_dry_mass(self, value: float) -> None:
+        value = float(value)
+        if self._rocket_dry_mass != value:
+            self._rocket_dry_mass = value
+            self.rocket_dry_mass_changed.emit(value)
+
+    @Property(float, notify=rocket_cg_changed)
+    def rocket_cg(self) -> float:
+        """Airframe centre of gravity from nose in m (maps to 'airframe_cg')."""
+        return self._rocket_cg
+
+    @rocket_cg.setter
+    def rocket_cg(self, value: float) -> None:
+        value = float(value)
+        if self._rocket_cg != value:
+            self._rocket_cg = value
+            self.rocket_cg_changed.emit(value)
+
+    @Property(float, notify=rocket_length_changed)
+    def rocket_length(self) -> float:
+        """Total airframe length in m (maps to 'airframe_len')."""
+        return self._rocket_length
+
+    @rocket_length.setter
+    def rocket_length(self, value: float) -> None:
+        value = float(value)
+        if self._rocket_length != value:
+            self._rocket_length = value
+            self.rocket_length_changed.emit(value)
+
+    @Property(float, notify=rocket_diameter_changed)
+    def rocket_diameter(self) -> float:
+        """Body diameter in m (= 2 × body radius; maps to 'radius' × 0.5 in workers)."""
+        return self._rocket_diameter
+
+    @rocket_diameter.setter
+    def rocket_diameter(self, value: float) -> None:
+        value = float(value)
+        if self._rocket_diameter != value:
+            self._rocket_diameter = value
+            self.rocket_diameter_changed.emit(value)
+
+    @Property(float, notify=nose_length_changed)
+    def nose_length(self) -> float:
+        """Nose cone length in m (maps to 'nose_len')."""
+        return self._nose_length
+
+    @nose_length.setter
+    def nose_length(self, value: float) -> None:
+        value = float(value)
+        if self._nose_length != value:
+            self._nose_length = value
+            self.nose_length_changed.emit(value)
+
+    @Property(float, notify=fin_root_chord_changed)
+    def fin_root_chord(self) -> float:
+        """Fin root chord length in m (maps to 'fin_root')."""
+        return self._fin_root_chord
+
+    @fin_root_chord.setter
+    def fin_root_chord(self, value: float) -> None:
+        value = float(value)
+        if self._fin_root_chord != value:
+            self._fin_root_chord = value
+            self.fin_root_chord_changed.emit(value)
+
+    @Property(float, notify=fin_tip_chord_changed)
+    def fin_tip_chord(self) -> float:
+        """Fin tip chord length in m (maps to 'fin_tip')."""
+        return self._fin_tip_chord
+
+    @fin_tip_chord.setter
+    def fin_tip_chord(self, value: float) -> None:
+        value = float(value)
+        if self._fin_tip_chord != value:
+            self._fin_tip_chord = value
+            self.fin_tip_chord_changed.emit(value)
+
+    @Property(float, notify=fin_span_changed)
+    def fin_span(self) -> float:
+        """Fin semi-span in m (maps to 'fin_span')."""
+        return self._fin_span
+
+    @fin_span.setter
+    def fin_span(self, value: float) -> None:
+        value = float(value)
+        if self._fin_span != value:
+            self._fin_span = value
+            self.fin_span_changed.emit(value)
+
+    @Property(float, notify=fin_position_changed)
+    def fin_position(self) -> float:
+        """Fin leading-edge position from nose in m (maps to 'fin_pos')."""
+        return self._fin_position
+
+    @fin_position.setter
+    def fin_position(self, value: float) -> None:
+        value = float(value)
+        if self._fin_position != value:
+            self._fin_position = value
+            self.fin_position_changed.emit(value)
+
+    @Property(float, notify=motor_cg_changed)
+    def motor_cg(self) -> float:
+        """Motor centre of gravity from nose in m (maps to 'motor_pos')."""
+        return self._motor_cg
+
+    @motor_cg.setter
+    def motor_cg(self, value: float) -> None:
+        value = float(value)
+        if self._motor_cg != value:
+            self._motor_cg = value
+            self.motor_cg_changed.emit(value)
+
+    @Property(float, notify=motor_dry_mass_changed)
+    def motor_dry_mass(self) -> float:
+        """Motor dry (post-burn) mass in kg (maps to 'motor_dry_mass')."""
+        return self._motor_dry_mass
+
+    @motor_dry_mass.setter
+    def motor_dry_mass(self, value: float) -> None:
+        value = float(value)
+        if self._motor_dry_mass != value:
+            self._motor_dry_mass = value
+            self.motor_dry_mass_changed.emit(value)
+
+    @Property(float, notify=parachute_area_changed)
+    def parachute_area(self) -> float:
+        """Parachute reference area in m² (maps to 'para_area')."""
+        return self._parachute_area
+
+    @parachute_area.setter
+    def parachute_area(self, value: float) -> None:
+        value = float(value)
+        if self._parachute_area != value:
+            self._parachute_area = value
+            self.parachute_area_changed.emit(value)
+
+    # ── Engine / motor loader ─────────────────────────────────────────────────
+
+    def load_engine(
+        self,
+        file_path: str,
+        avg_thrust: float,
+        burn_time: float,
+        curve_data: list,
+    ) -> None:
+        """Store motor metadata and broadcast it to all interested views.
+
+        Called by whatever UI component parses the motor CSV.  The payload
+        dict matches the engine_loaded signal's documented schema so receivers
+        do not need to know the caller's internal representation.
+
+        Parameters
+        ----------
+        file_path  : Absolute path of the source CSV file.
+        avg_thrust : Mean thrust over the burn (N).
+        burn_time  : Total burn duration (s).
+        curve_data : Raw thrust curve as a list of [time_s, thrust_N] pairs.
+        """
+        payload: dict = {
+            "file_path":  str(file_path),
+            "avg_thrust": float(avg_thrust),
+            "burn_time":  float(burn_time),
+            "curve_data": list(curve_data),
+        }
+        self.engine_loaded.emit(payload)
+
+    # ── Flight mode ────────────────────────────────────────────────────────────
+
+    @Property(str, notify=flight_mode_changed)
+    def flight_mode(self) -> str:
+        """Mission profile (e.g. 'Altitude', 'Precision', 'Winged')."""
+        return self._flight_mode
+
+    @flight_mode.setter
+    def flight_mode(self, value: str) -> None:
+        value = str(value)
+        if self._flight_mode != value:
+            self._flight_mode = value
+            self.flight_mode_changed.emit(value)
