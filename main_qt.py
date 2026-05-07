@@ -33,9 +33,7 @@ from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton
 
 from ui_qt.app_state import AppState
-from ui_qt.app_window import AppWindow
-from ui_qt.plot_view import PlotView
-from ui_qt.map_view import MapView
+from ui_qt.app_window import AppWindow, GLOBAL_QSS
 from ui_qt.workers import SimulationWorker
 from utils.data_loader import AirframeConfigError, load_airframe_config
 
@@ -100,15 +98,6 @@ class SimController(QObject):
         self._wind_timer.timeout.connect(self._on_wind_tick)
         self._wind_timer.start()
 
-        # ── Inject dedicated PlotView and MapView into docks ──────────────────
-        # Replace the placeholder matplotlib canvases built by AppWindow with
-        # reactive QWidget views that subscribe directly to AppState signals.
-        self._plot_view = PlotView(state)
-        window.profile_dock.setWidget(self._plot_view)
-
-        self._map_view = MapView(state)
-        window.map_dock.setWidget(self._map_view)
-
         # ── Partial-redraw wiring (no re-simulation) ───────────────────────────
         # cep_prob_input value change → update landing_probability on AppState →
         # needs_partial_redraw → _on_partial_redraw recomputes overlays only.
@@ -120,7 +109,7 @@ class SimController(QObject):
         # ── Mode ComboBox → AppState.flight_mode ───────────────────────────────
         # UI → AppState binding: sim_mode_combo drives flight_mode so the worker
         # never reads the widget directly.
-        _mode_combo = getattr(window, 'sim_mode_combo', None)
+        _mode_combo = getattr(window, 'mode_combo', None)
         if _mode_combo is not None:
             state.flight_mode = _mode_combo.currentText()   # sync initial value
             _mode_combo.currentTextChanged.connect(self._on_flight_mode_changed)
@@ -182,6 +171,10 @@ class SimController(QObject):
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
             btn.clicked.disconnect()
             btn.clicked.connect(self._on_stop_clicked)
+
+        for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
+            btn.clicked.disconnect()
+            btn.clicked.connect(self._on_run_clicked)
 
     # ── Run ────────────────────────────────────────────────────────────────────
 
@@ -664,6 +657,8 @@ class SimController(QObject):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Task 4: enforce high-contrast dark theme globally before any widget is shown.
+    app.setStyleSheet(GLOBAL_QSS)
 
     # Shared data bus: holds computed simulation results for all future views.
     app_state = AppState(config=DEFAULT_CONFIG)

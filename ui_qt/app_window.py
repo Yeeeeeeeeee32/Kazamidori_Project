@@ -28,7 +28,7 @@ from matplotlib.figure import Figure
 
 from PySide6.QtCore import Qt, QSize, QObject, Signal, QTimer
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QDockWidget, QWidget,
+    QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox,
     QComboBox, QPushButton, QToolBar, QStatusBar,
@@ -123,142 +123,135 @@ class AppState(QObject):
         self.needs_redraw.emit()
 
 
-# ── High-contrast dark palette ────────────────────────────────────────────────
-# Base: very dark navy (#12121e) / surface (#1e1e30) / elevated (#2a2a3e)
-# Accent blue: #7eb3ff  — strong blue, readable on dark
-# Accent green: #a8e6a1  Accent red: #f38ba8  Accent purple: #c5a5f7
-# Text primary: #eef0f8  Text secondary: #b8bcd8  Text muted: #7a7e9a
+# ── Global dark theme ─────────────────────────────────────────────────────────
+# Task 4 colour contract:
+#   Background  : #2b2b2b   Text       : #ffffff
+#   Input bg    : #3c3c3c   Deep bg    : #1e1e1e
+#   Border      : #555555   Accent blue: #7eb3ff
 _QSS = """
 QMainWindow, QWidget {
-    background-color: #1e1e30;
-    color: #eef0f8;
+    background-color: #2b2b2b;
+    color: #ffffff;
     font-family: "Segoe UI", "SF Pro Text", Arial, sans-serif;
     font-size: 9pt;
 }
-QDialog {
-    background-color: #1e1e30;
-    color: #eef0f8;
-}
-QDockWidget { color: #eef0f8; font-weight: bold; }
-QDockWidget::title {
-    background: #2a2a3e; padding: 5px 10px;
-    border-bottom: 2px solid #7eb3ff; text-align: left;
-}
-QDockWidget::close-button, QDockWidget::float-button {
-    border: none; background: transparent; padding: 2px;
-}
+QDialog { background-color: #2b2b2b; color: #ffffff; }
 QToolBox::tab {
-    background: #2a2a3e; color: #7eb3ff; font-weight: bold;
+    background: #3c3c3c; color: #7eb3ff; font-weight: bold;
     font-size: 8pt; padding: 6px 10px;
-    border: 1px solid #3a3a52; border-radius: 4px; margin-bottom: 2px;
+    border: 1px solid #555555; border-radius: 4px; margin-bottom: 2px;
 }
-QToolBox::tab:selected { background: #3a3a52; color: #c5a5f7; border-color: #c5a5f7; }
-QToolBox::tab:hover    { background: #32324a; border-color: #7eb3ff; }
-QSplitter::handle       { background: #3a3a52; }
-QSplitter::handle:hover { background: #7eb3ff; }
+QToolBox::tab:selected { background: #4a4a4a; color: #c5a5f7; border-color: #c5a5f7; }
+QToolBox::tab:hover    { background: #444444; border-color: #7eb3ff; }
+QSplitter::handle         { background: #555555; width: 4px; height: 4px; }
+QSplitter::handle:hover   { background: #7eb3ff; }
 QGroupBox {
-    border: 1px solid #3a3a52; border-radius: 6px; margin-top: 12px;
+    border: 1px solid #555555; border-radius: 6px; margin-top: 12px;
     padding: 8px 6px 6px 6px; font-weight: bold; font-size: 8pt; color: #7eb3ff;
 }
 QGroupBox::title {
     subcontrol-origin: margin; left: 10px; padding: 0 4px;
-    background-color: #1e1e30;
+    background-color: #2b2b2b;
 }
 QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
-    background: #2a2a3e; border: 1px solid #3a3a52; border-radius: 4px;
-    padding: 3px 6px; color: #eef0f8; min-width: 80px;
+    background: #3c3c3c; border: 1px solid #555555; border-radius: 4px;
+    padding: 3px 6px; color: #ffffff; min-width: 80px;
 }
 QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {
-    border-color: #7eb3ff; background: #32324a;
+    border-color: #7eb3ff; background: #444444;
+}
+QLineEdit:disabled, QDoubleSpinBox:disabled,
+QSpinBox:disabled,  QComboBox:disabled {
+    background: #333333; color: #777777; border-color: #444444;
 }
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
 QSpinBox::up-button,       QSpinBox::down-button {
-    background: #3a3a52; border: none; width: 16px; border-radius: 2px;
+    background: #555555; border: none; width: 16px; border-radius: 2px;
 }
 QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
-QSpinBox::up-button:hover,       QSpinBox::down-button:hover {
-    background: #4a4a62;
-}
+QSpinBox::up-button:hover,       QSpinBox::down-button:hover { background: #666666; }
 QComboBox::drop-down { border: none; width: 20px; }
 QComboBox QAbstractItemView {
-    background: #2a2a3e; border: 1px solid #3a3a52;
-    selection-background-color: #3a3a52; color: #eef0f8; outline: none;
+    background: #3c3c3c; border: 1px solid #555555;
+    selection-background-color: #555555; color: #ffffff; outline: none;
 }
 QPushButton {
-    background: #2a2a3e; border: 1px solid #3a3a52; border-radius: 5px;
-    padding: 5px 14px; color: #eef0f8; font-weight: bold;
+    background: #3c3c3c; border: 1px solid #555555; border-radius: 5px;
+    padding: 5px 14px; color: #ffffff; font-weight: bold;
 }
-QPushButton:hover   { background: #3a3a52; border-color: #7eb3ff; }
-QPushButton:pressed { background: #7eb3ff; color: #12121e; }
-QPushButton#btn_run  { background: #a8e6a1; color: #12121e; border-color: #a8e6a1; }
+QPushButton:hover    { background: #4a4a4a; border-color: #7eb3ff; }
+QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
+QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
+QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
 QPushButton#btn_run:hover  { background: #8ed9a8; }
-QPushButton#btn_mc   { background: #7eb3ff; color: #12121e; border-color: #7eb3ff; }
+QPushButton#btn_mc   { background: #7eb3ff; color: #1e1e1e; border-color: #7eb3ff; }
 QPushButton#btn_mc:hover   { background: #9dc5ff; }
-QPushButton#btn_stop { background: #f38ba8; color: #12121e; border-color: #f38ba8; }
+QPushButton#btn_stop { background: #f38ba8; color: #1e1e1e; border-color: #f38ba8; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
 QPushButton#btn_phase1_run {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 #c5a5f7, stop:1 #7eb3ff);
-    color: #12121e; border: none; border-radius: 6px;
+    color: #1e1e1e; border: none; border-radius: 6px;
     font-size: 10pt; font-weight: bold; padding: 10px 16px;
 }
 QPushButton#btn_phase1_run:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 #d4b5ff, stop:1 #9dc5ff);
 }
-QPushButton#btn_phase1_run:pressed { background: #7eb3ff; color: #12121e; }
+QPushButton#btn_phase1_run:pressed { background: #7eb3ff; color: #1e1e1e; }
 QPushButton#btn_adv_settings {
-    background: transparent; border: 1px solid #3a3a52; border-radius: 4px;
-    padding: 4px 10px; color: #b8bcd8; font-size: 8pt;
+    background: transparent; border: 1px solid #555555; border-radius: 4px;
+    padding: 4px 10px; color: #aaaaaa; font-size: 8pt;
 }
-QPushButton#btn_adv_settings:hover { border-color: #7eb3ff; color: #eef0f8; }
+QPushButton#btn_adv_settings:hover { border-color: #7eb3ff; color: #ffffff; }
 QToolBar {
-    background: #12121e; border: none;
-    border-bottom: 1px solid #2a2a3e; padding: 3px 6px; spacing: 4px;
+    background: #1e1e1e; border: none;
+    border-bottom: 1px solid #3c3c3c; padding: 3px 6px; spacing: 4px;
 }
 QToolBar QToolButton {
     background: transparent; border: 1px solid transparent;
-    border-radius: 4px; padding: 3px 8px; color: #eef0f8;
+    border-radius: 4px; padding: 3px 8px; color: #ffffff;
 }
-QToolBar QToolButton:hover   { background: #2a2a3e; border-color: #3a3a52; }
-QToolBar QToolButton:pressed { background: #3a3a52; }
-QMenuBar { background: #12121e; color: #eef0f8; border-bottom: 1px solid #2a2a3e; }
+QToolBar QToolButton:hover   { background: #3c3c3c; border-color: #555555; }
+QToolBar QToolButton:pressed { background: #555555; }
+QMenuBar { background: #1e1e1e; color: #ffffff; border-bottom: 1px solid #3c3c3c; }
 QMenuBar::item { padding: 5px 12px; background: transparent; }
-QMenuBar::item:selected { background: #2a2a3e; border-radius: 3px; }
+QMenuBar::item:selected { background: #3c3c3c; border-radius: 3px; }
 QMenu {
-    background: #1e1e30; border: 1px solid #3a3a52;
+    background: #2b2b2b; border: 1px solid #555555;
     border-radius: 4px; padding: 4px;
 }
 QMenu::item { padding: 5px 20px 5px 12px; border-radius: 3px; }
-QMenu::item:selected { background: #2a2a3e; color: #7eb3ff; }
-QMenu::separator { height: 1px; background: #3a3a52; margin: 3px 8px; }
+QMenu::item:selected { background: #3c3c3c; color: #7eb3ff; }
+QMenu::separator { height: 1px; background: #555555; margin: 3px 8px; }
 QStatusBar {
-    background: #12121e; color: #b8bcd8;
-    border-top: 1px solid #2a2a3e; font-size: 8pt;
+    background: #1e1e1e; color: #aaaaaa;
+    border-top: 1px solid #3c3c3c; font-size: 8pt;
 }
 QStatusBar::item { border: none; }
-QScrollBar:vertical   { background: #1e1e30; width: 8px;  margin: 0; }
-QScrollBar:horizontal { background: #1e1e30; height: 8px; }
+QScrollBar:vertical   { background: #2b2b2b; width: 8px;  margin: 0; }
+QScrollBar:horizontal { background: #2b2b2b; height: 8px; }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #3a3a52; border-radius: 4px;
+    background: #555555; border-radius: 4px;
     min-height: 24px; min-width: 24px;
 }
 QScrollBar::handle:vertical:hover,
-QScrollBar::handle:horizontal:hover { background: #4a4a62; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
+QScrollBar::handle:horizontal:hover { background: #666666; }
+QScrollBar::add-line:vertical,  QScrollBar::sub-line:vertical,
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { height: 0; width: 0; }
 QProgressBar {
-    background: #2a2a3e; border: 1px solid #3a3a52; border-radius: 4px;
-    text-align: center; color: #eef0f8; font-size: 8pt; max-height: 18px;
+    background: #3c3c3c; border: 1px solid #555555; border-radius: 4px;
+    text-align: center; color: #ffffff; font-size: 8pt; max-height: 18px;
 }
 QProgressBar::chunk { background: #7eb3ff; border-radius: 3px; }
 QScrollArea { border: none; background: transparent; }
-QScrollArea > QWidget > QWidget { background: #1e1e30; }
-QLabel { color: #eef0f8; }
-QFormLayout QLabel { color: #b8bcd8; }
-QMainWindow::separator { width: 2px; height: 2px; background: #2a2a3e; }
-QMainWindow::separator:hover { background: #3a3a52; }
+QScrollArea > QWidget > QWidget { background: #2b2b2b; }
+QLabel { color: #ffffff; }
+QFormLayout QLabel { color: #aaaaaa; }
 """
+
+# Exported so main_qt.py can apply it to QApplication (global scope)
+GLOBAL_QSS = _QSS
 
 
 # ── Advanced Settings Dialog ──────────────────────────────────────────────────
@@ -517,7 +510,6 @@ class AppWindow(QMainWindow):
     allow_unc_input                   : QDoubleSpinBox  (in AdvancedSettingsDialog)
     landing_prob_combo                : QComboBox       (in AdvancedSettingsDialog)
     wind_speed_input, wind_dir_input  : QDoubleSpinBox  (aliases → surf_spd/dir)
-    sim_mode_combo                    : QComboBox       (in Parameters dock)
     lat_input, lon_input              : QDoubleSpinBox  (in Launch Settings tab)
     elev_input, azim_input            : QDoubleSpinBox  (in Launch Settings tab)
     motor_label                       : QLabel          (in Airframe tab)
@@ -536,8 +528,7 @@ class AppWindow(QMainWindow):
 
     sig_load_json_clicked = Signal()
 
-    OPERATION_MODES = ("Altitude Competition", "Precision Landing",
-                       "Winged Hover", "Free")
+    OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -546,12 +537,11 @@ class AppWindow(QMainWindow):
         self.setWindowTitle("Kazamidori Project")
         self.resize(1600, 900)
         self.setMinimumSize(960, 640)
-        self.setDockNestingEnabled(True)
 
-        # Ignored-policy placeholder keeps docks filling the full client area.
-        _ph = QWidget(self)
-        _ph.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.setCentralWidget(_ph)
+        # Task 1: QSplitter is the central widget — no QDockWidgets anywhere.
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._main_splitter.setChildrenCollapsible(False)
+        self.setCentralWidget(self._main_splitter)
 
         self._apply_theme()
         self._build_figures()
@@ -577,8 +567,7 @@ class AppWindow(QMainWindow):
         self.wind_speed_input   = self._adv_dialog.surf_spd_input
         self.wind_dir_input     = self._adv_dialog.surf_dir_input
 
-        self._setup_docks()
-        self._setup_layout()
+        self._setup_splitter()
         self._bind_state()
 
     # ── Theme ──────────────────────────────────────────────────────────────────
@@ -597,10 +586,11 @@ class AppWindow(QMainWindow):
         self.map_ax     = self.map_fig.add_subplot(111)
         self.map_canvas = _MplCanvas(self.map_fig)
 
-        self.wind_fig     = Figure(figsize=(5, 3), facecolor="#1e1e2e")
-        self.wind_ax_prof = self.wind_fig.add_subplot(121)
-        self.wind_ax_ts   = self.wind_fig.add_subplot(122)
-        self.wind_canvas  = _MplCanvas(self.wind_fig)
+        # Single polar compass — replaces the old two-subplot wind figure.
+        # Task 3: WindProfile axes deleted; only the compass survives.
+        self.wind_fig    = Figure(figsize=(4, 4), facecolor="#1e1e1e")
+        self.wind_ax     = self.wind_fig.add_subplot(111, projection="polar")
+        self.wind_canvas = _MplCanvas(self.wind_fig)
 
         # Overlay artist tracking — populated by update_map_plot() and
         # _render_overlays() so partial redraws can remove exactly these
@@ -646,7 +636,7 @@ class AppWindow(QMainWindow):
 
         btn_run  = QPushButton("▶  Run",     tb); btn_run.setObjectName("btn_run")
         btn_mc   = QPushButton("🎲  MC",      tb); btn_mc.setObjectName("btn_mc")
-        btn_ph1  = QPushButton("🔍  Phase 1", tb)
+        btn_ph1  = QPushButton("🔍  Phase 1", tb); btn_ph1.setObjectName("btn_phase1_run")
         btn_stop = QPushButton("⏹  Stop",    tb); btn_stop.setObjectName("btn_stop")
 
         btn_run.setFixedWidth(90);   btn_run.clicked.connect(self._on_run)
@@ -690,43 +680,21 @@ class AppWindow(QMainWindow):
         sb.addWidget(self._status_label, stretch=1)
         sb.addPermanentWidget(self._wind_status)
 
-    # ── Dock creation ─────────────────────────────────────────────────────────
+    # ── 3-column splitter layout ──────────────────────────────────────────────
+    #
+    # Build order: map panel FIRST so self.map_widget exists before
+    # _build_parameters_panel() wires the lat/lon lambda closures.
+    # Splitter insertion order (left → right): params | profile | map.
 
-    def _setup_docks(self) -> None:
-        _features = (
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
+    def _setup_splitter(self) -> None:
+        self._map_panel     = self._build_map_dock_widget()
+        self._params_panel  = self._build_parameters_panel()
+        self._profile_panel = self._build_profile_dock_widget()
 
-        # map_dock must be created FIRST so self.map_widget exists before
-        # _build_parameters_panel() wires the lat/lon lambda closures.
-        self.map_dock = QDockWidget("Map View", self)
-        self.map_dock.setObjectName("MapDock")
-        self.map_dock.setFeatures(_features)
-        self.map_dock.setWidget(self._build_map_dock_widget())
+        for panel in (self._params_panel, self._profile_panel, self._map_panel):
+            self._main_splitter.addWidget(panel)
 
-        self.parameters_dock = QDockWidget("Parameters", self)
-        self.parameters_dock.setObjectName("ParametersDock")
-        self.parameters_dock.setFeatures(_features)
-        self.parameters_dock.setWidget(self._build_parameters_panel())
-
-        self.profile_dock = QDockWidget("Flight Profile", self)
-        self.profile_dock.setObjectName("ProfileDock")
-        self.profile_dock.setFeatures(_features)
-        self.profile_dock.setWidget(self._build_profile_dock_widget())
-
-        for dock in (self.parameters_dock, self.profile_dock, self.map_dock):
-            self._view_menu.addAction(dock.toggleViewAction())
-
-    # ── 3-column layout ───────────────────────────────────────────────────────
-
-    def _setup_layout(self) -> None:
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,  self.parameters_dock)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.profile_dock)
-        self.splitDockWidget(
-            self.profile_dock, self.map_dock, Qt.Orientation.Horizontal)
-
-    # ── Aspect-ratio enforcement ──────────────────────────────────────────────
+    # ── Column sizing (deferred to first paint) ───────────────────────────────
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -734,11 +702,7 @@ class AppWindow(QMainWindow):
 
     def _apply_initial_sizes(self) -> None:
         # parameters: 300 px  |  profile: 650 px  |  map: 650 px
-        self.resizeDocks(
-            [self.parameters_dock, self.profile_dock, self.map_dock],
-            [300, 650, 650],
-            Qt.Orientation.Horizontal,
-        )
+        self._main_splitter.setSizes([300, 650, 650])
 
     # ── Profile dock content (3-D trajectory + wind) ──────────────────────────
 
@@ -759,7 +723,7 @@ class AppWindow(QMainWindow):
         bl  = QVBoxLayout(bot)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(0)
-        hdr = QLabel("  Wind Profile  ·  60-s Spaghetti", bot)
+        hdr = QLabel("  Wind Compass  ·  5 Altitude Nodes", bot)
         hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
         nav_w = NavigationToolbar2QT(self.wind_canvas, bot)
         nav_w.setIconSize(QSize(14, 14))
@@ -788,8 +752,9 @@ class AppWindow(QMainWindow):
 
     def _build_parameters_panel(self) -> QWidget:
         container = QWidget()
+        # Task 2: Expanding in both axes so the panel fills its splitter column.
         container.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay = QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 6)
         lay.setSpacing(4)
@@ -797,7 +762,7 @@ class AppWindow(QMainWindow):
         # ── Two-tab toolbox ───────────────────────────────────────────────────
         tb = QToolBox(container)
         tb.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         tb.addItem(self._build_airframe_page(),        "🚀  Airframe")
         tb.addItem(self._build_launch_settings_page(), "📍  Launch Settings")
         lay.addWidget(tb, stretch=1)
@@ -809,30 +774,27 @@ class AppWindow(QMainWindow):
         lay.addWidget(btn_adv)
 
         # ── Launch Mode (pinned above Run button) ─────────────────────────────
-        mode_grp     = QGroupBox("Launch Mode", container)
+        mode_grp = QGroupBox("Launch Mode", container)
+        mode_grp.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         mode_lay     = QFormLayout(mode_grp)
         mode_lay.setSpacing(5)
         mode_lay.setContentsMargins(10, 10, 10, 8)
 
-        self.sim_mode_combo = QComboBox(mode_grp)
-        self.sim_mode_combo.addItems(["Point-Return", "Altitude", "Glider"])
-        self.sim_mode_combo.setCurrentText("Point-Return")
-
         self.mode_combo = QComboBox(mode_grp)
         self.mode_combo.addItems(self.OPERATION_MODES)
-        self.mode_combo.setCurrentText("Free")
+        self.mode_combo.setCurrentText("自由")
 
         self._rmax_label = QLabel("R_max:", mode_grp)
         self.rmax_input  = QDoubleSpinBox(mode_grp)
         self.rmax_input.setRange(0, 9999); self.rmax_input.setDecimals(1)
         self.rmax_input.setValue(50.0);    self.rmax_input.setSuffix(" m")
 
-        mode_lay.addRow("Sim Mode:",       self.sim_mode_combo)
-        mode_lay.addRow("Operation Mode:", self.mode_combo)
+        mode_lay.addRow("飛行モード:", self.mode_combo)
         mode_lay.addRow(self._rmax_label,  self.rmax_input)
 
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-        self._on_mode_changed("Free")
+        self._on_mode_changed("自由")
 
         lay.addWidget(mode_grp)
 
@@ -1042,7 +1004,7 @@ class AppWindow(QMainWindow):
         self.wind_speed_input.valueChanged.connect(lambda v: setattr(s, "wind_speed", v))
         self.wind_dir_input.valueChanged.connect(  lambda v: setattr(s, "wind_dir",   v))
         self.cep_prob_input.valueChanged.connect(  lambda v: setattr(s, "cep_prob",   v))
-        self.sim_mode_combo.currentTextChanged.connect(
+        self.mode_combo.currentTextChanged.connect(
             lambda v: setattr(s, "sim_mode", v))
 
         s.needs_redraw.connect(self.update_profile_plot)
@@ -1278,67 +1240,113 @@ class AppWindow(QMainWindow):
         fig.tight_layout(pad=0.6)
         self.map_canvas.draw()
 
-    # ══ Plot: Wind Profile + Time-Series ═════════════════════════════════════
+    # ── Wind-node colour / label constants ───────────────────────────────────
+    # One entry per WIND_SAMPLE_ALTS level: [3, 10, 150, 300, 600] m
+    _NODE_COLORS = ["#f38ba8", "#fab387", "#f9e2af", "#a6e3a1", "#89b4fa"]
+    _NODE_LABELS = ["3 m", "10 m", "150 m", "300 m", "600 m"]
+
+    # ══ Plot: Polar Wind Compass (5 altitude nodes) ═══════════════════════════
+    #
+    # Task 3: The old WindProfile bar chart and time-series axes are gone.
+    # This method draws ONLY the polar compass (self.wind_ax) with exactly 5
+    # arrows — one per altitude node returned by sample_wind_nodes().
+    #
+    # Arrow convention: tip points in the direction the wind is TRAVELLING
+    # (meteorological FROM direction + 180 °), length ∝ wind speed.
+    # Compass orientation: North at top, clockwise (standard aviation).
 
     def update_wind_plot(self) -> None:
-        fig     = self.wind_fig
-        ax_prof = self.wind_ax_prof
-        ax_ts   = self.wind_ax_ts
-        profile = self.state.wind_profile
-        history = self.state.wind_history
+        fig = self.wind_fig
+        ax  = self.wind_ax
+        ax.cla()
+        fig.patch.set_facecolor("#1e1e1e")
+        ax.set_facecolor("#1a1a2e")
+        ax.tick_params(colors="#555555", labelsize=6)
+        ax.grid(True, color="#333355", linewidth=0.6, alpha=0.7)
 
-        for ax in (ax_prof, ax_ts):
-            ax.cla()
-            _style_2d(ax, bg="#1e1e2e")
-        fig.patch.set_facecolor("#1e1e2e")
+        # Compass orientation: North at top, clockwise (aviation standard)
+        ax.set_theta_zero_location("N")
+        ax.set_theta_direction(-1)
+        ax.set_rlabel_position(135)
 
-        if profile:
-            alts  = np.array([p.get("alt",     0.0) for p in profile])
-            spds  = np.array([p.get("speed",   0.0) for p in profile])
-            dirs  = np.array([p.get("dir_deg", 0.0) for p in profile])
-            bar_h = max(float(alts.max()) / max(len(alts), 1) * 0.7, 5.0)
-            ax_prof.barh(alts, spds, height=bar_h,
-                         color="#89b4fa", alpha=0.70, label="Speed")
-            for alt, spd, d in zip(alts, spds, dirs):
-                u = np.sin(np.radians(d)); v = np.cos(np.radians(d))
-                ax_prof.annotate(
-                    "", xy=(spd + u * 0.8, alt + v * bar_h * 0.3),
-                    xytext=(spd, alt),
-                    arrowprops=dict(arrowstyle="->", color="#f9e2af",
-                                   lw=1.0, alpha=0.75))
-            ax_prof.set_xlabel("Speed (m/s)", color="#6c7086", fontsize=7)
-            ax_prof.set_ylabel("Altitude (m)", color="#6c7086", fontsize=7)
-            ax_prof.legend(fontsize=6, facecolor="#1e1e2e",
-                           edgecolor="#45475a", labelcolor="#cdd6f4")
-        else:
-            ax_prof.text(0.5, 0.5, "No wind profile\navailable",
-                         transform=ax_prof.transAxes, ha="center", va="center",
-                         color="#45475a", fontsize=9, linespacing=1.8)
-        ax_prof.set_title("Wind Profile", color="#a6adc8", fontsize=8)
+        # ── Gather wind-node data ─────────────────────────────────────────────
+        res   = self.state.simulation_result
+        nodes = res.get("wind_nodes", []) if res is not None else []
 
-        if history:
-            times = np.array([h[0] for h in history], dtype=float)
-            spds  = np.array([h[1] for h in history], dtype=float)
-            t_max = times[-1]
-            mask  = times >= (t_max - 60.0)
-            tw    = times[mask] - times[mask][0]
-            sw    = spds[mask]
-            ax_ts.plot(tw, sw, color="#89b4fa", lw=1.2, alpha=0.80,
-                       label="Wind speed")
-            n_ma = max(3, len(sw) // 10)
-            if len(sw) >= n_ma:
-                ma = np.convolve(sw, np.ones(n_ma) / n_ma, mode="valid")
-                ax_ts.plot(tw[n_ma - 1:], ma, color="#f9e2af", lw=1.8,
-                           label=f"MA ({n_ma})")
-            ax_ts.set_xlabel("Time (s)",    color="#6c7086", fontsize=7)
-            ax_ts.set_ylabel("Speed (m/s)", color="#6c7086", fontsize=7)
-            ax_ts.legend(fontsize=6, facecolor="#1e1e2e",
-                         edgecolor="#45475a", labelcolor="#cdd6f4")
-        else:
-            ax_ts.text(0.5, 0.5, "No wind history\navailable",
-                       transform=ax_ts.transAxes, ha="center", va="center",
-                       color="#45475a", fontsize=9, linespacing=1.8)
-        ax_ts.set_title("Wind Time-Series  (last 60 s)", color="#a6adc8", fontsize=8)
+        # Fallback: synthesise a surface node from current spinbox values
+        if not nodes:
+            nodes = [{
+                "alt_m":    3.0,
+                "speed_ms": self.state.wind_speed,
+                "dir_deg":  self.state.wind_dir,
+            }]
+
+        # Normalise arrow lengths to [0, 1] based on the max observed speed.
+        max_spd = max((n["speed_ms"] for n in nodes), default=1.0)
+        max_spd = max(max_spd, 1.0)
+
+        # Radial axis: display speed ticks in m/s
+        ax.set_rmax(1.05)
+        ax.set_rticks([0.25, 0.5, 0.75, 1.0])
+        ax.set_yticklabels(
+            [f"{max_spd * r:.1f}" for r in (0.25, 0.5, 0.75, 1.0)],
+            color="#666666", fontsize=5,
+        )
+
+        # ── Draw one arrow per altitude node ─────────────────────────────────
+        for i, node in enumerate(nodes[:5]):
+            speed    = float(node.get("speed_ms", 0.0))
+            dir_from = float(node.get("dir_deg",  0.0))
+            color    = self._NODE_COLORS[i] if i < len(self._NODE_COLORS) else "#cdd6f4"
+            alt_lbl  = self._NODE_LABELS[i] if i < len(self._NODE_LABELS) else \
+                       f"{node.get('alt_m', '?'):.0f} m"
+
+            # Arrow points TO where the wind travels (away from its source)
+            dir_to = (dir_from + 180.0) % 360.0
+            theta  = np.radians(dir_to)
+            r_norm = speed / max_spd
+
+            # Thick arrow from compass centre to arrow tip
+            ax.annotate(
+                "",
+                xy=(theta, r_norm),
+                xytext=(theta, 0.0),
+                arrowprops=dict(
+                    arrowstyle="-|>",
+                    color=color,
+                    lw=2.0,
+                    mutation_scale=16,
+                ),
+            )
+
+            # Speed label just beyond the arrow tip (clamped inside circle)
+            if r_norm > 0.05:
+                label_r = min(r_norm + 0.09, 1.02)
+                ax.text(
+                    theta, label_r,
+                    f"{speed:.1f}",
+                    fontsize=6, color=color,
+                    ha="center", va="center", fontweight="bold",
+                )
+
+            # Legend proxy (invisible line used only for the legend entry)
+            ax.plot(
+                [], [], color=color, lw=2.5,
+                label=f"{alt_lbl}  {speed:.1f} m/s @ {dir_from:.0f}°",
+            )
+
+        ax.set_title(
+            "Wind Shear  ·  5 Altitude Nodes",
+            color="#aaaaaa", fontsize=8, pad=12,
+        )
+        ax.legend(
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.38),
+            fontsize=6,
+            facecolor="#2b2b2b", edgecolor="#555555",
+            labelcolor="#ffffff", framealpha=0.88,
+            ncol=1,
+        )
 
         fig.tight_layout(pad=0.4)
         self.wind_canvas.draw()
@@ -1512,7 +1520,7 @@ class AppWindow(QMainWindow):
             self.set_status(f"Motor load error: {exc}", "#f38ba8")
 
     def _on_mode_changed(self, mode: str) -> None:
-        visible = mode in ("Precision Landing", "Winged Hover", "Altitude Competition")
+        visible = mode in ("定点滞空", "高度", "有翼")
         self._rmax_label.setVisible(visible)
         self.rmax_input.setVisible(visible)
 

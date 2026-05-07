@@ -7,9 +7,11 @@ entirely off the GUI thread.
 Thread lifecycle
 ----------------
     worker = SimulationWorker(params)
-    worker.progress.connect(progress_bar.setValue)  # 0–100
-    worker.finished.connect(on_finished_slot)        # always emitted
-    worker.error.connect(on_error_slot)              # only on exception
+    worker.progress.connect(progress_bar.setValue)           # 0–100
+    worker.sig_nominal_done.connect(on_nominal_slot)         # fired after nominal run
+    worker.sig_progress_updated.connect(on_mc_tick_slot)     # (current, total) per MC run
+    worker.finished.connect(on_finished_slot)                # always emitted
+    worker.error.connect(on_error_slot)                      # only on exception
     worker.start()   # returns immediately; physics runs on the new thread
 
     worker.stop()    # graceful cancel from any thread
@@ -47,7 +49,7 @@ import traceback
 from PySide6.QtCore import QThread, Signal
 
 from core.simulation   import simulate_once
-from core.wind_model   import create_wind_profile
+from core.wind_model   import create_wind_profile, sample_wind_nodes
 from core.monte_carlo  import (
     run_mc_scatter,
     compute_error_ellipse,
@@ -112,9 +114,11 @@ class SimulationWorker(QThread):
     98 %  packaging result
     """
 
-    progress = Signal(int)   # 0–100
-    finished = Signal(dict)  # always emitted — check result["cancelled"]
-    error    = Signal(str)   # only on unhandled exception
+    progress             = Signal(int)        # 0–100 coarse progress bar
+    finished             = Signal(dict)       # always emitted — check result["cancelled"]
+    error                = Signal(str)        # only on unhandled exception
+    sig_nominal_done     = Signal(dict)       # emitted immediately after nominal run
+    sig_progress_updated = Signal(int, int)   # (current_iteration, total_iterations)
 
     def __init__(self, params: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
@@ -141,9 +145,10 @@ class SimulationWorker(QThread):
     def _run_physics(self) -> dict:
         p = self._params
 
-        # ── Wind profile ───────────────────────────────────────────────────────
+        # ── Wind profile + diagnostic nodes ───────────────────────────────────
         self.progress.emit(2)
         u_prof, v_prof = self._build_wind_profiles(p)
+        wind_nodes = sample_wind_nodes(u_prof, v_prof)
 
         # ── Assemble full simulation params ────────────────────────────────────
         self.progress.emit(5)
@@ -160,11 +165,17 @@ class SimulationWorker(QThread):
             raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
         self.progress.emit(25)
 
+        # ── Emit nominal result immediately — UI can render 3-D plot now ───────
+        # This crosses the thread boundary via Qt's queued connection before
+        # the MC phase begins, so the operator sees the trajectory without
+        # waiting for all Monte Carlo runs to finish.
+        self.sig_nominal_done.emit(self._package_nominal(nominal, wind_nodes))
+
         if self._stop_event.is_set():
             return {"cancelled": True, "has_sim_result": False}
 
-        # ── Monte Carlo loop ───────────────────────────────────────────────────
-        scatter = self._run_mc_batched(sim_params, p)
+        # ── Monte Carlo loop with per-iteration heartbeat ──────────────────────
+        scatter = self._run_mc_loop(sim_params, p)
 
         if self._stop_event.is_set():
             return {
@@ -184,10 +195,9 @@ class SimulationWorker(QThread):
         self.progress.emit(98)
         result = self._package_result(nominal, scatter, stats, prob_pct,
                                       cancelled=self._stop_event.is_set())
-        # Embed the nominal surface wind so the controller can establish the
-        # Phase 2 tolerance baseline without re-reading the UI after the fact.
         result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
         result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
+        result["wind_nodes"]       = wind_nodes
         return result
 
     # ── Step helpers ───────────────────────────────────────────────────────────
@@ -244,16 +254,44 @@ class SimulationWorker(QThread):
                 params[key] = p[key]
         return params
 
-    def _run_mc_batched(
+    @staticmethod
+    def _package_nominal(nominal: dict, wind_nodes: list[dict]) -> dict:
+        """Package the nominal trajectory for sig_nominal_done.
+
+        The UI can connect to sig_nominal_done and render the 3-D trajectory
+        as soon as the nominal run completes — before any MC runs start.
+        Arrays are converted to lists so no numpy types cross the signal
+        boundary.
+        """
+        def _to_list(v):
+            return v.tolist() if hasattr(v, "tolist") else list(v)
+
+        return {
+            "t_vals":     _to_list(nominal["t_vals"]),
+            "x_vals":     _to_list(nominal["x_vals"]),
+            "y_vals":     _to_list(nominal["y_vals"]),
+            "z_vals":     _to_list(nominal["z_vals"]),
+            "apogee_m":   float(nominal["apogee_m"]),
+            "hang_time":  float(nominal["hang_time"]),
+            "impact_x":   float(nominal["impact_x"]),
+            "impact_y":   float(nominal["impact_y"]),
+            "r_horiz":    float(nominal["r_horiz"]),
+            "wind_nodes": wind_nodes,
+        }
+
+    def _run_mc_loop(
         self,
         sim_params: dict,
         p: dict,
     ) -> list[tuple[float, float]]:
-        """
-        Run the full MC scatter in small batches so progress can be emitted
-        between calls.  Each batch calls the canonical run_mc_scatter, which
-        applies the physically correct two-layer wind perturbation from
-        core.monte_carlo._perturb_wind_profile.
+        """Run the MC scatter one iteration at a time, emitting a heartbeat
+        signal after every run.
+
+        sig_progress_updated(i+1, n_total) fires on every iteration so the
+        UI's progress bar updates smoothly without waiting for a batch to
+        complete.  The coarser `progress` signal (0–100 int) is also emitted
+        at the same cadence for backwards compatibility with any slot already
+        connected to it.
 
         Progress moves from 25 % to 90 % as runs complete.
         """
@@ -261,20 +299,22 @@ class SimulationWorker(QThread):
         wind_unc   = float(p.get("wind_unc",   0.20))
         thrust_unc = float(p.get("thrust_unc", 0.05))
         scatter: list[tuple[float, float]] = []
-        n_done = 0
 
-        while n_done < n_total:
+        for i in range(n_total):
             if self._stop_event.is_set():
                 break
-            batch = min(_MC_BATCH_SIZE, n_total - n_done)
+
             batch_scatter, _ = run_mc_scatter(
-                sim_params, batch,
+                sim_params, 1,
                 wind_unc, thrust_unc,
                 stop_flag=self._stop_event,
             )
             scatter.extend(batch_scatter)
-            n_done += batch
-            pct = 25 + int(n_done / n_total * 65)
+
+            # Per-iteration heartbeat — drives fine-grained UI updates
+            self.sig_progress_updated.emit(i + 1, n_total)
+            # Coarse 0-100 progress for any connected progress bar
+            pct = 25 + int((i + 1) / n_total * 65)
             self.progress.emit(min(pct, 90))
 
         return scatter

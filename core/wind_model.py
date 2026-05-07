@@ -4,6 +4,9 @@ Multi-level wind profile factory for RocketPy atmospheric model input.
 
 Public API
 ----------
+WIND_SAMPLE_ALTS : list[float]
+    Fixed diagnostic altitudes (m AGL) used by sample_wind_nodes.
+
 WindLevel
     NamedTuple: (alt_m, speed_ms, dir_deg).
 
@@ -20,6 +23,10 @@ create_wind_profile(gpv_levels, obs_speed, obs_dir,
     GPV data blended with a surface observation.  All interpolation is
     performed on U/V vector components to eliminate the 0°/360° crossover
     discontinuity that appears when interpolating meteorological directions.
+
+sample_wind_nodes(u_prof, v_prof, alts=None) -> list[dict]
+    Extract wind speed, direction, U, and V at five fixed diagnostic
+    altitude nodes so the UI can accurately display vertical wind shear.
 
 COORDINATE CONTRACT
 -------------------
@@ -48,6 +55,14 @@ from __future__ import annotations
 import math
 import random as _random_mod
 from typing import NamedTuple, Union
+
+
+# ── Diagnostic sample altitudes ───────────────────────────────────────────────
+
+# Five fixed nodes that span the boundary layer through the mid-troposphere.
+# Surface (3 m) captures the anemometer reading; 600 m captures free-atmosphere
+# flow above the terrain-influenced layer at typical launch sites.
+WIND_SAMPLE_ALTS: list[float] = [3.0, 10.0, 150.0, 300.0, 600.0]
 
 
 # ── Data type ─────────────────────────────────────────────────────────────────
@@ -101,6 +116,74 @@ def uv_to_speed_dir(u: float, v: float) -> tuple[float, float]:
         return 0.0, 0.0
     dir_deg = math.degrees(math.atan2(-u, -v)) % 360.0
     return speed, dir_deg
+
+
+# ── Profile interpolation helper ─────────────────────────────────────────────
+
+def _interp_profile(prof: list[tuple[float, float]], alt: float) -> float:
+    """Linearly interpolate a sorted (alt_m, value) profile at *alt*.
+
+    Clamps to the first/last value outside the profiled range.
+    """
+    if not prof:
+        return 0.0
+    if alt <= prof[0][0]:
+        return prof[0][1]
+    if alt >= prof[-1][0]:
+        return prof[-1][1]
+    for i in range(len(prof) - 1):
+        a0, v0 = prof[i]
+        a1, v1 = prof[i + 1]
+        if a0 <= alt <= a1:
+            span = a1 - a0
+            if span < 1e-9:
+                return v0
+            return v0 + (v1 - v0) * (alt - a0) / span
+    return prof[-1][1]
+
+
+# ── Fixed-node wind extraction ────────────────────────────────────────────────
+
+def sample_wind_nodes(
+    u_prof: list[tuple[float, float]],
+    v_prof: list[tuple[float, float]],
+    alts: list[float] | None = None,
+) -> list[dict]:
+    """Sample U/V wind profile at fixed diagnostic altitude nodes.
+
+    Provides structured per-layer data ready for the UI's vertical wind
+    shear display.  Each node dict contains all four representations of
+    the wind vector so no further conversion is needed in the UI layer.
+
+    Args:
+        u_prof: list of (alt_m, u_m_s) — east wind component, sorted.
+        v_prof: list of (alt_m, v_m_s) — north wind component, sorted.
+        alts:   Altitudes (m AGL) to sample.  Defaults to
+                :data:`WIND_SAMPLE_ALTS` = [3, 10, 150, 300, 600] m.
+
+    Returns:
+        List of dicts (one per altitude, order preserved), each with:
+            ``alt_m``    — altitude (m AGL)
+            ``u``        — east component (m/s, + = eastward)
+            ``v``        — north component (m/s, + = northward)
+            ``speed_ms`` — wind speed (m/s)
+            ``dir_deg``  — meteorological direction (° FROM which wind blows)
+    """
+    if alts is None:
+        alts = WIND_SAMPLE_ALTS
+    nodes: list[dict] = []
+    for alt in alts:
+        u = _interp_profile(u_prof, alt)
+        v = _interp_profile(v_prof, alt)
+        speed, dir_deg = uv_to_speed_dir(u, v)
+        nodes.append({
+            "alt_m":    float(alt),
+            "u":        float(u),
+            "v":        float(v),
+            "speed_ms": float(speed),
+            "dir_deg":  float(dir_deg),
+        })
+    return nodes
 
 
 # ── Gust layer ────────────────────────────────────────────────────────────────
