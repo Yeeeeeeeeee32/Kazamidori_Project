@@ -221,6 +221,108 @@ def normalize_rocket_parameters(raw_params: dict) -> dict:
     return out
 
 
+# ── Airframe JSON loader (SI → CGS) ──────────────────────────────────────────
+
+class AirframeConfigError(ValueError):
+    """Raised when an airframe JSON config file cannot be loaded or parsed."""
+
+
+_AIRFRAME_REQUIRED_KEYS: frozenset[str] = frozenset({
+    "mass", "cg", "length", "radius", "nose_length",
+    "fin_root", "fin_tip", "fin_span", "fin_pos",
+    "motor_pos", "motor_dry_mass", "backfire_delay",
+})
+
+# Length keys in SI (m) that must be multiplied by 100 → cm
+_SI_LENGTH_KEYS: frozenset[str] = frozenset({
+    "cg", "length", "radius", "nose_length",
+    "fin_root", "fin_tip", "fin_span", "fin_pos", "motor_pos",
+})
+
+# Mass keys in SI (kg) that must be multiplied by 1000 → g
+_SI_MASS_KEYS: frozenset[str] = frozenset({
+    "mass", "motor_dry_mass",
+})
+
+
+def load_airframe_config(filepath: str) -> dict[str, float]:
+    """Load an SI-unit airframe JSON file and return a CGS-unit parameter dict.
+
+    The JSON must contain the 12 airframe keys (mass, cg, length, radius,
+    nose_length, fin_root, fin_tip, fin_span, fin_pos, motor_pos,
+    motor_dry_mass, backfire_delay) in SI units (kg, m, s).
+
+    The returned dict uses CGS units (g, cm, s) to match the UI spinboxes.
+
+    Conversion rules:
+        Length keys (m → cm, × 100): cg, length, radius, nose_length,
+                                      fin_root, fin_tip, fin_span,
+                                      fin_pos, motor_pos.
+        Mass keys  (kg → g, × 1000): mass, motor_dry_mass.
+        backfire_delay: passed through unchanged (seconds).
+
+    Args:
+        filepath: Path to the airframe JSON file.
+
+    Returns:
+        dict with all 12 keys in CGS units.
+
+    Raises:
+        AirframeConfigError: on missing file, invalid JSON, missing or
+                             extra keys, non-numeric values, or negative
+                             physical quantities.
+    """
+    # ── Load ────────────────────────────────────────────────────────────────
+    try:
+        with open(filepath, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        raise AirframeConfigError(
+            f"Airframe config not found: {filepath!r}"
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise AirframeConfigError(
+            f"Invalid JSON in {filepath!r}: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise AirframeConfigError(
+            f"Expected a JSON object at top level, got {type(data).__name__!r}"
+        )
+
+    # ── Validate keys ────────────────────────────────────────────────────────
+    missing = _AIRFRAME_REQUIRED_KEYS - data.keys()
+    if missing:
+        raise AirframeConfigError(
+            f"Missing required keys in {filepath!r}: {sorted(missing)}"
+        )
+
+    # ── Parse, validate, and convert ─────────────────────────────────────────
+    out: dict[str, float] = {}
+    for key in _AIRFRAME_REQUIRED_KEYS:
+        raw = data[key]
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            raise AirframeConfigError(
+                f"Key {key!r} in {filepath!r} is not numeric: {raw!r}"
+            ) from None
+
+        if key != "backfire_delay" and val < 0.0:
+            raise AirframeConfigError(
+                f"Key {key!r} in {filepath!r} must be non-negative, got {val}"
+            )
+
+        if key in _SI_LENGTH_KEYS:
+            out[key] = val * 100.0      # m → cm
+        elif key in _SI_MASS_KEYS:
+            out[key] = val * 1000.0     # kg → g
+        else:
+            out[key] = val              # backfire_delay: s, no conversion
+
+    return out
+
+
 def load_motor_csv(filepath: str) -> MotorData:
     """Parse a RockSim-format motor CSV file and return a :class:`MotorData`.
 

@@ -141,6 +141,7 @@ class AppState(QObject):
     motor_cg_changed        = Signal(float)   # motor CG from nose (m)
     motor_dry_mass_changed  = Signal(float)   # motor dry mass (kg)
     parachute_area_changed  = Signal(float)   # parachute reference area (m²)
+    backfire_delay_changed  = Signal(float)   # ejection charge delay after burnout (s)
 
     # ── Engine / motor metadata ────────────────────────────────────────────────
     # Emitted when load_engine() is called with a parsed motor CSV.
@@ -241,6 +242,7 @@ class AppState(QObject):
         self._motor_cg         = float(cfg.get("motor_cg",         1.00))
         self._motor_dry_mass   = float(cfg.get("motor_dry_mass",   0.10))
         self._parachute_area   = float(cfg.get("parachute_area",   0.28))
+        self._backfire_delay   = float(cfg.get("backfire_delay",   0.5))
 
         # Flight mode — mission profile selected by the operator
         self._flight_mode: str = str(cfg.get("flight_mode", "Altitude"))
@@ -885,6 +887,18 @@ class AppState(QObject):
         if self._parachute_area != value:
             self._parachute_area = value
             self.parachute_area_changed.emit(value)
+
+    @Property(float, notify=backfire_delay_changed)
+    def backfire_delay(self) -> float:
+        """Ejection charge fires this many seconds after motor burnout (maps to 'backfire_delay')."""
+        return self._backfire_delay
+
+    @backfire_delay.setter
+    def backfire_delay(self, value: float) -> None:
+        value = float(value)
+        if self._backfire_delay != value:
+            self._backfire_delay = value
+            self.backfire_delay_changed.emit(value)
 
     # ── Engine / motor loader ─────────────────────────────────────────────────
 

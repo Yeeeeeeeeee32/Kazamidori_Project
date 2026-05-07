@@ -30,13 +30,14 @@ import time as _time
 
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Slot
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
 from ui_qt.plot_view import PlotView
 from ui_qt.map_view import MapView
 from ui_qt.workers import SimulationWorker
+from utils.data_loader import AirframeConfigError, load_airframe_config
 
 DEFAULT_CONFIG: dict = {
     "wind_uncertainty":      0.20,
@@ -139,6 +140,29 @@ class SimController(QObject):
                 except ValueError:
                     pass
                 _gust_input.textChanged.connect(self._on_gust_speed_text_changed)
+
+        # ── 12 Airframe spinboxes ↔ AppState (CGS display / SI storage) ────────
+        # Each spinbox displays in CGS (cm, g, s); AppState stores SI (m, kg, s).
+        # Bidirectional binding: spinbox → AppState on user edit; AppState signal
+        # → spinbox.setValue on JSON load or external state change.
+        self._wire_airframe_spinboxes()
+
+        # ── Load Airframe JSON button → controller ─────────────────────────────
+        # AppWindow emits sig_load_json_clicked instead of opening the dialog
+        # itself, keeping file I/O and AppState writes in the controller.
+        _json_sig = getattr(window, 'sig_load_json_clicked', None)
+        if _json_sig is not None:
+            _json_sig.connect(self._on_load_airframe_json)
+
+        # ── Advanced Settings button → controller-managed dialog ───────────────
+        # Reconnect from AppWindow's bare exec() stub to the controller's
+        # populate-from-AppState → exec → push-to-AppState flow.
+        for _btn in self._window.findChildren(QPushButton, "btn_adv_settings"):
+            try:
+                _btn.clicked.disconnect()
+            except RuntimeError:
+                pass
+            _btn.clicked.connect(self._on_advanced_settings_clicked)
 
     # ── Button rewiring ────────────────────────────────────────────────────────
 
@@ -368,6 +392,7 @@ class SimController(QObject):
             "motor_pos":      s.motor_cg,
             "motor_dry_mass": s.motor_dry_mass,
             "para_area":      s.parachute_area,
+            "backfire_delay": s.backfire_delay,
         }
 
     @Slot(str)
@@ -387,6 +412,173 @@ class SimController(QObject):
             self._state.gust_speed = float(text)
         except ValueError:
             pass
+
+    # ── Airframe spinbox wiring ────────────────────────────────────────────────
+
+    def _wire_airframe_spinboxes(self) -> None:
+        """Bind the 12 CGS airframe spinboxes bidirectionally to AppState (SI).
+
+        Direction 1 — spinbox → AppState (user edits):
+            CGS value × conversion → AppState setter (SI).
+            AppState equality guard suppresses re-emission when value unchanged.
+
+        Direction 2 — AppState → spinbox (JSON load / external write):
+            AppState signal (SI) → spinbox.setValue(SI × inverse_factor).
+            Spinbox emits valueChanged only if value actually changes, so the
+            Direction-1 slot fires but the AppState equality guard terminates
+            the loop immediately (new_SI == current_SI → no emission).
+        """
+        w = self._window
+        s = self._state
+
+        def _bind(sb_name: str, prop: str, cgs_to_si, si_to_cgs) -> None:
+            sb = getattr(w, sb_name, None)
+            if sb is None:
+                return
+            # spinbox → AppState
+            sb.valueChanged.connect(
+                lambda v, _p=prop, _f=cgs_to_si: setattr(s, _p, _f(v))
+            )
+            # AppState signal → spinbox
+            sig = getattr(s, f"{prop}_changed", None)
+            if sig is not None:
+                sig.connect(lambda v, _sb=sb, _g=si_to_cgs: _sb.setValue(_g(v)))
+
+        # af_radius_input shows body radius (cm); AppState stores full diameter (m)
+        _bind("af_mass_input",     "rocket_dry_mass", lambda v: v / 1000.0,       lambda v: v * 1000.0)
+        _bind("af_cg_input",       "rocket_cg",       lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_len_input",      "rocket_length",   lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_radius_input",   "rocket_diameter", lambda v: v / 100.0 * 2.0,  lambda v: v / 2.0 * 100.0)
+        _bind("af_nose_input",     "nose_length",     lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_finroot_input",  "fin_root_chord",  lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_fintip_input",   "fin_tip_chord",   lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_finspan_input",  "fin_span",        lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_finpos_input",   "fin_position",    lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_motorpos_input", "motor_cg",        lambda v: v / 100.0,        lambda v: v * 100.0)
+        _bind("af_motormass_input","motor_dry_mass",  lambda v: v / 1000.0,       lambda v: v * 1000.0)
+        _bind("af_backfire_input", "backfire_delay",  lambda v: float(v),         lambda v: float(v))
+
+    # ── Airframe JSON loader ───────────────────────────────────────────────────
+
+    @Slot()
+    def _on_load_airframe_json(self) -> None:
+        """Open a file dialog, parse the JSON, and push all 12 parameters to AppState.
+
+        Data flow (strict unidirectional MVVM):
+            File → load_airframe_config (→ CGS) → convert → AppState (SI)
+                 → signals fire → spinboxes update (CGS display)
+
+        AppState equality guards prevent any re-emission loop when the spinbox
+        setValue callback fires back into the AppState setter.
+        """
+        import os as _os
+        path, _ = QFileDialog.getOpenFileName(
+            self._window,
+            "Load Airframe JSON",
+            "",
+            "Airframe Config (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            cgs = load_airframe_config(path)
+        except AirframeConfigError as exc:
+            QMessageBox.critical(
+                self._window,
+                "Airframe Config Error",
+                f"Failed to load:\n{path}\n\n{exc}",
+            )
+            self._window.set_status(f"Airframe JSON load failed: {exc}", "#f38ba8")
+            return
+
+        s = self._state
+        # CGS → SI conversions; each setter emits its signal → spinbox.setValue fires
+        s.rocket_dry_mass = cgs["mass"]           / 1000.0        # g  → kg
+        s.rocket_cg       = cgs["cg"]             / 100.0         # cm → m
+        s.rocket_length   = cgs["length"]         / 100.0         # cm → m
+        s.rocket_diameter = cgs["radius"]         / 100.0 * 2.0   # cm radius → m diameter
+        s.nose_length     = cgs["nose_length"]    / 100.0         # cm → m
+        s.fin_root_chord  = cgs["fin_root"]       / 100.0         # cm → m
+        s.fin_tip_chord   = cgs["fin_tip"]        / 100.0         # cm → m
+        s.fin_span        = cgs["fin_span"]       / 100.0         # cm → m
+        s.fin_position    = cgs["fin_pos"]        / 100.0         # cm → m
+        s.motor_cg        = cgs["motor_pos"]      / 100.0         # cm → m
+        s.motor_dry_mass  = cgs["motor_dry_mass"] / 1000.0        # g  → kg
+        s.backfire_delay  = cgs["backfire_delay"]                  # s  → s (pass-through)
+
+        name = _os.path.basename(path)
+        self._window.set_status(
+            f"Airframe loaded: {name}  ·  "
+            f"Mass {cgs['mass']:.0f} g  ·  "
+            f"Length {cgs['length']:.1f} cm  ·  "
+            f"Body radius {cgs['radius']:.2f} cm",
+            "#a6e3a1",
+        )
+
+    # ── Advanced Settings dialog ───────────────────────────────────────────────
+
+    @Slot()
+    def _on_advanced_settings_clicked(self) -> None:
+        """Populate the Advanced Settings dialog from AppState, then exec it.
+
+        Before exec(): push current AppState values into all dialog fields so the
+        operator always sees up-to-date numbers regardless of how state was last
+        changed (e.g. an external wind reading updated surf_wind_speed).
+
+        After OK: pull all field values back into AppState so _collect_params()
+        reads the freshly confirmed settings at the next Run click.
+
+        Cancel: AdvancedSettingsDialog._on_cancel() restores its internal snapshot
+        (taken at showEvent); AppState is never written, so it remains consistent.
+        """
+        dlg = getattr(self._window, '_adv_dialog', None)
+        if dlg is None:
+            return
+
+        s = self._state
+
+        # ── Populate dialog from AppState ──────────────────────────────────────
+        dlg.surf_spd_input.setValue(s.surf_wind_speed)
+        dlg.surf_dir_input.setValue(s.surf_wind_dir)
+        dlg.up_spd_input.setValue(s.upper_wind_speed)
+        dlg.up_dir_input.setValue(s.upper_wind_dir)
+        dlg.cep_prob_input.setValue(s.landing_prob)
+        dlg.mc_runs_input.setValue(s.mc_n_runs)
+        dlg.wind_unc_input.setValue(s.wind_uncertainty)
+        dlg.thrust_unc_input.setValue(s.thrust_uncertainty)
+        dlg.allow_unc_input.setValue(s.allowable_uncertainty)
+        # Match the landing_prob_combo index to the current AppState value
+        for i in range(dlg.landing_prob_combo.count()):
+            if dlg.landing_prob_combo.itemData(i) == s.landing_probability:
+                dlg.landing_prob_combo.setCurrentIndex(i)
+                break
+
+        # ── Execute dialog ─────────────────────────────────────────────────────
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return   # Cancel — snapshot already restored by dialog itself
+
+        # ── Push accepted values back to AppState ──────────────────────────────
+        s.surf_wind_speed      = dlg.surf_spd_input.value()
+        s.surf_wind_dir        = dlg.surf_dir_input.value()
+        s.upper_wind_speed     = dlg.up_spd_input.value()
+        s.upper_wind_dir       = dlg.up_dir_input.value()
+        s.landing_prob         = dlg.cep_prob_input.value()
+        s.mc_n_runs            = dlg.mc_runs_input.value()
+        s.wind_uncertainty     = dlg.wind_unc_input.value()
+        s.thrust_uncertainty   = dlg.thrust_unc_input.value()
+        s.allowable_uncertainty = dlg.allow_unc_input.value()
+        lp_data = dlg.landing_prob_combo.currentData()
+        if lp_data is not None:
+            s.landing_probability = int(lp_data)
+
+        self._window.set_status(
+            f"Settings updated  ·  "
+            f"Surf {s.surf_wind_speed:.1f} m/s  ·  "
+            f"MC {s.mc_n_runs} runs  ·  "
+            f"Wind unc {s.wind_uncertainty:.2f}",
+            "#a6adc8",
+        )
 
     @Slot()
     def _on_wind_tick(self) -> None:

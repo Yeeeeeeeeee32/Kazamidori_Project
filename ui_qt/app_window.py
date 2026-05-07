@@ -4,8 +4,9 @@ Main application window — Kazamidori Project.
 
 3-pane docking layout
 ---------------------
-  settings_dock (Left)  |  profile_dock (Centre)  |  map_dock (Right)
-  Parameters / GO-NOGO     3-D trajectory + wind       2-D landing map
+  parameters_dock (Left) |  profile_dock (Centre)  |  map_dock (Right)
+  Airframe / Launch /        3-D trajectory + wind       2-D landing map
+  Launch Mode / Run btn
 
 All heavy computation lives in core/ — this module is view-only.
 
@@ -33,6 +34,7 @@ from PySide6.QtWidgets import (
     QComboBox, QPushButton, QToolBar, QStatusBar,
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
     QMessageBox, QToolBox, QSplitter,
+    QDialog, QDialogButtonBox,
 )
 from PySide6.QtGui import QAction
 
@@ -121,128 +123,291 @@ class AppState(QObject):
         self.needs_redraw.emit()
 
 
-# ── Catppuccin Mocha dark palette ─────────────────────────────────────────────
+# ── High-contrast dark palette ────────────────────────────────────────────────
+# Base: very dark navy (#12121e) / surface (#1e1e30) / elevated (#2a2a3e)
+# Accent blue: #7eb3ff  — strong blue, readable on dark
+# Accent green: #a8e6a1  Accent red: #f38ba8  Accent purple: #c5a5f7
+# Text primary: #eef0f8  Text secondary: #b8bcd8  Text muted: #7a7e9a
 _QSS = """
 QMainWindow, QWidget {
-    background-color: #1e1e2e;
-    color: #cdd6f4;
+    background-color: #1e1e30;
+    color: #eef0f8;
     font-family: "Segoe UI", "SF Pro Text", Arial, sans-serif;
     font-size: 9pt;
 }
-QDockWidget { color: #cdd6f4; font-weight: bold; }
+QDialog {
+    background-color: #1e1e30;
+    color: #eef0f8;
+}
+QDockWidget { color: #eef0f8; font-weight: bold; }
 QDockWidget::title {
-    background: #313244; padding: 5px 10px;
-    border-bottom: 2px solid #89b4fa; text-align: left;
+    background: #2a2a3e; padding: 5px 10px;
+    border-bottom: 2px solid #7eb3ff; text-align: left;
 }
 QDockWidget::close-button, QDockWidget::float-button {
     border: none; background: transparent; padding: 2px;
 }
 QToolBox::tab {
-    background: #313244; color: #89b4fa; font-weight: bold;
+    background: #2a2a3e; color: #7eb3ff; font-weight: bold;
     font-size: 8pt; padding: 6px 10px;
-    border: 1px solid #45475a; border-radius: 4px; margin-bottom: 2px;
+    border: 1px solid #3a3a52; border-radius: 4px; margin-bottom: 2px;
 }
-QToolBox::tab:selected { background: #45475a; color: #cba6f7; border-color: #cba6f7; }
-QToolBox::tab:hover    { background: #3d3f5a; border-color: #89b4fa; }
-QSplitter::handle       { background: #45475a; }
-QSplitter::handle:hover { background: #89b4fa; }
+QToolBox::tab:selected { background: #3a3a52; color: #c5a5f7; border-color: #c5a5f7; }
+QToolBox::tab:hover    { background: #32324a; border-color: #7eb3ff; }
+QSplitter::handle       { background: #3a3a52; }
+QSplitter::handle:hover { background: #7eb3ff; }
 QGroupBox {
-    border: 1px solid #45475a; border-radius: 6px; margin-top: 10px;
-    padding: 8px 6px 6px 6px; font-weight: bold; font-size: 8pt; color: #89b4fa;
+    border: 1px solid #3a3a52; border-radius: 6px; margin-top: 12px;
+    padding: 8px 6px 6px 6px; font-weight: bold; font-size: 8pt; color: #7eb3ff;
 }
 QGroupBox::title {
     subcontrol-origin: margin; left: 10px; padding: 0 4px;
-    background-color: #1e1e2e;
+    background-color: #1e1e30;
 }
 QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
-    background: #313244; border: 1px solid #45475a; border-radius: 4px;
-    padding: 3px 6px; color: #cdd6f4; min-width: 80px;
+    background: #2a2a3e; border: 1px solid #3a3a52; border-radius: 4px;
+    padding: 3px 6px; color: #eef0f8; min-width: 80px;
 }
 QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {
-    border-color: #89b4fa;
+    border-color: #7eb3ff; background: #32324a;
 }
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button,
 QSpinBox::up-button,       QSpinBox::down-button {
-    background: #45475a; border: none; width: 16px; border-radius: 2px;
+    background: #3a3a52; border: none; width: 16px; border-radius: 2px;
 }
 QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
 QSpinBox::up-button:hover,       QSpinBox::down-button:hover {
-    background: #585b70;
+    background: #4a4a62;
 }
 QComboBox::drop-down { border: none; width: 20px; }
 QComboBox QAbstractItemView {
-    background: #313244; border: 1px solid #45475a;
-    selection-background-color: #45475a; color: #cdd6f4; outline: none;
+    background: #2a2a3e; border: 1px solid #3a3a52;
+    selection-background-color: #3a3a52; color: #eef0f8; outline: none;
 }
 QPushButton {
-    background: #313244; border: 1px solid #45475a; border-radius: 5px;
-    padding: 5px 14px; color: #cdd6f4; font-weight: bold;
+    background: #2a2a3e; border: 1px solid #3a3a52; border-radius: 5px;
+    padding: 5px 14px; color: #eef0f8; font-weight: bold;
 }
-QPushButton:hover   { background: #45475a; border-color: #89b4fa; }
-QPushButton:pressed { background: #89b4fa; color: #1e1e2e; }
-QPushButton#btn_run  { background: #a6e3a1; color: #1e1e2e; border-color: #a6e3a1; }
-QPushButton#btn_run:hover  { background: #94e2d5; }
-QPushButton#btn_mc   { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
-QPushButton#btn_mc:hover   { background: #b4befe; }
-QPushButton#btn_stop { background: #f38ba8; color: #1e1e2e; border-color: #f38ba8; }
+QPushButton:hover   { background: #3a3a52; border-color: #7eb3ff; }
+QPushButton:pressed { background: #7eb3ff; color: #12121e; }
+QPushButton#btn_run  { background: #a8e6a1; color: #12121e; border-color: #a8e6a1; }
+QPushButton#btn_run:hover  { background: #8ed9a8; }
+QPushButton#btn_mc   { background: #7eb3ff; color: #12121e; border-color: #7eb3ff; }
+QPushButton#btn_mc:hover   { background: #9dc5ff; }
+QPushButton#btn_stop { background: #f38ba8; color: #12121e; border-color: #f38ba8; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
 QPushButton#btn_phase1_run {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #cba6f7, stop:1 #89b4fa);
-    color: #1e1e2e; border: none; border-radius: 6px;
+        stop:0 #c5a5f7, stop:1 #7eb3ff);
+    color: #12121e; border: none; border-radius: 6px;
     font-size: 10pt; font-weight: bold; padding: 10px 16px;
 }
 QPushButton#btn_phase1_run:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #d4b5ff, stop:1 #99c0ff);
+        stop:0 #d4b5ff, stop:1 #9dc5ff);
 }
-QPushButton#btn_phase1_run:pressed { background: #89b4fa; color: #181825; }
+QPushButton#btn_phase1_run:pressed { background: #7eb3ff; color: #12121e; }
+QPushButton#btn_adv_settings {
+    background: transparent; border: 1px solid #3a3a52; border-radius: 4px;
+    padding: 4px 10px; color: #b8bcd8; font-size: 8pt;
+}
+QPushButton#btn_adv_settings:hover { border-color: #7eb3ff; color: #eef0f8; }
 QToolBar {
-    background: #181825; border: none;
-    border-bottom: 1px solid #313244; padding: 3px 6px; spacing: 4px;
+    background: #12121e; border: none;
+    border-bottom: 1px solid #2a2a3e; padding: 3px 6px; spacing: 4px;
 }
 QToolBar QToolButton {
     background: transparent; border: 1px solid transparent;
-    border-radius: 4px; padding: 3px 8px; color: #cdd6f4;
+    border-radius: 4px; padding: 3px 8px; color: #eef0f8;
 }
-QToolBar QToolButton:hover   { background: #313244; border-color: #45475a; }
-QToolBar QToolButton:pressed { background: #45475a; }
-QMenuBar { background: #181825; color: #cdd6f4; border-bottom: 1px solid #313244; }
+QToolBar QToolButton:hover   { background: #2a2a3e; border-color: #3a3a52; }
+QToolBar QToolButton:pressed { background: #3a3a52; }
+QMenuBar { background: #12121e; color: #eef0f8; border-bottom: 1px solid #2a2a3e; }
 QMenuBar::item { padding: 5px 12px; background: transparent; }
-QMenuBar::item:selected { background: #313244; border-radius: 3px; }
+QMenuBar::item:selected { background: #2a2a3e; border-radius: 3px; }
 QMenu {
-    background: #1e1e2e; border: 1px solid #45475a;
+    background: #1e1e30; border: 1px solid #3a3a52;
     border-radius: 4px; padding: 4px;
 }
 QMenu::item { padding: 5px 20px 5px 12px; border-radius: 3px; }
-QMenu::item:selected { background: #313244; color: #89b4fa; }
-QMenu::separator { height: 1px; background: #45475a; margin: 3px 8px; }
+QMenu::item:selected { background: #2a2a3e; color: #7eb3ff; }
+QMenu::separator { height: 1px; background: #3a3a52; margin: 3px 8px; }
 QStatusBar {
-    background: #181825; color: #a6adc8;
-    border-top: 1px solid #313244; font-size: 8pt;
+    background: #12121e; color: #b8bcd8;
+    border-top: 1px solid #2a2a3e; font-size: 8pt;
 }
 QStatusBar::item { border: none; }
-QScrollBar:vertical   { background: #1e1e2e; width: 8px;  margin: 0; }
-QScrollBar:horizontal { background: #1e1e2e; height: 8px; }
+QScrollBar:vertical   { background: #1e1e30; width: 8px;  margin: 0; }
+QScrollBar:horizontal { background: #1e1e30; height: 8px; }
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
-    background: #45475a; border-radius: 4px;
+    background: #3a3a52; border-radius: 4px;
     min-height: 24px; min-width: 24px;
 }
 QScrollBar::handle:vertical:hover,
-QScrollBar::handle:horizontal:hover { background: #585b70; }
+QScrollBar::handle:horizontal:hover { background: #4a4a62; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { height: 0; width: 0; }
 QProgressBar {
-    background: #313244; border: 1px solid #45475a; border-radius: 4px;
-    text-align: center; color: #cdd6f4; font-size: 8pt; max-height: 18px;
+    background: #2a2a3e; border: 1px solid #3a3a52; border-radius: 4px;
+    text-align: center; color: #eef0f8; font-size: 8pt; max-height: 18px;
 }
-QProgressBar::chunk { background: #89b4fa; border-radius: 3px; }
+QProgressBar::chunk { background: #7eb3ff; border-radius: 3px; }
 QScrollArea { border: none; background: transparent; }
-QScrollArea > QWidget > QWidget { background: #1e1e2e; }
-QFormLayout QLabel { color: #a6adc8; }
-QMainWindow::separator { width: 2px; height: 2px; background: #313244; }
-QMainWindow::separator:hover { background: #45475a; }
+QScrollArea > QWidget > QWidget { background: #1e1e30; }
+QLabel { color: #eef0f8; }
+QFormLayout QLabel { color: #b8bcd8; }
+QMainWindow::separator { width: 2px; height: 2px; background: #2a2a3e; }
+QMainWindow::separator:hover { background: #3a3a52; }
 """
+
+
+# ── Advanced Settings Dialog ──────────────────────────────────────────────────
+
+class AdvancedSettingsDialog(QDialog):
+    """
+    Modal dialog for rarely-changed simulation parameters.
+
+    All input widgets are public attributes so AppWindow can expose them
+    directly on ``self`` for SimController compatibility.  Values are live
+    — they persist between dialog open/close cycles and are read by
+    SimController._collect_params() at run time.
+
+    The OK button simply closes the dialog (values already updated).
+    Cancel restores the snapshot taken when the dialog was last opened.
+    """
+
+    _LANDING_PROBS = (50, 68, 80, 85, 90, 95, 99)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Advanced Settings")
+        self.setMinimumWidth(440)
+        self.setModal(True)
+        self._snapshot: dict = {}
+        self._build()
+
+    # ── Construction ──────────────────────────────────────────────────────────
+
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 10)
+
+        # ── Wind group ────────────────────────────────────────────────────────
+        grp_wind = QGroupBox("Wind Parameters")
+        frm = QFormLayout(grp_wind)
+        frm.setSpacing(6)
+        frm.setContentsMargins(10, 12, 10, 8)
+
+        self.surf_spd_input = QDoubleSpinBox()
+        self.surf_spd_input.setRange(0, 50); self.surf_spd_input.setDecimals(1)
+        self.surf_spd_input.setValue(4.0);   self.surf_spd_input.setSuffix(" m/s")
+
+        self.surf_dir_input = QDoubleSpinBox()
+        self.surf_dir_input.setRange(0, 360); self.surf_dir_input.setDecimals(1)
+        self.surf_dir_input.setValue(100.0);  self.surf_dir_input.setSuffix("°")
+        self.surf_dir_input.setWrapping(True)
+
+        self.up_spd_input = QDoubleSpinBox()
+        self.up_spd_input.setRange(0, 100); self.up_spd_input.setDecimals(1)
+        self.up_spd_input.setValue(8.0);    self.up_spd_input.setSuffix(" m/s")
+
+        self.up_dir_input = QDoubleSpinBox()
+        self.up_dir_input.setRange(0, 360); self.up_dir_input.setDecimals(1)
+        self.up_dir_input.setValue(90.0);   self.up_dir_input.setSuffix("°")
+        self.up_dir_input.setWrapping(True)
+
+        frm.addRow("Surface Wind Speed (0 m):",   self.surf_spd_input)
+        frm.addRow("Surface Wind From  (0 m):",   self.surf_dir_input)
+        frm.addRow("Upper Wind Speed (500 m):",   self.up_spd_input)
+        frm.addRow("Upper Wind From  (500 m):",   self.up_dir_input)
+
+        # ── Monte Carlo group ─────────────────────────────────────────────────
+        grp_mc = QGroupBox("Monte Carlo / Statistics")
+        frm2 = QFormLayout(grp_mc)
+        frm2.setSpacing(6)
+        frm2.setContentsMargins(10, 12, 10, 8)
+
+        self.cep_prob_input = QSpinBox()
+        self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
+        self.cep_prob_input.setSuffix(" %")
+
+        self.mc_runs_input = QSpinBox()
+        self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
+        self.mc_runs_input.setSingleStep(50)
+
+        self.landing_prob_combo = QComboBox()
+        for p in self._LANDING_PROBS:
+            self.landing_prob_combo.addItem(f"{p} %", p)
+        self.landing_prob_combo.setCurrentIndex(4)  # 90 %
+
+        self.wind_unc_input = QDoubleSpinBox()
+        self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
+        self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
+        self.wind_unc_input.setSuffix("  (±ratio)")
+
+        self.thrust_unc_input = QDoubleSpinBox()
+        self.thrust_unc_input.setRange(0, 1);  self.thrust_unc_input.setDecimals(2)
+        self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
+        self.thrust_unc_input.setSuffix("  (±ratio)")
+
+        self.allow_unc_input = QDoubleSpinBox()
+        self.allow_unc_input.setRange(0, 9999); self.allow_unc_input.setDecimals(1)
+        self.allow_unc_input.setValue(20.0);    self.allow_unc_input.setSuffix(" m")
+
+        frm2.addRow("CEP Probability:",      self.cep_prob_input)
+        frm2.addRow("MC Runs:",              self.mc_runs_input)
+        frm2.addRow("Landing Prob:",         self.landing_prob_combo)
+        frm2.addRow("Wind Uncertainty:",     self.wind_unc_input)
+        frm2.addRow("Thrust Uncertainty:",   self.thrust_unc_input)
+        frm2.addRow("Allowable Radius:",     self.allow_unc_input)
+
+        # ── OK / Cancel ───────────────────────────────────────────────────────
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            Qt.Orientation.Horizontal,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self._on_cancel)
+
+        root.addWidget(grp_wind)
+        root.addWidget(grp_mc)
+        root.addWidget(btns)
+
+    # ── Cancel / snapshot helpers ─────────────────────────────────────────────
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._snapshot = self._take_snapshot()
+
+    def _take_snapshot(self) -> dict:
+        return {
+            "surf_spd": self.surf_spd_input.value(),
+            "surf_dir": self.surf_dir_input.value(),
+            "up_spd":   self.up_spd_input.value(),
+            "up_dir":   self.up_dir_input.value(),
+            "cep_prob": self.cep_prob_input.value(),
+            "mc_runs":  self.mc_runs_input.value(),
+            "lp_idx":   self.landing_prob_combo.currentIndex(),
+            "wind_unc": self.wind_unc_input.value(),
+            "thr_unc":  self.thrust_unc_input.value(),
+            "allow":    self.allow_unc_input.value(),
+        }
+
+    def _on_cancel(self) -> None:
+        s = self._snapshot
+        self.surf_spd_input.setValue(s["surf_spd"])
+        self.surf_dir_input.setValue(s["surf_dir"])
+        self.up_spd_input.setValue(s["up_spd"])
+        self.up_dir_input.setValue(s["up_dir"])
+        self.cep_prob_input.setValue(s["cep_prob"])
+        self.mc_runs_input.setValue(s["mc_runs"])
+        self.landing_prob_combo.setCurrentIndex(s["lp_idx"])
+        self.wind_unc_input.setValue(s["wind_unc"])
+        self.thrust_unc_input.setValue(s["thr_unc"])
+        self.allow_unc_input.setValue(s["allow"])
+        self.reject()
 
 
 # ── Matplotlib canvas wrapper ─────────────────────────────────────────────────
@@ -344,30 +509,35 @@ class AppWindow(QMainWindow):
 
     Public widget attributes (consumed by SimController._collect_params)
     -------------------------------------------------------------------
-    wind_speed_input, wind_dir_input  : QDoubleSpinBox
-    cep_prob_input                    : QSpinBox
-    sim_mode_combo                    : QComboBox
-    lat_input, lon_input              : QDoubleSpinBox
-    elev_input, azim_input            : QDoubleSpinBox
-    mc_runs_input                     : QSpinBox
-    surf_spd_input, surf_dir_input    : QDoubleSpinBox
-    up_spd_input,   up_dir_input      : QDoubleSpinBox
-    wind_unc_input, thrust_unc_input  : QDoubleSpinBox
-    allow_unc_input                   : QDoubleSpinBox
-    landing_prob_combo                : QComboBox
-    motor_label                       : QLabel
-    mode_combo                        : QComboBox
-    rmax_input                        : QDoubleSpinBox
+    surf_spd_input, surf_dir_input    : QDoubleSpinBox  (in AdvancedSettingsDialog)
+    up_spd_input,   up_dir_input      : QDoubleSpinBox  (in AdvancedSettingsDialog)
+    cep_prob_input                    : QSpinBox        (in AdvancedSettingsDialog)
+    mc_runs_input                     : QSpinBox        (in AdvancedSettingsDialog)
+    wind_unc_input, thrust_unc_input  : QDoubleSpinBox  (in AdvancedSettingsDialog)
+    allow_unc_input                   : QDoubleSpinBox  (in AdvancedSettingsDialog)
+    landing_prob_combo                : QComboBox       (in AdvancedSettingsDialog)
+    wind_speed_input, wind_dir_input  : QDoubleSpinBox  (aliases → surf_spd/dir)
+    sim_mode_combo                    : QComboBox       (in Parameters dock)
+    lat_input, lon_input              : QDoubleSpinBox  (in Launch Settings tab)
+    elev_input, azim_input            : QDoubleSpinBox  (in Launch Settings tab)
+    motor_label                       : QLabel          (in Airframe tab)
+    mode_combo                        : QComboBox       (pinned in Parameters dock)
+    rmax_input                        : QDoubleSpinBox  (pinned in Parameters dock)
     map_widget                        : _MapCoordProxy
+
+    Signals
+    -------
+    sig_load_json_clicked : emitted when the "Load Airframe JSON" button is clicked.
 
     Window-internal reactive state
     ------------------------------
     state : AppState  — drives profile / map / wind canvases via needs_redraw
     """
 
+    sig_load_json_clicked = Signal()
+
     OPERATION_MODES = ("Altitude Competition", "Precision Landing",
                        "Winged Hover", "Free")
-    LANDING_PROBS   = (50, 68, 80, 85, 90, 95, 99)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -388,6 +558,25 @@ class AppWindow(QMainWindow):
         self._build_menu_bar()
         self._build_tool_bar()
         self._build_status_bar()
+
+        # Create the persistent Advanced Settings dialog and expose its widgets
+        # at window level so SimController._collect_params() can read them without
+        # knowing where they live in the widget hierarchy.
+        self._adv_dialog = AdvancedSettingsDialog(self)
+        self.surf_spd_input     = self._adv_dialog.surf_spd_input
+        self.surf_dir_input     = self._adv_dialog.surf_dir_input
+        self.up_spd_input       = self._adv_dialog.up_spd_input
+        self.up_dir_input       = self._adv_dialog.up_dir_input
+        self.cep_prob_input     = self._adv_dialog.cep_prob_input
+        self.mc_runs_input      = self._adv_dialog.mc_runs_input
+        self.landing_prob_combo = self._adv_dialog.landing_prob_combo
+        self.wind_unc_input     = self._adv_dialog.wind_unc_input
+        self.thrust_unc_input   = self._adv_dialog.thrust_unc_input
+        self.allow_unc_input    = self._adv_dialog.allow_unc_input
+        # Aliases used by _bind_state for the local reactive AppState
+        self.wind_speed_input   = self._adv_dialog.surf_spd_input
+        self.wind_dir_input     = self._adv_dialog.surf_dir_input
+
         self._setup_docks()
         self._setup_layout()
         self._bind_state()
@@ -496,12 +685,12 @@ class AppWindow(QMainWindow):
             "Surface: -- m/s @ --°   |   Upper: -- m/s @ --°", sb)
         self._wind_status.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._wind_status.setContentsMargins(8, 0, 8, 0)
-        self._wind_status.setStyleSheet("color: #89b4fa;")
+        self._wind_status.setStyleSheet("color: #7eb3ff;")
 
         sb.addWidget(self._status_label, stretch=1)
         sb.addPermanentWidget(self._wind_status)
 
-    # ── Task 1: dock creation ─────────────────────────────────────────────────
+    # ── Dock creation ─────────────────────────────────────────────────────────
 
     def _setup_docks(self) -> None:
         _features = (
@@ -516,23 +705,23 @@ class AppWindow(QMainWindow):
         self.map_dock.setFeatures(_features)
         self.map_dock.setWidget(self._build_map_dock_widget())
 
-        self.settings_dock = QDockWidget("Settings", self)
-        self.settings_dock.setObjectName("SettingsDock")
-        self.settings_dock.setFeatures(_features)
-        self.settings_dock.setWidget(self._build_parameters_panel())
+        self.parameters_dock = QDockWidget("Parameters", self)
+        self.parameters_dock.setObjectName("ParametersDock")
+        self.parameters_dock.setFeatures(_features)
+        self.parameters_dock.setWidget(self._build_parameters_panel())
 
         self.profile_dock = QDockWidget("Flight Profile", self)
         self.profile_dock.setObjectName("ProfileDock")
         self.profile_dock.setFeatures(_features)
         self.profile_dock.setWidget(self._build_profile_dock_widget())
 
-        for dock in (self.settings_dock, self.profile_dock, self.map_dock):
+        for dock in (self.parameters_dock, self.profile_dock, self.map_dock):
             self._view_menu.addAction(dock.toggleViewAction())
 
-    # ── Task 2: 3-column layout ───────────────────────────────────────────────
+    # ── 3-column layout ───────────────────────────────────────────────────────
 
     def _setup_layout(self) -> None:
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,  self.settings_dock)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea,  self.parameters_dock)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.profile_dock)
         self.splitDockWidget(
             self.profile_dock, self.map_dock, Qt.Orientation.Horizontal)
@@ -541,13 +730,12 @@ class AppWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # Defer until after the OS has committed the window geometry.
         QTimer.singleShot(0, self._apply_initial_sizes)
 
     def _apply_initial_sizes(self) -> None:
-        # settings: 300 px  |  profile: 650 px  |  map: 650 px
+        # parameters: 300 px  |  profile: 650 px  |  map: 650 px
         self.resizeDocks(
-            [self.settings_dock, self.profile_dock, self.map_dock],
+            [self.parameters_dock, self.profile_dock, self.map_dock],
             [300, 650, 650],
             Qt.Orientation.Horizontal,
         )
@@ -584,217 +772,175 @@ class AppWindow(QMainWindow):
         splitter.setSizes([600, 300])
         return splitter
 
-    # ── Parameters panel (settings dock) ──────────────────────────────────────
+    # ── Parameters panel ──────────────────────────────────────────────────────
+    #
+    # Layout (top → bottom):
+    #   QToolBox  [Airframe | Launch Settings]  ← expands to fill
+    #   Advanced Settings button
+    #   Launch Mode group box                   ← pinned, fixed height
+    #   GO / NO-GO indicator
+    #   RUN PHASE 1 button
+    #
+    # QSizePolicy.Maximum prevents the panel from growing taller than its
+    # natural content size when the window is maximised, eliminating the
+    # "mystery gap" caused by Qt distributing leftover vertical space to
+    # the parameters container instead of the adjacent graph dock.
 
     def _build_parameters_panel(self) -> QWidget:
         container = QWidget()
+        container.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         lay = QVBoxLayout(container)
-        lay.setContentsMargins(0, 0, 0, 4)
-        lay.setSpacing(2)
+        lay.setContentsMargins(0, 0, 0, 6)
+        lay.setSpacing(4)
 
+        # ── Two-tab toolbox ───────────────────────────────────────────────────
         tb = QToolBox(container)
-        tb.addItem(self._build_settings_page(),     "⚙   Settings")
-        tb.addItem(self._build_engine_page(),       "🔧  Engine (Motor)")
-        tb.addItem(self._build_airframe_page(),     "🚀  Airframe")
-        tb.addItem(self._build_launch_point_page(), "📍  Launch Point")
-        tb.addItem(self._build_launch_mode_page(),  "🎯  Launch Mode")
+        tb.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        tb.addItem(self._build_airframe_page(),        "🚀  Airframe")
+        tb.addItem(self._build_launch_settings_page(), "📍  Launch Settings")
         lay.addWidget(tb, stretch=1)
 
+        # ── Advanced Settings button ──────────────────────────────────────────
+        btn_adv = QPushButton("⚙  Advanced Settings…", container)
+        btn_adv.setObjectName("btn_adv_settings")
+        btn_adv.clicked.connect(self._on_advanced_settings)
+        lay.addWidget(btn_adv)
+
+        # ── Launch Mode (pinned above Run button) ─────────────────────────────
+        mode_grp     = QGroupBox("Launch Mode", container)
+        mode_lay     = QFormLayout(mode_grp)
+        mode_lay.setSpacing(5)
+        mode_lay.setContentsMargins(10, 10, 10, 8)
+
+        self.sim_mode_combo = QComboBox(mode_grp)
+        self.sim_mode_combo.addItems(["Point-Return", "Altitude", "Glider"])
+        self.sim_mode_combo.setCurrentText("Point-Return")
+
+        self.mode_combo = QComboBox(mode_grp)
+        self.mode_combo.addItems(self.OPERATION_MODES)
+        self.mode_combo.setCurrentText("Free")
+
+        self._rmax_label = QLabel("R_max:", mode_grp)
+        self.rmax_input  = QDoubleSpinBox(mode_grp)
+        self.rmax_input.setRange(0, 9999); self.rmax_input.setDecimals(1)
+        self.rmax_input.setValue(50.0);    self.rmax_input.setSuffix(" m")
+
+        mode_lay.addRow("Sim Mode:",       self.sim_mode_combo)
+        mode_lay.addRow("Operation Mode:", self.mode_combo)
+        mode_lay.addRow(self._rmax_label,  self.rmax_input)
+
+        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        self._on_mode_changed("Free")
+
+        lay.addWidget(mode_grp)
+
+        # ── GO / NO-GO indicator ──────────────────────────────────────────────
         self._go_nogo_label = QLabel("●  STANDBY", container)
         self._go_nogo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._go_nogo_label.setStyleSheet(
-            "font-size: 12pt; font-weight: bold; color: #6c7086; padding: 6px;")
+            "font-size: 12pt; font-weight: bold; color: #7a7e9a; padding: 6px;")
         lay.addWidget(self._go_nogo_label)
 
-        btn = QPushButton("🚀   RUN PHASE 1 SIMULATION", container)
-        btn.setObjectName("btn_phase1_run")
-        btn.setMinimumHeight(48)
-        btn.clicked.connect(self._on_phase1)
-        lay.addWidget(btn)
+        # ── Run button ────────────────────────────────────────────────────────
+        btn_run = QPushButton("🚀   RUN PHASE 1 SIMULATION", container)
+        btn_run.setObjectName("btn_phase1_run")
+        btn_run.setMinimumHeight(48)
+        btn_run.clicked.connect(self._on_phase1)
+        lay.addWidget(btn_run)
 
         return container
 
-    # ── Settings page ──────────────────────────────────────────────────────────
+    # ── Airframe tab ──────────────────────────────────────────────────────────
+    # Contains: Load-JSON button, motor load + specs, 12 CGS airframe params.
+    # Units: CGMS — lengths in cm from nose tip, mass in g, delay in s.
 
-    def _build_settings_page(self) -> QScrollArea:
-        w   = QWidget()
-        frm = QFormLayout(w)
-        frm.setSpacing(6)
-        frm.setContentsMargins(8, 8, 8, 8)
-
-        self.wind_speed_input = QDoubleSpinBox(w)
-        self.wind_speed_input.setRange(0.0, 50.0); self.wind_speed_input.setDecimals(1)
-        self.wind_speed_input.setValue(4.0);        self.wind_speed_input.setSuffix(" m/s")
-
-        self.wind_dir_input = QDoubleSpinBox(w)
-        self.wind_dir_input.setRange(0.0, 360.0); self.wind_dir_input.setDecimals(1)
-        self.wind_dir_input.setValue(100.0);       self.wind_dir_input.setSuffix("°")
-        self.wind_dir_input.setWrapping(True)
-
-        self.surf_spd_input = QDoubleSpinBox(w)
-        self.surf_spd_input.setRange(0, 50); self.surf_spd_input.setDecimals(1)
-        self.surf_spd_input.setValue(4.0);   self.surf_spd_input.setSuffix(" m/s")
-
-        self.surf_dir_input = QDoubleSpinBox(w)
-        self.surf_dir_input.setRange(0, 360); self.surf_dir_input.setDecimals(1)
-        self.surf_dir_input.setValue(100.0);  self.surf_dir_input.setSuffix("°")
-        self.surf_dir_input.setWrapping(True)
-
-        self.up_spd_input = QDoubleSpinBox(w)
-        self.up_spd_input.setRange(0, 100); self.up_spd_input.setDecimals(1)
-        self.up_spd_input.setValue(8.0);    self.up_spd_input.setSuffix(" m/s")
-
-        self.up_dir_input = QDoubleSpinBox(w)
-        self.up_dir_input.setRange(0, 360); self.up_dir_input.setDecimals(1)
-        self.up_dir_input.setValue(90.0);   self.up_dir_input.setSuffix("°")
-        self.up_dir_input.setWrapping(True)
-
-        self.cep_prob_input = QSpinBox(w)
-        self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
-        self.cep_prob_input.setSuffix(" %")
-
-        self.mc_runs_input = QSpinBox(w)
-        self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
-        self.mc_runs_input.setSingleStep(50)
-
-        self.landing_prob_combo = QComboBox(w)
-        for p in self.LANDING_PROBS:
-            self.landing_prob_combo.addItem(f"{p} %", p)
-        self.landing_prob_combo.setCurrentIndex(4)
-
-        self.wind_unc_input = QDoubleSpinBox(w)
-        self.wind_unc_input.setRange(0, 1); self.wind_unc_input.setDecimals(2)
-        self.wind_unc_input.setValue(0.20); self.wind_unc_input.setSingleStep(0.01)
-        self.wind_unc_input.setSuffix("  (±ratio)")
-
-        self.thrust_unc_input = QDoubleSpinBox(w)
-        self.thrust_unc_input.setRange(0, 1); self.thrust_unc_input.setDecimals(2)
-        self.thrust_unc_input.setValue(0.05); self.thrust_unc_input.setSingleStep(0.01)
-        self.thrust_unc_input.setSuffix("  (±ratio)")
-
-        self.allow_unc_input = QDoubleSpinBox(w)
-        self.allow_unc_input.setRange(0, 9999); self.allow_unc_input.setDecimals(1)
-        self.allow_unc_input.setValue(20.0);    self.allow_unc_input.setSuffix(" m")
-
-        frm.addRow("Wind Speed:",        self.wind_speed_input)
-        frm.addRow("Wind From:",          self.wind_dir_input)
-        frm.addRow("Surf. Speed:",        self.surf_spd_input)
-        frm.addRow("Surf. From:",         self.surf_dir_input)
-        frm.addRow("Upper Speed:",        self.up_spd_input)
-        frm.addRow("Upper From:",         self.up_dir_input)
-        frm.addRow(QLabel(""))
-        frm.addRow("CEP Prob:",           self.cep_prob_input)
-        frm.addRow("MC Runs:",            self.mc_runs_input)
-        frm.addRow("Landing Prob:",       self.landing_prob_combo)
-        frm.addRow("Wind Uncertainty:",   self.wind_unc_input)
-        frm.addRow("Thrust Uncertainty:", self.thrust_unc_input)
-        frm.addRow("Allowable Radius:",   self.allow_unc_input)
-
-        sa = QScrollArea()
-        sa.setWidgetResizable(True)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        sa.setFrameShape(QFrame.Shape.NoFrame)
-        sa.setWidget(w)
-        return sa
-
-    # ── Engine page ────────────────────────────────────────────────────────────
-
-    def _build_engine_page(self) -> QWidget:
+    def _build_airframe_page(self) -> QScrollArea:
         w   = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
+
+        # ── Load buttons ──────────────────────────────────────────────────────
+        btn_json  = QPushButton("📂  Load Airframe JSON", w)
+        btn_json.clicked.connect(self._on_load_airframe_json)
 
         btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
         btn_motor.clicked.connect(self._on_load_motor)
 
-        self.motor_label = QLabel("(none selected)", w)
+        self.motor_label = QLabel("(no motor loaded)", w)
         self.motor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.motor_label.setStyleSheet(
-            "color: #fab387; font-style: italic; font-size: 8pt; padding: 2px 4px;")
+            "color: #f9a86b; font-style: italic; font-size: 8pt; padding: 2px 4px;")
         self.motor_label.setWordWrap(True)
 
-        # ── Read-only motor spec summary ──────────────────────────────────────
-        grp     = QGroupBox("Motor Specifications", w)
-        grp_lay = QFormLayout(grp)
-        grp_lay.setSpacing(6)
-        grp_lay.setContentsMargins(10, 10, 10, 8)
+        # ── Motor specification summary (read-only) ───────────────────────────
+        grp_motor     = QGroupBox("Motor Specifications", w)
+        grp_motor_lay = QFormLayout(grp_motor)
+        grp_motor_lay.setSpacing(5)
+        grp_motor_lay.setContentsMargins(10, 10, 10, 8)
 
         _tag = (
-            "QLabel { color: #cdd6f4; background: #181825; font-weight: bold; "
+            "QLabel { color: #eef0f8; background: #12121e; font-weight: bold; "
             "font-family: 'Consolas', monospace; padding: 3px 8px; "
-            "border-radius: 4px; border: 1px solid #45475a; }"
+            "border-radius: 4px; border: 1px solid #3a3a52; }"
         )
-
-        self.lbl_avg_thrust    = QLabel("—", grp)
-        self.lbl_max_thrust    = QLabel("—", grp)
-        self.lbl_burn_time     = QLabel("—", grp)
-        self.lbl_total_impulse = QLabel("—", grp)
+        self.lbl_avg_thrust    = QLabel("—", grp_motor)
+        self.lbl_max_thrust    = QLabel("—", grp_motor)
+        self.lbl_burn_time     = QLabel("—", grp_motor)
+        self.lbl_total_impulse = QLabel("—", grp_motor)
         for _lbl in (self.lbl_avg_thrust, self.lbl_max_thrust,
-                     self.lbl_burn_time, self.lbl_total_impulse):
+                     self.lbl_burn_time,  self.lbl_total_impulse):
             _lbl.setStyleSheet(_tag)
+        grp_motor_lay.addRow("Avg Thrust:",    self.lbl_avg_thrust)
+        grp_motor_lay.addRow("Max Thrust:",    self.lbl_max_thrust)
+        grp_motor_lay.addRow("Burn Time:",     self.lbl_burn_time)
+        grp_motor_lay.addRow("Total Impulse:", self.lbl_total_impulse)
 
-        grp_lay.addRow("Avg Thrust:",    self.lbl_avg_thrust)
-        grp_lay.addRow("Max Thrust:",    self.lbl_max_thrust)
-        grp_lay.addRow("Burn Time:",     self.lbl_burn_time)
-        grp_lay.addRow("Total Impulse:", self.lbl_total_impulse)
-
-        lay.addWidget(btn_motor)
-        lay.addWidget(self.motor_label)
-        lay.addWidget(grp)
-        lay.addStretch()
-        return w
-
-    # ── Airframe page ──────────────────────────────────────────────────────────
-    # Units: CGMS — lengths in cm (from nose tip), mass in g, delay in s.
-
-    def _build_airframe_page(self) -> QScrollArea:
-        w   = QWidget()
-        frm = QFormLayout(w)
+        # ── Airframe parameters (12 fields, CGMS) ────────────────────────────
+        grp_af     = QGroupBox("Airframe  (cm · g · s from nose tip)", w)
+        frm        = QFormLayout(grp_af)
         frm.setSpacing(5)
-        frm.setContentsMargins(8, 8, 8, 8)
+        frm.setContentsMargins(10, 10, 10, 8)
 
-        def _dsb(lo, hi, val, dec, suffix, parent=w):
-            sb = QDoubleSpinBox(parent)
+        def _dsb(lo, hi, val, dec, suffix):
+            sb = QDoubleSpinBox(grp_af)
             sb.setRange(lo, hi); sb.setDecimals(dec)
             sb.setValue(val);    sb.setSuffix(suffix)
             return sb
 
-        # ── Mass / balance ────────────────────────────────────────────────────
-        self.af_mass_input   = _dsb(1,   50_000, 1000.0, 1, " g")
-        self.af_cg_input     = _dsb(0,     500,    50.0, 1, " cm")
+        self.af_mass_input      = _dsb(1,    50_000, 1000.0, 1, " g")
+        self.af_cg_input        = _dsb(0,      500,    50.0, 1, " cm")
+        self.af_len_input       = _dsb(1,      500,   110.0, 1, " cm")
+        self.af_radius_input    = _dsb(0.5,     30,     3.5, 2, " cm")
+        self.af_nose_input      = _dsb(1,      200,    20.0, 1, " cm")
+        self.af_finroot_input   = _dsb(0.5,    100,    12.0, 1, " cm")
+        self.af_fintip_input    = _dsb(0.5,    100,     6.0, 1, " cm")
+        self.af_finspan_input   = _dsb(0.5,    100,     8.0, 1, " cm")
+        self.af_finpos_input    = _dsb(0,      500,    95.0, 1, " cm")
+        self.af_motorpos_input  = _dsb(0,      500,   100.0, 1, " cm")
+        self.af_motormass_input = _dsb(0,    5_000,   100.0, 1, " g")
+        self.af_backfire_input  = _dsb(0,       10,     0.5, 2, " s")
 
-        # ── Body geometry ─────────────────────────────────────────────────────
-        self.af_len_input    = _dsb(1,     500,   110.0, 1, " cm")
-        self.af_radius_input = _dsb(0.5,    30,     3.5, 2, " cm")
-        self.af_nose_input   = _dsb(1,     200,    20.0, 1, " cm")
+        frm.addRow("Mass:",              self.af_mass_input)
+        frm.addRow("CG (from nose):",    self.af_cg_input)
+        frm.addRow("Length:",            self.af_len_input)
+        frm.addRow("Body Radius:",       self.af_radius_input)
+        frm.addRow("Nose Length:",       self.af_nose_input)
+        frm.addRow("Fin Root Chord:",    self.af_finroot_input)
+        frm.addRow("Fin Tip Chord:",     self.af_fintip_input)
+        frm.addRow("Fin Semi-Span:",     self.af_finspan_input)
+        frm.addRow("Fin LE Position:",   self.af_finpos_input)
+        frm.addRow("Motor CG Pos.:",     self.af_motorpos_input)
+        frm.addRow("Motor Dry Mass:",    self.af_motormass_input)
+        frm.addRow("Backfire Delay:",    self.af_backfire_input)
 
-        # ── Fins (measured from nose tip per CGS spec) ────────────────────────
-        self.af_finroot_input = _dsb(0.5,  100,  12.0, 1, " cm")
-        self.af_fintip_input  = _dsb(0.5,  100,   6.0, 1, " cm")
-        self.af_finspan_input = _dsb(0.5,  100,   8.0, 1, " cm")
-        self.af_finpos_input  = _dsb(0,    500,  95.0, 1, " cm")
-
-        # ── Motor mount ───────────────────────────────────────────────────────
-        self.af_motorpos_input  = _dsb(0,   500,  100.0, 1, " cm")
-        self.af_motormass_input = _dsb(0, 5_000,  100.0, 1, " g")
-        self.af_backfire_input  = _dsb(0,    10,    0.5, 2, " s")
-
-        frm.addRow("Mass:",               self.af_mass_input)
-        frm.addRow("CG (from nose):",     self.af_cg_input)
-        frm.addRow(QLabel(""))
-        frm.addRow("Airframe Length:",    self.af_len_input)
-        frm.addRow("Airframe Radius:",    self.af_radius_input)
-        frm.addRow("Nose Length:",        self.af_nose_input)
-        frm.addRow(QLabel(""))
-        frm.addRow("Fin Root Chord:",     self.af_finroot_input)
-        frm.addRow("Fin Tip Chord:",      self.af_fintip_input)
-        frm.addRow("Fin Semi-Span:",      self.af_finspan_input)
-        frm.addRow("Fin LE Position:",    self.af_finpos_input)
-        frm.addRow(QLabel(""))
-        frm.addRow("Motor CG Position:",  self.af_motorpos_input)
-        frm.addRow("Motor Dry Mass:",     self.af_motormass_input)
-        frm.addRow("Backfire Delay:",     self.af_backfire_input)
+        lay.addWidget(btn_json)
+        lay.addWidget(btn_motor)
+        lay.addWidget(self.motor_label)
+        lay.addWidget(grp_motor)
+        lay.addWidget(grp_af)
 
         sa = QScrollArea()
         sa.setWidgetResizable(True)
@@ -803,9 +949,9 @@ class AppWindow(QMainWindow):
         sa.setWidget(w)
         return sa
 
-    # ── Launch Point page ──────────────────────────────────────────────────────
+    # ── Launch Settings tab ───────────────────────────────────────────────────
 
-    def _build_launch_point_page(self) -> QWidget:
+    def _build_launch_settings_page(self) -> QWidget:
         w   = QWidget()
         frm = QFormLayout(w)
         frm.setSpacing(6)
@@ -843,35 +989,6 @@ class AppWindow(QMainWindow):
         frm.addRow("Rail Azimuth:",   self.azim_input)
         return w
 
-    # ── Launch Mode page ───────────────────────────────────────────────────────
-
-    def _build_launch_mode_page(self) -> QWidget:
-        w   = QWidget()
-        frm = QFormLayout(w)
-        frm.setSpacing(6)
-        frm.setContentsMargins(8, 8, 8, 8)
-
-        self.sim_mode_combo = QComboBox(w)
-        self.sim_mode_combo.addItems(["Point-Return", "Altitude", "Glider"])
-        self.sim_mode_combo.setCurrentText("Point-Return")
-
-        self.mode_combo = QComboBox(w)
-        self.mode_combo.addItems(self.OPERATION_MODES)
-        self.mode_combo.setCurrentText("Free")
-
-        self._rmax_label = QLabel("R_max:", w)
-        self.rmax_input  = QDoubleSpinBox(w)
-        self.rmax_input.setRange(0, 9999); self.rmax_input.setDecimals(1)
-        self.rmax_input.setValue(50.0);    self.rmax_input.setSuffix(" m")
-
-        frm.addRow("Sim Mode:",       self.sim_mode_combo)
-        frm.addRow("Operation Mode:", self.mode_combo)
-        frm.addRow(self._rmax_label,  self.rmax_input)
-
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-        self._on_mode_changed("Free")
-        return w
-
     # ── Map dock content ───────────────────────────────────────────────────────
 
     def _build_map_dock_widget(self) -> QWidget:
@@ -885,7 +1002,7 @@ class AppWindow(QMainWindow):
         info.setFixedHeight(32)
         info.setStyleSheet(
             "QFrame#MapInfoBar {"
-            "  background: #181825; border-bottom: 1px solid #313244;"
+            "  background: #12121e; border-bottom: 1px solid #2a2a3e;"
             "}")
         ilay = QHBoxLayout(info)
         ilay.setContentsMargins(14, 0, 14, 0)
@@ -893,10 +1010,10 @@ class AppWindow(QMainWindow):
 
         self._map_launch_lbl = QLabel("Launch:  35.682800°N, 139.759000°E", info)
         self._map_launch_lbl.setStyleSheet(
-            "color: #89b4fa; font-size: 9pt; background: transparent;")
+            "color: #7eb3ff; font-size: 9pt; background: transparent;")
 
         _sep = QLabel("|", info)
-        _sep.setStyleSheet("color: #45475a; background: transparent;")
+        _sep.setStyleSheet("color: #3a3a52; background: transparent;")
 
         self._map_landing_lbl = QLabel("Landing:  —", info)
         self._map_landing_lbl.setStyleSheet(
@@ -1316,6 +1433,14 @@ class AppWindow(QMainWindow):
 
     # ── Action handlers ────────────────────────────────────────────────────────
 
+    def _on_advanced_settings(self) -> None:
+        """Open the Advanced Settings dialog modally."""
+        self._adv_dialog.exec()
+
+    def _on_load_airframe_json(self) -> None:
+        """Emit sig_load_json_clicked so external consumers can handle file I/O."""
+        self.sig_load_json_clicked.emit()
+
     def _on_run(self) -> None:
         self.set_status("Simulation running…", "#f9e2af")
         self._progress.setFormat("Simulating…"); self._progress.setValue(30)
@@ -1421,7 +1546,7 @@ class AppWindow(QMainWindow):
         if go:
             self._go_nogo_label.setText("✔   GO")
             self._go_nogo_label.setStyleSheet(
-                "font-size: 12pt; font-weight: bold; color: #a6e3a1; padding: 6px;")
+                "font-size: 12pt; font-weight: bold; color: #a8e6a1; padding: 6px;")
         else:
             self._go_nogo_label.setText("✘   NO-GO")
             self._go_nogo_label.setStyleSheet(
