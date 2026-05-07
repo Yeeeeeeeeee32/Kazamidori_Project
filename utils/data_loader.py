@@ -323,6 +323,142 @@ def load_airframe_config(filepath: str) -> dict[str, float]:
     return out
 
 
+# ── Rocket JSON loader — full config (SI → CGS) ──────────────────────────────
+
+class RocketConfigError(ValueError):
+    """Raised when a Rocket.json config file cannot be loaded or parsed."""
+
+
+_PARACHUTE_REQUIRED_KEYS: frozenset[str] = frozenset({"cd", "area", "lag"})
+
+# Parachute area: m² → cm² (× 10 000); cd and lag pass through unchanged
+_PARA_AREA_KEYS: frozenset[str] = frozenset({"area"})
+
+
+def load_rocket_config(filepath: str) -> dict[str, dict[str, float]]:
+    """Load a Rocket.json config file and return SI→CGS-converted sections.
+
+    Expected JSON structure (version 2)::
+
+        {
+            "version": 2,
+            "airframe": {
+                "mass": <kg>,  "cg": <m>,          "length": <m>,
+                "radius": <m>, "nose_length": <m>,  "fin_root": <m>,
+                "fin_tip": <m>, "fin_span": <m>,    "fin_pos": <m>,
+                "motor_pos": <m>, "motor_dry_mass": <kg>,
+                "backfire_delay": <s>
+            },
+            "parachute": {
+                "cd":   <dimensionless>,
+                "area": <m²>,
+                "lag":  <s>
+            }
+        }
+
+    Conversion rules
+    ----------------
+    Airframe length keys (m → cm, × 100):
+        cg, length, radius, nose_length, fin_root, fin_tip,
+        fin_span, fin_pos, motor_pos.
+    Airframe mass keys (kg → g, × 1000):
+        mass, motor_dry_mass.
+    Parachute area (m² → cm², × 10 000): area.
+    Pass-through (no conversion): backfire_delay, cd, lag.
+
+    Args:
+        filepath: Path to the Rocket.json file.
+
+    Returns:
+        ``{"airframe": <cgs_dict>, "parachute": <converted_dict>}``
+
+    Raises:
+        RocketConfigError: on missing file, invalid JSON, missing sections
+                           or keys, non-numeric values, or negative physical
+                           quantities.
+    """
+    # ── Load ────────────────────────────────────────────────────────────────
+    try:
+        with open(filepath, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        raise RocketConfigError(
+            f"Rocket config not found: {filepath!r}"
+        ) from None
+    except json.JSONDecodeError as exc:
+        raise RocketConfigError(
+            f"Invalid JSON in {filepath!r}: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise RocketConfigError(
+            f"Expected a JSON object at top level, got {type(data).__name__!r}"
+        )
+
+    # ── Require both top-level sections ─────────────────────────────────────
+    for section in ("airframe", "parachute"):
+        if section not in data or not isinstance(data[section], dict):
+            raise RocketConfigError(
+                f"Missing or invalid '{section}' section in {filepath!r}"
+            )
+
+    # ── Parse airframe ───────────────────────────────────────────────────────
+    af_raw    = data["airframe"]
+    missing_af = _AIRFRAME_REQUIRED_KEYS - af_raw.keys()
+    if missing_af:
+        raise RocketConfigError(
+            f"airframe section in {filepath!r} is missing keys: {sorted(missing_af)}"
+        )
+
+    airframe: dict[str, float] = {}
+    for key in _AIRFRAME_REQUIRED_KEYS:
+        raw = af_raw[key]
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            raise RocketConfigError(
+                f"airframe['{key}'] in {filepath!r} is not numeric: {raw!r}"
+            ) from None
+        if key != "backfire_delay" and val < 0.0:
+            raise RocketConfigError(
+                f"airframe['{key}'] in {filepath!r} must be non-negative, got {val}"
+            )
+        if key in _SI_LENGTH_KEYS:
+            airframe[key] = val * 100.0     # m → cm
+        elif key in _SI_MASS_KEYS:
+            airframe[key] = val * 1000.0    # kg → g
+        else:
+            airframe[key] = val             # backfire_delay: s, unchanged
+
+    # ── Parse parachute ──────────────────────────────────────────────────────
+    pa_raw     = data["parachute"]
+    missing_pa = _PARACHUTE_REQUIRED_KEYS - pa_raw.keys()
+    if missing_pa:
+        raise RocketConfigError(
+            f"parachute section in {filepath!r} is missing keys: {sorted(missing_pa)}"
+        )
+
+    parachute: dict[str, float] = {}
+    for key in _PARACHUTE_REQUIRED_KEYS:
+        raw = pa_raw[key]
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            raise RocketConfigError(
+                f"parachute['{key}'] in {filepath!r} is not numeric: {raw!r}"
+            ) from None
+        if val < 0.0:
+            raise RocketConfigError(
+                f"parachute['{key}'] in {filepath!r} must be non-negative, got {val}"
+            )
+        if key in _PARA_AREA_KEYS:
+            parachute[key] = val * 10_000.0     # m² → cm²
+        else:
+            parachute[key] = val                # cd, lag: unchanged
+
+    return {"airframe": airframe, "parachute": parachute}
+
+
 def load_motor_csv(filepath: str) -> MotorData:
     """Parse a RockSim-format motor CSV file and return a :class:`MotorData`.
 

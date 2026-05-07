@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox,
     QComboBox, QPushButton, QToolBar, QStatusBar,
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
-    QMessageBox, QToolBox, QSplitter,
+    QMessageBox, QToolBox, QSplitter, QSlider,
     QDialog, QDialogButtonBox,
 )
 from PySide6.QtGui import QAction
@@ -413,6 +413,17 @@ class _MplCanvas(FigureCanvasQTAgg):
         self.updateGeometry()
 
 
+class _AzimCanvas(_MplCanvas):
+    """3-D profile canvas: mouse-wheel adjusts the linked azimuth QSlider (±3° per notch)."""
+
+    def wheelEvent(self, event) -> None:
+        sl = getattr(self, '_azim_slider', None)
+        if sl is not None:
+            step = 3 if event.angleDelta().y() > 0 else -3
+            sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
+        event.accept()
+
+
 # ── Axis styling ──────────────────────────────────────────────────────────────
 
 def _style_3d(ax, fig: Optional[Figure] = None) -> None:
@@ -519,14 +530,14 @@ class AppWindow(QMainWindow):
 
     Signals
     -------
-    sig_load_json_clicked : emitted when the "Load Airframe JSON" button is clicked.
+    sig_load_rocket_json_clicked : emitted when the "Load Rocket JSON" button is clicked.
 
     Window-internal reactive state
     ------------------------------
     state : AppState  — drives profile / map / wind canvases via needs_redraw
     """
 
-    sig_load_json_clicked = Signal()
+    sig_load_rocket_json_clicked = Signal()
 
     OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
 
@@ -580,7 +591,13 @@ class AppWindow(QMainWindow):
     def _build_figures(self) -> None:
         self.profile_fig    = Figure(figsize=(5, 5), facecolor="#1e1e2e")
         self.profile_ax     = self.profile_fig.add_subplot(111, projection="3d")
-        self.profile_canvas = _MplCanvas(self.profile_fig)
+        self.profile_canvas = _AzimCanvas(self.profile_fig)
+        # Disable the default Matplotlib click-drag rotation; azimuth is
+        # controlled exclusively by the QSlider + wheel event below.
+        try:
+            self.profile_ax.disable_mouse_rotation()
+        except AttributeError:
+            pass
 
         self.map_fig    = Figure(figsize=(6, 6), facecolor="#0d0d1a")
         self.map_ax     = self.map_fig.add_subplot(111)
@@ -719,6 +736,45 @@ class AppWindow(QMainWindow):
         tl.addWidget(nav3d)
         tl.addWidget(self.profile_canvas)
 
+        # ── Azimuth control row ───────────────────────────────────────────────
+        azim_row = QWidget(top)
+        azim_row.setFixedHeight(26)
+        azim_lay = QHBoxLayout(azim_row)
+        azim_lay.setContentsMargins(8, 0, 8, 0)
+        azim_lay.setSpacing(6)
+
+        azim_lbl = QLabel("Azimuth:", azim_row)
+        azim_lbl.setStyleSheet("color: #6c7086; font-size: 7pt;")
+        azim_lbl.setFixedWidth(48)
+
+        self._azim_slider = QSlider(Qt.Orientation.Horizontal, azim_row)
+        self._azim_slider.setMinimum(0)
+        self._azim_slider.setMaximum(90)
+        self._azim_slider.setValue(45)
+        self._azim_slider.setTickPosition(QSlider.TickPosition.NoTicks)
+        self._azim_slider.setStyleSheet(
+            "QSlider::groove:horizontal { height: 4px; background: #3c3c3c;"
+            "  border-radius: 2px; }"
+            "QSlider::handle:horizontal  { width: 12px; height: 12px;"
+            "  background: #7eb3ff; border-radius: 6px; margin: -4px 0; }"
+            "QSlider::sub-page:horizontal { background: #7eb3ff; border-radius: 2px; }")
+
+        self._azim_val_lbl = QLabel("45°", azim_row)
+        self._azim_val_lbl.setStyleSheet("color: #a6adc8; font-size: 7pt;")
+        self._azim_val_lbl.setFixedWidth(28)
+
+        self._azim_slider.valueChanged.connect(self._on_azim_changed)
+        self._azim_slider.valueChanged.connect(
+            lambda v: self._azim_val_lbl.setText(f"{v}°"))
+
+        azim_lay.addWidget(azim_lbl)
+        azim_lay.addWidget(self._azim_slider)
+        azim_lay.addWidget(self._azim_val_lbl)
+        tl.addWidget(azim_row)
+
+        # Link the canvas wheel event to the slider
+        self.profile_canvas._azim_slider = self._azim_slider
+
         bot = QWidget(splitter)
         bl  = QVBoxLayout(bot)
         bl.setContentsMargins(0, 0, 0, 0)
@@ -825,7 +881,7 @@ class AppWindow(QMainWindow):
         lay.setSpacing(6)
 
         # ── Load buttons ──────────────────────────────────────────────────────
-        btn_json  = QPushButton("📂  Load Airframe JSON", w)
+        btn_json  = QPushButton("📂  Load Rocket JSON", w)
         btn_json.clicked.connect(self._on_load_airframe_json)
 
         btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
@@ -898,11 +954,32 @@ class AppWindow(QMainWindow):
         frm.addRow("Motor Dry Mass:",    self.af_motormass_input)
         frm.addRow("Backfire Delay:",    self.af_backfire_input)
 
+        # ── Parachute parameters ──────────────────────────────────────────────
+        grp_para     = QGroupBox("Parachute", w)
+        frm_para     = QFormLayout(grp_para)
+        frm_para.setSpacing(5)
+        frm_para.setContentsMargins(10, 10, 10, 8)
+
+        def _psb(lo, hi, val, dec, suffix):
+            sb = QDoubleSpinBox(grp_para)
+            sb.setRange(lo, hi); sb.setDecimals(dec)
+            sb.setValue(val);    sb.setSuffix(suffix)
+            return sb
+
+        self.para_cd_input   = _psb(0.10,   2.00,  0.90, 2, "")
+        self.para_area_input = _psb(1.0,  10_000, 400.0, 1, " cm²")
+        self.para_lag_input  = _psb(0.0,      30,   0.0, 2, " s")
+
+        frm_para.addRow("Drag Coeff. Cd:",      self.para_cd_input)
+        frm_para.addRow("Canopy Area:",          self.para_area_input)
+        frm_para.addRow("Deployment Lag:",       self.para_lag_input)
+
         lay.addWidget(btn_json)
         lay.addWidget(btn_motor)
         lay.addWidget(self.motor_label)
         lay.addWidget(grp_motor)
         lay.addWidget(grp_af)
+        lay.addWidget(grp_para)
 
         sa = QScrollArea()
         sa.setWidgetResizable(True)
@@ -1033,7 +1110,8 @@ class AppWindow(QMainWindow):
         ax.set_xlabel("East  (m)",  color="#6c7086", fontsize=8, labelpad=4)
         ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
         ax.set_zlabel("Alt  (m)",   color="#6c7086", fontsize=8, labelpad=4)
-        ax.view_init(elev=22, azim=45)
+        azim = getattr(self, '_azim_slider', None)
+        ax.view_init(elev=22, azim=azim.value() if azim is not None else 45)
         if res is not None:
             _equalise_3d_axes(ax)
         self.profile_fig.tight_layout(pad=0.5)
@@ -1173,7 +1251,8 @@ class AppWindow(QMainWindow):
                    label="Launch (0, 0)")
 
         res  = self.state.simulation_result
-        xlim = ylim = 300.0
+        # Default view when no result exists (launch at origin, ±300 m square).
+        x_lo, x_hi, y_lo, y_hi = -300.0, 300.0, -300.0, 300.0
 
         if res is not None:
             lx = float(res.get("land_x", 0.0))
@@ -1223,12 +1302,32 @@ class AppWindow(QMainWindow):
             ax.scatter([lx], [ly], c="#f38ba8", s=130, marker="v",
                        zorder=6, label="Nominal landing")
 
-            all_x = np.concatenate([[0, lx], mc_x[:n] if n > 0 else []])
-            all_y = np.concatenate([[0, ly], mc_y[:n] if n > 0 else []])
-            pad   = max(abs(all_x).max(), abs(all_y).max()) * 0.25 + 60.0
-            xlim  = ylim = pad
+            # ── Dynamic bounding box ──────────────────────────────────────────
+            # Seed from launch (origin), nominal landing, and MC scatter.
+            _pts_x = np.concatenate([[0.0, lx],
+                                     mc_x[:n] if n > 0 else np.array([])])
+            _pts_y = np.concatenate([[0.0, ly],
+                                     mc_y[:n] if n > 0 else np.array([])])
+            # Expand by each ellipse's maximum semi-axis radius.
+            for _bb_ell in res.get("cep_ellipses", []):
+                if "a" not in _bb_ell or "b" not in _bb_ell:
+                    continue
+                _r   = max(float(_bb_ell["a"]), float(_bb_ell["b"]))
+                _ecx = float(_bb_ell.get("cx", lx))
+                _ecy = float(_bb_ell.get("cy", ly))
+                _pts_x = np.append(_pts_x, [_ecx - _r, _ecx + _r])
+                _pts_y = np.append(_pts_y, [_ecy - _r, _ecy + _r])
 
-        ax.set_xlim(-xlim, xlim); ax.set_ylim(-ylim, ylim)
+            _xmin, _xmax = float(_pts_x.min()), float(_pts_x.max())
+            _ymin, _ymax = float(_pts_y.min()), float(_pts_y.max())
+            # Square view centred on the data cloud (preserves equal-aspect).
+            _cx  = (_xmin + _xmax) / 2.0
+            _cy  = (_ymin + _ymax) / 2.0
+            _h   = max(_xmax - _xmin, _ymax - _ymin) / 2.0 * 1.22 + 40.0
+            x_lo, x_hi = _cx - _h, _cx + _h
+            y_lo, y_hi = _cy - _h, _cy + _h
+
+        ax.set_xlim(x_lo, x_hi); ax.set_ylim(y_lo, y_hi)
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlabel("East  (m)",  color="#6c7086", fontsize=8, labelpad=4)
         ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
@@ -1382,15 +1481,22 @@ class AppWindow(QMainWindow):
                       label=f"{lbl}  {spd:.1f} m/s @ {d_from:.0f}°")
 
         ax_c.set_title("Wind Compass", color="#aaaaaa", fontsize=8, pad=12)
+        # Legend placed OUTSIDE the polar axes so it never overlaps the arrows.
         ax_c.legend(
-            loc="upper right",
+            loc="upper left",
+            bbox_to_anchor=(1.10, 1.05),
+            borderaxespad=0,
             fontsize=6,
             facecolor="#2b2b2b", edgecolor="#555555",
             labelcolor="#ffffff", framealpha=0.88,
             ncol=1,
         )
 
-        fig.tight_layout(pad=0.5)
+        # subplots_adjust reserves right margin for the outside legend;
+        # tight_layout is intentionally omitted here because it ignores
+        # bbox_to_anchor and would clip the legend.
+        fig.subplots_adjust(left=0.07, right=0.71, top=0.90,
+                            bottom=0.15, wspace=0.44)
         self.wind_canvas.draw()
 
     # ── Smart partial redraw ──────────────────────────────────────────────────
@@ -1483,13 +1589,18 @@ class AppWindow(QMainWindow):
 
     # ── Action handlers ────────────────────────────────────────────────────────
 
+    def _on_azim_changed(self, value: int) -> None:
+        """Rotate the 3-D profile to the new azimuth without a full redraw."""
+        self.profile_ax.view_init(elev=22, azim=value)
+        self.profile_canvas.draw_idle()
+
     def _on_advanced_settings(self) -> None:
         """Open the Advanced Settings dialog modally."""
         self._adv_dialog.exec()
 
     def _on_load_airframe_json(self) -> None:
-        """Emit sig_load_json_clicked so external consumers can handle file I/O."""
-        self.sig_load_json_clicked.emit()
+        """Emit sig_load_rocket_json_clicked so external consumers can handle file I/O."""
+        self.sig_load_rocket_json_clicked.emit()
 
     def _on_run(self) -> None:
         self.set_status("Simulation running…", "#f9e2af")

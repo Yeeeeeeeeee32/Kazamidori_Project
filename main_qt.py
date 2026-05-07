@@ -35,7 +35,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, Q
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow, GLOBAL_QSS
 from ui_qt.workers import SimulationWorker
-from utils.data_loader import AirframeConfigError, load_airframe_config
+from utils.data_loader import RocketConfigError, load_rocket_config
 
 DEFAULT_CONFIG: dict = {
     "wind_uncertainty":      0.20,
@@ -136,12 +136,12 @@ class SimController(QObject):
         # → spinbox.setValue on JSON load or external state change.
         self._wire_airframe_spinboxes()
 
-        # ── Load Airframe JSON button → controller ─────────────────────────────
-        # AppWindow emits sig_load_json_clicked instead of opening the dialog
-        # itself, keeping file I/O and AppState writes in the controller.
-        _json_sig = getattr(window, 'sig_load_json_clicked', None)
+        # ── Load Rocket JSON button → controller ──────────────────────────────
+        # AppWindow emits sig_load_rocket_json_clicked instead of opening the
+        # dialog itself, keeping file I/O and AppState writes in the controller.
+        _json_sig = getattr(window, 'sig_load_rocket_json_clicked', None)
         if _json_sig is not None:
-            _json_sig.connect(self._on_load_airframe_json)
+            _json_sig.connect(self._on_load_rocket_json)
 
         # ── Advanced Settings button → controller-managed dialog ───────────────
         # Reconnect from AppWindow's bare exec() stub to the controller's
@@ -209,6 +209,12 @@ class SimController(QObject):
         self._set_run_buttons_enabled(False)
         self._window.set_status("Simulation running...", "#f9e2af")
         self._window.set_progress(0, "Simulating...")
+
+        # Clear stale MC scatter from the previous run so the operator starts
+        # with a clean map.  update_map_plot renders only the launch marker when
+        # window.state.simulation_result is None.
+        self._window.state.simulation_result = None
+        self._window.update_map_plot()
 
         self._worker = SimulationWorker(self._collect_params(), parent=self)
         self._worker.progress.connect(self._on_progress)
@@ -318,14 +324,13 @@ class SimController(QObject):
         # ── Refresh AppWindow coordinate labels ────────────────────────────────
         self._window.map_widget.update_landing(land_lat, land_lon)
 
-        # ── Write to global AppState last — emits simulation_result_changed
-        #    AND needs_redraw (via signal bridge -> window.state.needs_redraw).
-        self._state.simulation_result = result
-
-        # ── Write adapted payload to AppWindow's local state ───────────────────
-        # The global AppState signal bridge fires needs_redraw but the window
-        # renders from its own state object; this write supplies the data.
+        # ── Populate window state FIRST ────────────────────────────────────────
+        # simulation_result_changed (fired on the next line) triggers
+        # update_map_plot via the __init__ connection.  update_map_plot reads
+        # from window.state, so that write must precede the signal.
         self._window.state.simulation_result = self._adapt_for_window(result)
+        # ── Fire simulation_result_changed → update_map_plot + needs_redraw ───
+        self._state.simulation_result = result
 
         # ── Transition to Phase 2 (monitoring mode) ────────────────────────────
         # Store the nominal wind baseline so check_tolerance has a reference,
@@ -361,9 +366,12 @@ class SimController(QObject):
         # Broadcast smart-redraw lifecycle signals.
         self._state.needs_full_redraw.emit(result)
         self._state.simulation_finished.emit(result)
-        # Task 3: reset progress bar and unlock UI atomically after MC done.
-        self._state.progress_percentage = 0   # reactive clear of any progress bar
-        self._state.is_calculating      = False
+        # Reset AppState progress flag (fires progress_changed(0) → lambda calls
+        # set_progress(0, "MC  0%") synchronously on the GUI thread).
+        self._state.progress_percentage = 0
+        # Override the "MC  0%" label from the lambda with a clean idle state.
+        self._window.set_progress(0, "Idle")
+        self._state.is_calculating = False
 
         self._worker = None
         self._set_run_buttons_enabled(True)
@@ -448,7 +456,9 @@ class SimController(QObject):
             "fin_pos":        s.fin_position,
             "motor_pos":      s.motor_cg,
             "motor_dry_mass": s.motor_dry_mass,
+            "para_cd":        s.parachute_cd,
             "para_area":      s.parachute_area,
+            "para_lag":       s.parachute_lag,
             "backfire_delay": s.backfire_delay,
         }
 
@@ -518,58 +528,69 @@ class SimController(QObject):
     # ── Airframe JSON loader ───────────────────────────────────────────────────
 
     @Slot()
-    def _on_load_airframe_json(self) -> None:
-        """Open a file dialog, parse the JSON, and push all 12 parameters to AppState.
+    def _on_load_rocket_json(self) -> None:
+        """Open a file dialog, parse the Rocket.json, and push all parameters to AppState.
 
         Data flow (strict unidirectional MVVM):
-            File → load_airframe_config (→ CGS) → convert → AppState (SI)
-                 → signals fire → spinboxes update (CGS display)
+            File → load_rocket_config (→ CGS/converted)
+                 → airframe: CGS → SI → AppState rocket geometry properties
+                 → parachute: converted → SI → AppState parachute properties
+                 → signals fire → spinboxes / bound widgets update automatically
 
-        AppState equality guards prevent any re-emission loop when the spinbox
-        setValue callback fires back into the AppState setter.
+        AppState equality guards prevent re-emission loops when spinbox
+        setValue callbacks fire back into the property setters.
         """
         import os as _os
         path, _ = QFileDialog.getOpenFileName(
             self._window,
-            "Load Airframe JSON",
+            "Load Rocket JSON",
             "",
-            "Airframe Config (*.json);;All Files (*)",
+            "Rocket Config (*.json);;All Files (*)",
         )
         if not path:
             return
 
         try:
-            cgs = load_airframe_config(path)
-        except AirframeConfigError as exc:
+            cfg = load_rocket_config(path)
+        except RocketConfigError as exc:
             QMessageBox.critical(
                 self._window,
-                "Airframe Config Error",
+                "Rocket Config Error",
                 f"Failed to load:\n{path}\n\n{exc}",
             )
-            self._window.set_status(f"Airframe JSON load failed: {exc}", "#f38ba8")
+            self._window.set_status(f"Rocket JSON load failed: {exc}", "#f38ba8")
             return
 
-        s = self._state
-        # CGS → SI conversions; each setter emits its signal → spinbox.setValue fires
-        s.rocket_dry_mass = cgs["mass"]           / 1000.0        # g  → kg
-        s.rocket_cg       = cgs["cg"]             / 100.0         # cm → m
-        s.rocket_length   = cgs["length"]         / 100.0         # cm → m
-        s.rocket_diameter = cgs["radius"]         / 100.0 * 2.0   # cm radius → m diameter
-        s.nose_length     = cgs["nose_length"]    / 100.0         # cm → m
-        s.fin_root_chord  = cgs["fin_root"]       / 100.0         # cm → m
-        s.fin_tip_chord   = cgs["fin_tip"]        / 100.0         # cm → m
-        s.fin_span        = cgs["fin_span"]       / 100.0         # cm → m
-        s.fin_position    = cgs["fin_pos"]        / 100.0         # cm → m
-        s.motor_cg        = cgs["motor_pos"]      / 100.0         # cm → m
-        s.motor_dry_mass  = cgs["motor_dry_mass"] / 1000.0        # g  → kg
-        s.backfire_delay  = cgs["backfire_delay"]                  # s  → s (pass-through)
+        s   = self._state
+        af  = cfg["airframe"]
+        par = cfg["parachute"]
+
+        # ── Airframe: CGS → SI; each setter emits signal → spinbox.setValue ──
+        s.rocket_dry_mass = af["mass"]           / 1000.0        # g   → kg
+        s.rocket_cg       = af["cg"]             / 100.0         # cm  → m
+        s.rocket_length   = af["length"]         / 100.0         # cm  → m
+        s.rocket_diameter = af["radius"]         / 100.0 * 2.0   # cm radius → m diameter
+        s.nose_length     = af["nose_length"]    / 100.0         # cm  → m
+        s.fin_root_chord  = af["fin_root"]       / 100.0         # cm  → m
+        s.fin_tip_chord   = af["fin_tip"]        / 100.0         # cm  → m
+        s.fin_span        = af["fin_span"]       / 100.0         # cm  → m
+        s.fin_position    = af["fin_pos"]        / 100.0         # cm  → m
+        s.motor_cg        = af["motor_pos"]      / 100.0         # cm  → m
+        s.motor_dry_mass  = af["motor_dry_mass"] / 1000.0        # g   → kg
+        s.backfire_delay  = af["backfire_delay"]                  # s   → s
+
+        # ── Parachute: load_rocket_config returns cd/lag unchanged, area in cm²
+        s.parachute_cd   = par["cd"]                             # dimensionless
+        s.parachute_area = par["area"] / 10_000.0               # cm² → m²
+        s.parachute_lag  = par["lag"]                            # s   → s
 
         name = _os.path.basename(path)
         self._window.set_status(
-            f"Airframe loaded: {name}  ·  "
-            f"Mass {cgs['mass']:.0f} g  ·  "
-            f"Length {cgs['length']:.1f} cm  ·  "
-            f"Body radius {cgs['radius']:.2f} cm",
+            f"Rocket loaded: {name}  ·  "
+            f"Mass {af['mass']:.0f} g  ·  "
+            f"Length {af['length']:.1f} cm  ·  "
+            f"Chute area {par['area']:.0f} cm²  ·  "
+            f"Cd {par['cd']:.2f}",
             "#a6e3a1",
         )
 

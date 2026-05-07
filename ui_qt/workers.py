@@ -347,22 +347,38 @@ class SimulationWorker(QThread):
         connected to it.
 
         Progress moves from 25 % to 90 % as runs complete.
+
+        GIL note: RocketPy simulations hold Python's GIL for their duration.
+        QThread.yieldCurrentThread() is called after every iteration to release
+        the GIL and allow Qt's event queue to deliver queued signals (including
+        sig_progress_updated) to the GUI thread before the next simulation starts.
         """
-        n_total    = int(p.get("mc_runs",    50))
-        wind_unc   = float(p.get("wind_unc",   0.20))
-        thrust_unc = float(p.get("thrust_unc", 0.05))
+        n_total       = int(p.get("mc_runs",       50))
+        wind_unc      = float(p.get("wind_unc",    0.20))
+        thrust_unc    = float(p.get("thrust_unc",  0.05))
+        gust_intensity = float(p.get("gust_intensity", 0.0))
         scatter: list[tuple[float, float]] = []
 
         for i in range(n_total):
             if self._stop_event.is_set():
                 break
 
+            # Run exactly 1 perturbed simulation per iteration so that
+            # sig_progress_updated fires at every run, not every batch.
             batch_scatter, _ = run_mc_scatter(
-                sim_params, 1,
-                wind_unc, thrust_unc,
+                sim_params,
+                1,                          # one run per iteration
+                wind_unc,
+                thrust_unc,
+                gust_intensity=gust_intensity,
                 stop_flag=self._stop_event,
             )
             scatter.extend(batch_scatter)
+
+            # Yield the GIL so Qt can drain its event queue before the
+            # next blocking simulation starts.  Without this the GUI thread
+            # may not process the queued signal until all n_total runs finish.
+            QThread.yieldCurrentThread()
 
             # Per-iteration heartbeat — drives fine-grained UI updates
             self.sig_progress_updated.emit(i + 1, n_total)

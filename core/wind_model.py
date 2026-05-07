@@ -192,10 +192,12 @@ def sample_wind_nodes(
             ``dir_deg``  — meteorological direction (° FROM which wind blows)
             ``source``   — ``"anemometer"`` for 3 m; ``"api"`` for all others
     """
-    if alts is None:
-        alts = WIND_SAMPLE_ALTS
+    # Enforce the 5-node contract: always sample exactly these altitudes
+    # unless the caller explicitly overrides for testing purposes.
+    sample_alts: list[float] = WIND_SAMPLE_ALTS if alts is None else list(alts)
+
     nodes: list[dict] = []
-    for alt in alts:
+    for alt in sample_alts:
         u = _interp_profile(u_prof, alt)
         v = _interp_profile(v_prof, alt)
         speed, dir_deg = uv_to_speed_dir(u, v)
@@ -208,6 +210,14 @@ def sample_wind_nodes(
             # Distinguishes on-site hardware truth (3 m) from API-derived levels
             "source":   "anemometer" if alt == ANEMOMETER_ALT else "api",
         })
+
+    # Hard invariant: callers depend on exactly 5 nodes in WIND_SAMPLE_ALTS order.
+    if alts is None and len(nodes) != 5:
+        raise RuntimeError(
+            f"sample_wind_nodes: expected 5 nodes, produced {len(nodes)}. "
+            f"WIND_SAMPLE_ALTS={WIND_SAMPLE_ALTS!r}"
+        )
+
     return nodes
 
 

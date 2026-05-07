@@ -156,7 +156,9 @@ class AppState(QObject):
     fin_position_changed    = Signal(float)   # fin leading-edge position from nose (m)
     motor_cg_changed        = Signal(float)   # motor CG from nose (m)
     motor_dry_mass_changed  = Signal(float)   # motor dry mass (kg)
+    parachute_cd_changed    = Signal(float)   # parachute drag coefficient (dimensionless)
     parachute_area_changed  = Signal(float)   # parachute reference area (m²)
+    parachute_lag_changed   = Signal(float)   # parachute deployment lag (s)
     backfire_delay_changed  = Signal(float)   # ejection charge delay after burnout (s)
 
     # ── Engine / motor metadata ────────────────────────────────────────────────
@@ -262,7 +264,9 @@ class AppState(QObject):
         self._fin_position     = float(cfg.get("fin_position",     0.95))
         self._motor_cg         = float(cfg.get("motor_cg",         1.00))
         self._motor_dry_mass   = float(cfg.get("motor_dry_mass",   0.10))
+        self._parachute_cd     = float(cfg.get("parachute_cd",    1.5))
         self._parachute_area   = float(cfg.get("parachute_area",   0.28))
+        self._parachute_lag    = float(cfg.get("parachute_lag",    0.5))
         self._backfire_delay   = float(cfg.get("backfire_delay",   0.5))
 
         # Flight mode — mission profile selected by the operator
@@ -897,6 +901,18 @@ class AppState(QObject):
             self._motor_dry_mass = value
             self.motor_dry_mass_changed.emit(value)
 
+    @Property(float, notify=parachute_cd_changed)
+    def parachute_cd(self) -> float:
+        """Parachute drag coefficient (dimensionless; maps to 'para_cd')."""
+        return self._parachute_cd
+
+    @parachute_cd.setter
+    def parachute_cd(self, value: float) -> None:
+        value = float(value)
+        if self._parachute_cd != value:
+            self._parachute_cd = value
+            self.parachute_cd_changed.emit(value)
+
     @Property(float, notify=parachute_area_changed)
     def parachute_area(self) -> float:
         """Parachute reference area in m² (maps to 'para_area')."""
@@ -908,6 +924,18 @@ class AppState(QObject):
         if self._parachute_area != value:
             self._parachute_area = value
             self.parachute_area_changed.emit(value)
+
+    @Property(float, notify=parachute_lag_changed)
+    def parachute_lag(self) -> float:
+        """Parachute deployment lag in seconds (maps to 'para_lag')."""
+        return self._parachute_lag
+
+    @parachute_lag.setter
+    def parachute_lag(self, value: float) -> None:
+        value = float(value)
+        if self._parachute_lag != value:
+            self._parachute_lag = value
+            self.parachute_lag_changed.emit(value)
 
     @Property(float, notify=backfire_delay_changed)
     def backfire_delay(self) -> float:
