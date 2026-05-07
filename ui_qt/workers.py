@@ -125,6 +125,7 @@ class SimulationWorker(QThread):
     sig_nominal_done     = Signal(dict)       # Stage 1: emitted after nominal run
     sig_progress_updated = Signal(int, int)   # Stage 2: (current_iteration, total_iterations)
     sig_mc_done          = Signal(dict)       # Stage 2: emitted after MC loop + statistics
+    sig_status_text      = Signal(str)        # Human-readable stage label for the status bar
 
     def __init__(self, params: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
@@ -164,6 +165,7 @@ class SimulationWorker(QThread):
             sim_params = self._build_sim_params(p, u_prof, v_prof)
 
             self.progress.emit(10)
+            self.sig_status_text.emit("Simulating nominal trajectory...")
             nominal = simulate_once(
                 elev=float(p.get("elev", 85.0)),
                 azi=float(p.get("azim",  0.0)),
@@ -176,6 +178,17 @@ class SimulationWorker(QThread):
             # Cross thread boundary: UI renders trajectory immediately
             self.sig_nominal_done.emit(self._package_nominal(nominal, wind_nodes))
 
+            # ── Mandatory stage boundary ──────────────────────────────────
+            # sig_nominal_done is a queued signal: it was posted to the GUI
+            # thread's event queue but has NOT been processed yet.  Without
+            # an explicit yield the worker immediately calls _run_mc_loop,
+            # which blocks on the first RocketPy call for several seconds.
+            # During that time Python's GIL is held and the GUI thread cannot
+            # drain its event queue, so the trajectory never appears until
+            # the full MC loop finishes — defeating the two-stage UX.
+            # msleep(0) releases the GIL and lets the event queue flush.
+            QThread.msleep(0)
+
             if self._stop_event.is_set():
                 self.finished.emit({"cancelled": True, "has_sim_result": False})
                 return
@@ -187,6 +200,7 @@ class SimulationWorker(QThread):
             # → emit finished with the full combined result.
             # ════════════════════════════════════════════════════════════════
 
+            self.sig_status_text.emit("Running Monte Carlo...")
             scatter = self._run_mc_loop(sim_params, p)
 
             if self._stop_event.is_set():
@@ -264,13 +278,24 @@ class SimulationWorker(QThread):
         u_prof: list,
         v_prof: list,
     ) -> dict:
-        """
-        Merge UI params with the default rocket configuration.
+        """Merge UI params with the default rocket configuration.
 
         Any key present in *p* that also exists in _DEFAULT_ROCKET will be
-        overridden; all other defaults are preserved.  This allows future UI
-        widgets (motor file, rocket dimensions) to inject their values here
-        without changing the worker logic.
+        overridden; all other defaults are preserved.
+
+        SI CONTRACT — all values passed to simulate_once MUST be in SI:
+          Lengths   → metres  (m)    NOT centimetres
+          Masses    → kilograms (kg) NOT grams
+          Areas     → m²             NOT cm²
+          Angles    → degrees        (elev, azi)
+          Time      → seconds        (backfire_delay, para_lag, motor_burn_time)
+
+        AppState stores all geometry in SI; _collect_params reads from AppState
+        so the values in *p* are already SI by the time they reach here.
+        No conversion is applied in this method — that is intentional.
+        If altitudes displayed in the UI appear wrong (×100 or ÷100), the
+        root cause will be in _collect_params or the AppState spinbox bindings,
+        NOT here.
         """
         params = dict(_DEFAULT_ROCKET)
         params.update({
@@ -281,7 +306,9 @@ class SimulationWorker(QThread):
             "wind_u_prof":  u_prof,
             "wind_v_prof":  v_prof,
         })
-        # Allow caller to override any rocket param (e.g. from a loaded motor file)
+        # Override _DEFAULT_ROCKET keys with caller-supplied SI values.
+        # Keys not present in p (e.g. thrust_data, motor_burn_time) retain
+        # their _DEFAULT_ROCKET values unless a motor file has been loaded.
         for key in _DEFAULT_ROCKET:
             if key in p and key not in ("wind_u_prof", "wind_v_prof"):
                 params[key] = p[key]
@@ -291,45 +318,87 @@ class SimulationWorker(QThread):
     def _package_nominal(nominal: dict, wind_nodes: list[dict]) -> dict:
         """Package the nominal trajectory for sig_nominal_done.
 
-        The UI can connect to sig_nominal_done and render the 3-D trajectory
-        as soon as the nominal run completes — before any MC runs start.
-        Arrays are converted to lists so no numpy types cross the signal
-        boundary.
+        Trajectory phases (phase-split arrays)
+        ---------------------------------------
+        ``phases["thrust"]``  — 推進: launch → motor burnout
+        ``phases["coast"]``   — 滑空: burnout → parachute open (or end of flight)
+        ``phases["chute"]``   — パラシュート: parachute open → landing
+                                Empty lists when deployment time exceeds flight time.
 
-        Wind node payload structure
-        ---------------------------
-        ``wind_nodes`` — full list of 5 altitude nodes, each with a ``source``
-            field tagging its data origin:
-            * node[0]  alt=3 m    source="anemometer"  (自作風速計, surface truth)
-            * node[1]  alt=10 m   source="api"
-            * node[2]  alt=150 m  source="api"
-            * node[3]  alt=300 m  source="api"
-            * node[4]  alt=600 m  source="api"
+        Key-event coordinates (x_m, y_m, z_m tuples)
+        ----------------------------------------------
+        ``events["burnout"]`` — 燃焼終了点: position at motor burnout
+        ``events["apogee"]``  — 最高点: position at peak altitude
+        ``events["chute"]``   — 開傘点: position at parachute opening; None if not deployed
 
-        ``surface_wind`` — convenience alias for ``wind_nodes[0]`` so consumers
-            that only need the anemometer reading do not have to filter the list.
-
-        ``upper_wind_nodes`` — convenience alias for ``wind_nodes[1:]`` so
-            consumers that only need the API-derived levels do not have to filter.
+        Wind nodes
+        ----------
+        ``wind_by_alt``       — dict keyed by altitude (float) for O(1) per-level lookup
+                                e.g. payload["wind_by_alt"][3.0] → node dict for 3 m AGL
+        ``wind_nodes``        — ordered list of all 5 nodes (3, 10, 150, 300, 600 m)
+        ``surface_wind``      — alias for wind_nodes[0] (anemometer, 3 m)
+        ``upper_wind_nodes``  — alias for wind_nodes[1:] (API levels)
         """
         def _to_list(v):
             return v.tolist() if hasattr(v, "tolist") else list(v)
 
+        t = _to_list(nominal["t_vals"])
+        x = _to_list(nominal["x_vals"])
+        y = _to_list(nominal["y_vals"])
+        z = _to_list(nominal["z_vals"])
+
+        i_burn = nominal.get("idx_burnout", 0)
+        i_apo  = nominal.get("apogee_idx",  len(t) - 1)
+        i_para = nominal.get("idx_para",    -1)
+
+        # Coast phase ends at parachute open (or the final sample if not deployed)
+        coast_end = i_para if i_para != -1 else len(t) - 1
+
+        phases = {
+            "thrust": {
+                "t": t[:i_burn + 1], "x": x[:i_burn + 1],
+                "y": y[:i_burn + 1], "z": z[:i_burn + 1],
+            },
+            "coast": {
+                "t": t[i_burn:coast_end + 1], "x": x[i_burn:coast_end + 1],
+                "y": y[i_burn:coast_end + 1], "z": z[i_burn:coast_end + 1],
+            },
+            "chute": {
+                "t": t[i_para:] if i_para != -1 else [],
+                "x": x[i_para:] if i_para != -1 else [],
+                "y": y[i_para:] if i_para != -1 else [],
+                "z": z[i_para:] if i_para != -1 else [],
+            },
+        }
+
+        events = {
+            "burnout": (x[i_burn], y[i_burn], z[i_burn]),
+            "apogee":  (x[i_apo],  y[i_apo],  z[i_apo]),
+            "chute":   (x[i_para], y[i_para], z[i_para]) if i_para != -1 else None,
+        }
+
+        # Keyed by altitude float for O(1) per-level lookup in UI slots
+        wind_by_alt = {node["alt_m"]: node for node in wind_nodes}
+
         return {
-            "t_vals":     _to_list(nominal["t_vals"]),
-            "x_vals":     _to_list(nominal["x_vals"]),
-            "y_vals":     _to_list(nominal["y_vals"]),
-            "z_vals":     _to_list(nominal["z_vals"]),
+            "t_vals":     t,
+            "x_vals":     x,
+            "y_vals":     y,
+            "z_vals":     z,
             "apogee_m":   float(nominal["apogee_m"]),
             "hang_time":  float(nominal["hang_time"]),
             "impact_x":   float(nominal["impact_x"]),
             "impact_y":   float(nominal["impact_y"]),
             "r_horiz":    float(nominal["r_horiz"]),
-            # Full 5-node list (each node has a "source" tag)
-            "wind_nodes":        wind_nodes,
-            # Convenience splits — avoids boilerplate filtering in UI slots
-            "surface_wind":      wind_nodes[0] if wind_nodes else None,
-            "upper_wind_nodes":  wind_nodes[1:] if len(wind_nodes) > 1 else [],
+            # Phase-split trajectory arrays (推進 / 滑空 / パラシュート)
+            "phases":     phases,
+            # Key-event (x_m, y_m, z_m) tuples (燃焼終了点 / 最高点 / 開傘点)
+            "events":     events,
+            # Wind per altitude — O(1) dict + ordered list + convenience aliases
+            "wind_by_alt":      wind_by_alt,
+            "wind_nodes":       wind_nodes,
+            "surface_wind":     wind_nodes[0] if wind_nodes else None,
+            "upper_wind_nodes": wind_nodes[1:] if len(wind_nodes) > 1 else [],
         }
 
     def _run_mc_loop(
@@ -353,10 +422,13 @@ class SimulationWorker(QThread):
         the GIL and allow Qt's event queue to deliver queued signals (including
         sig_progress_updated) to the GUI thread before the next simulation starts.
         """
-        n_total       = int(p.get("mc_runs",       50))
-        wind_unc      = float(p.get("wind_unc",    0.20))
-        thrust_unc    = float(p.get("thrust_unc",  0.05))
-        gust_intensity = float(p.get("gust_intensity", 0.0))
+        n_total    = int(p.get("mc_runs",    50))
+        wind_unc   = float(p.get("wind_unc",  0.20))
+        thrust_unc = float(p.get("thrust_unc", 0.05))
+        # _collect_params stores gust under "gust_speed"; accept both names so
+        # callers that use "gust_intensity" (the run_mc_scatter parameter name)
+        # also work.  Without this fix gust was silently 0.0 for every MC run.
+        gust_intensity = float(p.get("gust_speed", p.get("gust_intensity", 0.0)))
         scatter: list[tuple[float, float]] = []
 
         for i in range(n_total):

@@ -236,7 +236,14 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         z_vals  = fl2.z[:, 1]
         vz_vals = fl2.vz[:, 1]
 
+        # All arrays are in SI units (metres, seconds) — RocketPy native output.
+        # No scaling is applied here.  Consumers must display as-is.
+
         # ── Event indices ────────────────────────────────────────────────────
+        # Motor burnout (燃焼終了点): the time-step closest to safe_burn_time.
+        idx_burnout = int((np.abs(t_vals - safe_burn_time)).argmin())
+
+        # Backfire / ejection charge: rocket is descending and at backfire altitude.
         descending = vz_vals < 0
         below_alt  = z_vals <= backfire_alt
         bf_cands   = np.where(descending & below_alt)[0]
@@ -249,6 +256,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         else:
             idx_para = -1
 
+        # Apogee (最高点) and landing
         apogee_idx = int(np.argmax(z_vals))
         apogee_m   = float(z_vals[apogee_idx])
         impact_x   = float(x_vals[-1])
@@ -258,22 +266,34 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
 
         return {
             'ok':             True,
+            # ── Scalar summaries (SI: m, s) ──────────────────────────────────
             'apogee_m':       apogee_m,
             'hang_time':      hang_time,
             'impact_x':       impact_x,
             'impact_y':       impact_y,
             'r_horiz':        r_horiz,
+            'backfire_alt':   backfire_alt,
+            'burn_time_s':    float(safe_burn_time),
+            # ── Full trajectory arrays (SI: m, s) ────────────────────────────
             't_vals':         t_vals,
             'x_vals':         x_vals,
             'y_vals':         y_vals,
             'z_vals':         z_vals,
             'vz_vals':        vz_vals,
+            # ── Phase-boundary indices into the trajectory arrays ────────────
+            # idx_burnout : motor burns out        (推進 → 滑空 boundary)
+            # apogee_idx  : peak altitude          (最高点)
+            # idx_bf      : ejection charge fires  (backfire trigger)
+            # idx_para    : parachute fully open   (滑空 → パラシュート boundary)
+            #               -1 if deployment time exceeds total flight time
+            'idx_burnout':    idx_burnout,
             'idx_bf':         idx_bf,
             'idx_para':       idx_para,
+            'apogee_idx':     apogee_idx,
+            # ── Absolute times of key events (s) ─────────────────────────────
             'bf_abs_time':    bf_abs_time,
             'para_open_time': para_open_time,
-            'backfire_alt':   backfire_alt,
-            'apogee_idx':     apogee_idx,
+            # ── Launch config (echoed for traceability) ──────────────────────
             'elev':           elev,
             'azi':            azi,
         }

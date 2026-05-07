@@ -26,6 +26,12 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Property
 
+# ── Wind-history altitude constants ───────────────────────────────────────────
+# Must match core.wind_model.WIND_SAMPLE_ALTS exactly.
+# Defined here to avoid importing from core in the UI state layer.
+_WIND_SAMPLE_ALTS: tuple[float, ...] = (3.0, 10.0, 150.0, 300.0, 600.0)
+_SURFACE_ALT: float = 3.0   # 自作風速計 (hardware anemometer) altitude (m AGL)
+
 
 class AppState(QObject):
 
@@ -223,8 +229,20 @@ class AppState(QObject):
         # Unified simulation result (full worker payload dict)
         self._simulation_result = None
 
-        # Wind history — rolling 60-second buffer of (speed_m/s, dir_deg) tuples
-        self._wind_history: deque = deque(maxlen=60)
+        # Wind history — per-altitude rolling 60-sample buffers at ~1 Hz.
+        # Structure: dict[alt_m → deque(maxlen=60)].
+        # Each deque entry is a dict:
+        #   {"ts": float,       monotonic timestamp (s)
+        #    "speed_ms": float, wind speed (m/s)
+        #    "dir_deg":  float} meteorological direction (° FROM which wind blows)
+        #
+        # 3 m (SURFACE_ALT): updated every second from the hardware anemometer.
+        # 10 m / 150 m / 300 m / 600 m: updated when a new wind profile arrives
+        #   (i.e. after each simulation run via append_wind_nodes).  Between runs
+        #   these deques hold the last known API values and are NOT padded.
+        self._wind_history: dict[float, deque] = {
+            alt: deque(maxlen=60) for alt in _WIND_SAMPLE_ALTS
+        }
 
         # CEP probability — UI-driven percentile; changing it redraws, not re-simulates
         self._cep_probability: float = 90.0
@@ -598,16 +616,79 @@ class AppState(QObject):
     # ── Wind history ──────────────────────────────────────────────────────────
 
     @Property(object, notify=wind_history_updated)
-    def wind_history(self) -> deque:
+    def wind_history(self) -> dict:
+        """Per-altitude rolling 60-sample wind history.
+
+        Returns a ``dict[float, deque]`` keyed by altitude in metres AGL:
+            {3.0: deque, 10.0: deque, 150.0: deque, 300.0: deque, 600.0: deque}
+
+        Each deque contains up to 60 samples of the form:
+            {"ts": float, "speed_ms": float, "dir_deg": float}
+        sorted oldest → newest (deque order).
+
+        The 3 m deque updates every second from the hardware anemometer.
+        The upper deques update whenever append_wind_nodes() is called (typically
+        once per simulation run).
+        """
         return self._wind_history
 
+    def wind_history_for_alt(self, alt_m: float) -> deque:
+        """Return the rolling sample deque for a single altitude.
+
+        Returns an empty deque if *alt_m* is not one of the five diagnostic
+        altitudes; never raises.
+        """
+        return self._wind_history.get(float(alt_m), deque())
+
     def append_wind_reading(self, speed: float, direction: float) -> None:
-        """Append one (speed, direction) sample and broadcast the updated deque."""
-        self._wind_history.append((float(speed), float(direction)))
+        """Append one surface anemometer sample (3 m AGL) to the history.
+
+        Writes exclusively to the _SURFACE_ALT (3 m) deque.  Upper-altitude
+        deques are updated separately by append_wind_nodes() when a new wind
+        profile arrives from the simulation.
+
+        Args:
+            speed:     Wind speed in m/s (non-negative).
+            direction: Meteorological direction in degrees FROM which wind blows.
+        """
+        import time as _time
+        sample = {
+            "ts":       _time.monotonic(),
+            "speed_ms": float(speed),
+            "dir_deg":  float(direction),
+        }
+        self._wind_history[_SURFACE_ALT].append(sample)
         self.wind_history_updated.emit(self._wind_history)
         self.wind_updated.emit()          # lightweight ping for simple observers
         self.surf_wind_speed = float(speed)
         self.surf_wind_dir   = float(direction)
+
+    def append_wind_nodes(self, nodes: list) -> None:
+        """Append a full 5-altitude wind snapshot to the history.
+
+        Intended to be called once per simulation run with the ``wind_nodes``
+        list produced by ``sample_wind_nodes``.  Each node is written to the
+        deque for its altitude; altitudes not in _WIND_SAMPLE_ALTS are silently
+        ignored so callers do not need to filter.
+
+        Args:
+            nodes: List of node dicts, each containing at least:
+                   ``alt_m`` (float), ``speed_ms`` (float), ``dir_deg`` (float).
+                   Typically the direct output of ``core.wind_model.sample_wind_nodes``.
+        """
+        import time as _time
+        ts = _time.monotonic()
+        for node in nodes:
+            alt = float(node.get("alt_m", -1.0))
+            if alt not in self._wind_history:
+                continue
+            self._wind_history[alt].append({
+                "ts":       ts,
+                "speed_ms": float(node.get("speed_ms", 0.0)),
+                "dir_deg":  float(node.get("dir_deg",  0.0)),
+            })
+        self.wind_history_updated.emit(self._wind_history)
+        self.wind_updated.emit()
 
     # ── Phase 2 baseline + tolerance monitoring ───────────────────────────────
 

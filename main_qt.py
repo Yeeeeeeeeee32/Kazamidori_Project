@@ -29,7 +29,7 @@ import sys
 import time as _time
 
 import numpy as np
-from PySide6.QtCore import QObject, QTimer, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Slot
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton
 
 from ui_qt.app_state import AppState
@@ -159,6 +159,10 @@ class SimController(QObject):
         # without waiting for the full Monte Carlo batch to finish.
         state.nominal_needs_redraw.connect(window.update_profile_plot)
 
+        # wind_history_updated fires every second (surface) and once per
+        # simulation (all 5 altitudes) — drives the rolling wind time-series.
+        state.wind_history_updated.connect(window.update_wind_history)
+
         # progress_changed fires after every MC iteration (0–100 int) → push the
         # value into the toolbar QProgressBar so the operator sees live progress.
         state.progress_changed.connect(
@@ -172,6 +176,12 @@ class SimController(QObject):
         state.simulation_result_changed.connect(
             lambda _: window.update_map_plot()
         )
+
+        # ── Flight-mode → map circle switch ───────────────────────────────────
+        # update_map_plot reads window.state.sim_mode (already kept in sync by
+        # mode_combo → window.state.sim_mode binding in _bind_state), but no
+        # redraw is triggered on mode change.  Fire one here.
+        state.flight_mode_changed.connect(lambda _: window.update_map_plot())
 
     # ── Button rewiring ────────────────────────────────────────────────────────
 
@@ -226,9 +236,15 @@ class SimController(QObject):
         # finished covers both cancelled and full-MC-done paths (replaces _on_finished).
         self._worker.finished.connect(self._on_mc_done)
         self._worker.error.connect(self._on_error)
+        self._worker.sig_status_text.connect(self._on_worker_status)
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+        # Lower priority so the GUI thread wins CPU time at the stage boundary
+        # (after sig_nominal_done is emitted) and can drain its event queue
+        # before the MC loop starts.  Combined with the msleep(0) in workers.py
+        # this ensures the trajectory canvas paints before MC progress begins.
+        self._worker.setPriority(QThread.Priority.LowPriority)
 
     # ── Stop ───────────────────────────────────────────────────────────────────
 
@@ -260,17 +276,42 @@ class SimController(QObject):
         (zero-payload), so any subscribed view repaints the 3-D trajectory
         without waiting for the MC loop to finish.
 
+        Also calls append_wind_nodes so all five altitude deques in the wind
+        history buffer are populated with the nominal wind snapshot the instant
+        the simulation result arrives — before any MC iteration starts.
+
         Thread safety: sig_nominal_done crosses from the worker thread to the
         main thread via Qt's automatic queued connection (different QThread
         affinity), so this slot always executes on the GUI thread.
         """
+        # Populate window state BEFORE firing nominal_result.
+        # nominal_result.setter emits nominal_needs_redraw → update_profile_plot,
+        # which reads window.state.simulation_result.  Without this write the
+        # method finds None and draws the "Run a simulation" placeholder instead
+        # of the actual Stage-1 trajectory.
+        # _adapt_for_window handles missing scatter/ellipse keys gracefully (→ []).
+        self._window.state.simulation_result = self._adapt_for_window(payload)
+
+        # Setting nominal_result fires both nominal_result_changed and
+        # nominal_needs_redraw; the latter triggers update_profile_plot.
         self._state.nominal_result = payload
+
+        # Populate all 5 altitude wind-history deques with the nominal snapshot.
+        # wind_nodes[0] = 3 m (anemometer), wind_nodes[1:] = 10–600 m (API).
+        wind_nodes = payload.get("wind_nodes", [])
+        if wind_nodes:
+            self._state.append_wind_nodes(wind_nodes)
+
         apogee = payload.get("apogee_m", 0.0)
         tof    = payload.get("hang_time", 0.0)
         self._window.set_status(
             f"Nominal done — Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s  |  MC running…",
             "#f9e2af",
         )
+        # Force the canvas to commit its pending draw now, before the MC loop
+        # (running at LowPriority on the worker thread) monopolises CPU.
+        self._window.profile_canvas.draw_idle()
+        QApplication.processEvents()
 
     @Slot(int, int)
     def _on_progress_updated(self, current: int, total: int) -> None:
@@ -384,6 +425,10 @@ class SimController(QObject):
         self._window.set_progress(0, "Error")
         self._worker = None
         self._set_run_buttons_enabled(True)
+
+    @Slot(str)
+    def _on_worker_status(self, msg: str) -> None:
+        self._window.set_status(msg, "#f9e2af")
 
     # ── Phase 2 tolerance slots ────────────────────────────────────────────────
 

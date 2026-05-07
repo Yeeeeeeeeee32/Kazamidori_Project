@@ -21,6 +21,9 @@ from typing import Optional
 
 import matplotlib
 matplotlib.use("QtAgg")
+# Windows 日本語フォントを優先し、CJK グリフ欠損警告を抑止する。
+# DejaVu Sans はフォールバックとして末尾に残す。
+matplotlib.rcParams['font.family'] = ['Yu Gothic', 'Meiryo', 'MS Gothic', 'DejaVu Sans']
 
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
@@ -613,6 +616,10 @@ class AppWindow(QMainWindow):
         # _render_overlays() so partial redraws can remove exactly these
         # artists without touching the base scatter or trajectory layers.
         self._overlay_artists: list = []
+        # Wind history buffer: populated by update_wind_history() from the
+        # global AppState wind_history_updated signal.  Keyed by altitude (m);
+        # each value is a list of (relative_time_s, speed_ms) pairs.
+        self._wind_hist_buf: dict = {}
 
     # ── Menu bar ───────────────────────────────────────────────────────────────
 
@@ -726,6 +733,7 @@ class AppWindow(QMainWindow):
     def _build_profile_dock_widget(self) -> QWidget:
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setHandleWidth(2)
+        splitter.setChildrenCollapsible(False)
 
         top = QWidget(splitter)
         tl  = QVBoxLayout(top)
@@ -1241,12 +1249,14 @@ class AppWindow(QMainWindow):
         _style_2d(ax, fig, bg="#0d0d1a")
 
         theta = np.linspace(0.0, 2.0 * np.pi, 200)
-        ax.plot(50  * np.cos(theta), 50  * np.sin(theta),
-                color="#f38ba8", lw=1.2, linestyle="--", alpha=0.60,
-                label="Target r = 50 m")
-        ax.plot(250 * np.cos(theta), 250 * np.sin(theta),
-                color="#45475a", lw=1.0, linestyle="--", alpha=0.45,
-                label="Target r = 250 m")
+        if self.state.sim_mode == "定点滞空":
+            ax.plot(50  * np.cos(theta), 50  * np.sin(theta),
+                    color="#f38ba8", lw=1.2, linestyle="--", alpha=0.60,
+                    label="Target r = 50 m")
+        else:
+            ax.plot(250 * np.cos(theta), 250 * np.sin(theta),
+                    color="#45475a", lw=1.0, linestyle="--", alpha=0.45,
+                    label="Target r = 250 m")
         ax.scatter([0], [0], c="#a6e3a1", s=130, marker="^", zorder=5,
                    label="Launch (0, 0)")
 
@@ -1392,7 +1402,7 @@ class AppWindow(QMainWindow):
         ]
 
         # ════════════════════════════════════════════════════════════════════
-        # LEFT SUBPLOT: Wind Speed Profile (Cartesian, altitude on Y-axis)
+        # LEFT SUBPLOT: Wind Speed History (60 s rolling) or static profile
         # ════════════════════════════════════════════════════════════════════
         ax_p.set_facecolor("#1a1a2e")
         ax_p.tick_params(colors="#a6adc8", labelsize=6)
@@ -1400,36 +1410,65 @@ class AppWindow(QMainWindow):
             spine.set_edgecolor("#45475a")
         ax_p.grid(True, color="#333355", linewidth=0.5, alpha=0.7)
 
-        # Connecting line (drawn first so dots sit on top)
-        if len(speeds) > 1:
-            ax_p.plot(speeds, alts,
-                      color="#44445a", lw=1.2, alpha=0.55, zorder=1,
-                      linestyle="--")
+        _HIST_ALTS = [3.0, 10.0, 150.0, 300.0, 600.0]
+        hist_buf   = self._wind_hist_buf
 
-        # Note: 3 m node originates from the hardware anemometer
-        for spd, alt, col, lbl in zip(speeds, alts, colors, labels):
-            marker = "D" if alt == 3.0 else "o"   # diamond = anemometer
-            ax_p.scatter([spd], [alt], color=col, s=52, zorder=5,
-                         marker=marker, edgecolors="#1a1a2e", linewidths=0.8)
-            ax_p.text(spd + max_spd * 0.05, alt, f"{spd:.1f}",
-                      color=col, fontsize=6, va="center")
+        if hist_buf:
+            # ── Time-series mode: X = relative time (s), Y = speed (m/s) ──────
+            for i, alt in enumerate(_HIST_ALTS):
+                pts = hist_buf.get(alt, [])
+                if not pts:
+                    continue
+                xs = [t for t, _ in pts]
+                ys = [s for _, s in pts]
+                col = (self._NODE_COLORS[i]
+                       if i < len(self._NODE_COLORS) else "#cdd6f4")
+                lbl = (self._NODE_LABELS[i]
+                       if i < len(self._NODE_LABELS) else f"{alt:.0f} m")
+                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85, label=lbl)
+                ax_p.scatter([xs[-1]], [ys[-1]], color=col, s=28, zorder=5)
 
-        ax_p.set_xlabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
-        ax_p.set_ylabel("Altitude  (m)", color="#6c7086", fontsize=7, labelpad=3)
-        ax_p.set_title("Wind Speed Profile", color="#aaaaaa", fontsize=8, pad=6)
-        ax_p.set_xlim(0.0, max_spd * 1.40)
-        ax_p.set_ylim(-30.0, max(alts, default=600.0) * 1.18 + 10.0)
-
-        # Anemometer annotation on the 3 m node
-        if alts and alts[0] == 3.0:
-            ax_p.annotate(
-                "⬡ anemometer",
-                xy=(speeds[0], alts[0]),
-                xytext=(max_spd * 0.10, 60.0),
-                fontsize=5, color="#aaaaaa",
-                arrowprops=dict(arrowstyle="->", color="#555555",
-                                lw=0.8, shrinkA=4, shrinkB=4),
+            ax_p.axvline(0.0, color="#45475a", lw=0.8, linestyle=":", alpha=0.6)
+            ax_p.set_xlabel("Time  (s)", color="#6c7086", fontsize=7, labelpad=3)
+            ax_p.set_ylabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
+            ax_p.set_title("Wind Speed History  (60 s)",
+                           color="#aaaaaa", fontsize=8, pad=6)
+            ax_p.set_xlim(-60.0, 2.0)
+            ax_p.set_ylim(bottom=0.0)
+            ax_p.legend(
+                loc="upper left", fontsize=5,
+                facecolor="#1a1a2e", edgecolor="#3a3a52",
+                labelcolor="#cdd6f4", framealpha=0.80,
             )
+        else:
+            # ── Static profile fallback (no history received yet) ─────────────
+            if len(speeds) > 1:
+                ax_p.plot(speeds, alts,
+                          color="#44445a", lw=1.2, alpha=0.55, zorder=1,
+                          linestyle="--")
+
+            for spd, alt, col, lbl in zip(speeds, alts, colors, labels):
+                marker = "D" if alt == 3.0 else "o"
+                ax_p.scatter([spd], [alt], color=col, s=52, zorder=5,
+                             marker=marker, edgecolors="#1a1a2e", linewidths=0.8)
+                ax_p.text(spd + max_spd * 0.05, alt, f"{spd:.1f}",
+                          color=col, fontsize=6, va="center")
+
+            ax_p.set_xlabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
+            ax_p.set_ylabel("Altitude  (m)", color="#6c7086", fontsize=7, labelpad=3)
+            ax_p.set_title("Wind Speed Profile", color="#aaaaaa", fontsize=8, pad=6)
+            ax_p.set_xlim(0.0, max_spd * 1.40)
+            ax_p.set_ylim(-30.0, max(alts, default=600.0) * 1.18 + 10.0)
+
+            if alts and alts[0] == 3.0:
+                ax_p.annotate(
+                    "⬡ anemometer",
+                    xy=(speeds[0], alts[0]),
+                    xytext=(max_spd * 0.10, 60.0),
+                    fontsize=5, color="#aaaaaa",
+                    arrowprops=dict(arrowstyle="->", color="#555555",
+                                    lw=0.8, shrinkA=4, shrinkB=4),
+                )
 
         # ════════════════════════════════════════════════════════════════════
         # RIGHT SUBPLOT: Polar Wind Compass
@@ -1498,6 +1537,25 @@ class AppWindow(QMainWindow):
         fig.subplots_adjust(left=0.07, right=0.71, top=0.90,
                             bottom=0.15, wspace=0.44)
         self.wind_canvas.draw()
+
+    def update_wind_history(self, hist_dict) -> None:
+        """Receive the global 5-altitude wind history and switch the left subplot to time-series.
+
+        Called every second (via wind_history_updated) with the full
+        dict[float, deque] from global AppState.  Converts absolute monotonic
+        timestamps to relative seconds-from-now so the X axis always reads
+        '−60 … 0'.
+        """
+        import time as _t
+        now = _t.monotonic()
+        self._wind_hist_buf = {
+            float(alt): [
+                (float(e["ts"]) - now, float(e["speed_ms"]))
+                for e in entries
+            ]
+            for alt, entries in hist_dict.items()
+        }
+        self.update_wind_plot()
 
     # ── Smart partial redraw ──────────────────────────────────────────────────
 
