@@ -4,17 +4,22 @@ ui_qt/workers.py
 Background worker thread that executes the full RocketPy physics pipeline
 entirely off the GUI thread.
 
-Thread lifecycle
-----------------
+Thread lifecycle — two-stage pipeline
+--------------------------------------
     worker = SimulationWorker(params)
     worker.progress.connect(progress_bar.setValue)           # 0–100
-    worker.sig_nominal_done.connect(on_nominal_slot)         # fired after nominal run
+    worker.sig_nominal_done.connect(on_nominal_slot)         # Stage 1 complete
     worker.sig_progress_updated.connect(on_mc_tick_slot)     # (current, total) per MC run
-    worker.finished.connect(on_finished_slot)                # always emitted
+    worker.sig_mc_done.connect(on_mc_done_slot)              # Stage 2 complete
+    worker.finished.connect(on_finished_slot)                # always emitted last
     worker.error.connect(on_error_slot)                      # only on exception
     worker.start()   # returns immediately; physics runs on the new thread
 
     worker.stop()    # graceful cancel from any thread
+
+Emission order on a successful run
+------------------------------------
+  sig_nominal_done  → sig_progress_updated × n_runs → sig_mc_done → finished
 
 Result dict keys  (finished signal payload)
 -------------------------------------------
@@ -115,10 +120,11 @@ class SimulationWorker(QThread):
     """
 
     progress             = Signal(int)        # 0–100 coarse progress bar
-    finished             = Signal(dict)       # always emitted — check result["cancelled"]
+    finished             = Signal(dict)       # always emitted last — check result["cancelled"]
     error                = Signal(str)        # only on unhandled exception
-    sig_nominal_done     = Signal(dict)       # emitted immediately after nominal run
-    sig_progress_updated = Signal(int, int)   # (current_iteration, total_iterations)
+    sig_nominal_done     = Signal(dict)       # Stage 1: emitted after nominal run
+    sig_progress_updated = Signal(int, int)   # Stage 2: (current_iteration, total_iterations)
+    sig_mc_done          = Signal(dict)       # Stage 2: emitted after MC loop + statistics
 
     def __init__(self, params: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
@@ -131,74 +137,87 @@ class SimulationWorker(QThread):
         """Request graceful cancellation. Safe to call from any thread."""
         self._stop_event.set()
 
-    # ── QThread entry point ────────────────────────────────────────────────────
+    # ── QThread entry point — two-stage pipeline ──────────────────────────────
 
     def run(self) -> None:
+        """Execute the two-stage simulation pipeline on the worker thread.
+
+        All data crosses the thread boundary exclusively through Qt signals —
+        no shared mutable state is accessed from the GUI thread during a run.
+        """
         try:
-            result = self._run_physics()
+            p = self._params
+
+            # ════════════════════════════════════════════════════════════════
+            # STAGE 1 — Nominal (baseline) trajectory
+            # Build wind profile → run single deterministic RocketPy flight
+            # → emit sig_nominal_done so the UI can paint the 3-D path now.
+            # ════════════════════════════════════════════════════════════════
+
+            self.progress.emit(2)
+            u_prof, v_prof = self._build_wind_profiles(p)
+            # sample_wind_nodes reads the 5 explicit grid points inserted into
+            # the profile by create_wind_profile (3, 10, 150, 300, 600 m AGL)
+            wind_nodes = sample_wind_nodes(u_prof, v_prof)
+
+            self.progress.emit(5)
+            sim_params = self._build_sim_params(p, u_prof, v_prof)
+
+            self.progress.emit(10)
+            nominal = simulate_once(
+                elev=float(p.get("elev", 85.0)),
+                azi=float(p.get("azim",  0.0)),
+                params=sim_params,
+            )
+            if not nominal["ok"]:
+                raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
+            self.progress.emit(25)
+
+            # Cross thread boundary: UI renders trajectory immediately
+            self.sig_nominal_done.emit(self._package_nominal(nominal, wind_nodes))
+
+            if self._stop_event.is_set():
+                self.finished.emit({"cancelled": True, "has_sim_result": False})
+                return
+
+            # ════════════════════════════════════════════════════════════════
+            # STAGE 2 — Monte Carlo scatter + statistical analysis
+            # Run n_runs perturbed flights → emit sig_progress_updated per
+            # iteration → compute stats → emit sig_mc_done with MC payload
+            # → emit finished with the full combined result.
+            # ════════════════════════════════════════════════════════════════
+
+            scatter = self._run_mc_loop(sim_params, p)
+
+            if self._stop_event.is_set():
+                self.finished.emit({
+                    "cancelled":      True,
+                    "has_sim_result": False,
+                    "impact_x":  nominal["impact_x"],
+                    "impact_y":  nominal["impact_y"],
+                    "apogee_m":  nominal["apogee_m"],
+                    "hang_time": nominal["hang_time"],
+                })
+                return
+
+            self.progress.emit(92)
+            prob_pct = int(p.get("cep_prob", 90))
+            stats    = self._compute_stats(scatter, prob_pct)
+            self.progress.emit(98)
+
+            # Emit MC-specific payload for dedicated statistics consumers
+            self.sig_mc_done.emit(self._package_mc(scatter, stats, prob_pct))
+
+            # Emit full combined result for the main controller
+            result = self._package_result(
+                nominal, scatter, stats, prob_pct, cancelled=False)
+            result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
+            result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
+            result["wind_nodes"]       = wind_nodes
             self.finished.emit(result)
+
         except Exception:
             self.error.emit(traceback.format_exc())
-
-    # ── Physics pipeline ───────────────────────────────────────────────────────
-
-    def _run_physics(self) -> dict:
-        p = self._params
-
-        # ── Wind profile + diagnostic nodes ───────────────────────────────────
-        self.progress.emit(2)
-        u_prof, v_prof = self._build_wind_profiles(p)
-        wind_nodes = sample_wind_nodes(u_prof, v_prof)
-
-        # ── Assemble full simulation params ────────────────────────────────────
-        self.progress.emit(5)
-        sim_params = self._build_sim_params(p, u_prof, v_prof)
-
-        # ── Nominal single run ─────────────────────────────────────────────────
-        self.progress.emit(10)
-        nominal = simulate_once(
-            elev=float(p.get("elev", 85.0)),
-            azi=float(p.get("azim",  0.0)),
-            params=sim_params,
-        )
-        if not nominal["ok"]:
-            raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
-        self.progress.emit(25)
-
-        # ── Emit nominal result immediately — UI can render 3-D plot now ───────
-        # This crosses the thread boundary via Qt's queued connection before
-        # the MC phase begins, so the operator sees the trajectory without
-        # waiting for all Monte Carlo runs to finish.
-        self.sig_nominal_done.emit(self._package_nominal(nominal, wind_nodes))
-
-        if self._stop_event.is_set():
-            return {"cancelled": True, "has_sim_result": False}
-
-        # ── Monte Carlo loop with per-iteration heartbeat ──────────────────────
-        scatter = self._run_mc_loop(sim_params, p)
-
-        if self._stop_event.is_set():
-            return {
-                "cancelled":      True,
-                "has_sim_result": False,
-                "impact_x":  nominal["impact_x"],
-                "impact_y":  nominal["impact_y"],
-                "apogee_m":  nominal["apogee_m"],
-                "hang_time": nominal["hang_time"],
-            }
-
-        # ── Statistical analysis ───────────────────────────────────────────────
-        self.progress.emit(92)
-        prob_pct = int(p.get("cep_prob", 90))
-        stats    = self._compute_stats(scatter, prob_pct)
-
-        self.progress.emit(98)
-        result = self._package_result(nominal, scatter, stats, prob_pct,
-                                      cancelled=self._stop_event.is_set())
-        result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
-        result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
-        result["wind_nodes"]       = wind_nodes
-        return result
 
     # ── Step helpers ───────────────────────────────────────────────────────────
 
@@ -209,16 +228,30 @@ class SimulationWorker(QThread):
         """
         Construct a smooth vertical wind profile from surface + upper obs.
 
-        The surface reading is blended with the upper-wind GPV level using
-        create_wind_profile's three-zone approach (surface ramp → blend →
-        pure GPV).  Upper wind is assumed at 500 m AGL unless overridden.
+        Data sources
+        ------------
+        Surface (obs_alt = 3 m):
+            ``surf_spd`` / ``surf_dir`` — measured by the 自作風速計
+            (custom on-site anemometer).  This is the only data point treated
+            as ground truth; it anchors the profile at obs_alt.
+
+        Upper wind (GPV levels, default 500 m AGL):
+            ``up_spd`` / ``up_dir`` — fetched from the upper-wind API
+            (JMA MSM / GPV).  The altitude is configurable via ``upper_alt``.
+
+        The three-zone blending in create_wind_profile (surface ramp →
+        blend zone 0–100 m → pure GPV above 100 m) smoothly connects the
+        two independent data sources into a single continuous profile.
         """
         upper_alt: float = float(p.get("upper_alt", 500.0))
+
+        # Upper-wind levels: API-derived GPV data
         gpv_levels = [
             (upper_alt, float(p.get("up_spd", 8.0)), float(p.get("up_dir", 90.0))),
         ]
         return create_wind_profile(
             gpv_levels=gpv_levels,
+            # Surface truth from the on-site anemometer (自作風速計)
             obs_speed=float(p.get("surf_spd",  4.0)),
             obs_dir=float(p.get("surf_dir",  100.0)),
             obs_alt=3.0,
@@ -262,6 +295,22 @@ class SimulationWorker(QThread):
         as soon as the nominal run completes — before any MC runs start.
         Arrays are converted to lists so no numpy types cross the signal
         boundary.
+
+        Wind node payload structure
+        ---------------------------
+        ``wind_nodes`` — full list of 5 altitude nodes, each with a ``source``
+            field tagging its data origin:
+            * node[0]  alt=3 m    source="anemometer"  (自作風速計, surface truth)
+            * node[1]  alt=10 m   source="api"
+            * node[2]  alt=150 m  source="api"
+            * node[3]  alt=300 m  source="api"
+            * node[4]  alt=600 m  source="api"
+
+        ``surface_wind`` — convenience alias for ``wind_nodes[0]`` so consumers
+            that only need the anemometer reading do not have to filter the list.
+
+        ``upper_wind_nodes`` — convenience alias for ``wind_nodes[1:]`` so
+            consumers that only need the API-derived levels do not have to filter.
         """
         def _to_list(v):
             return v.tolist() if hasattr(v, "tolist") else list(v)
@@ -276,7 +325,11 @@ class SimulationWorker(QThread):
             "impact_x":   float(nominal["impact_x"]),
             "impact_y":   float(nominal["impact_y"]),
             "r_horiz":    float(nominal["r_horiz"]),
-            "wind_nodes": wind_nodes,
+            # Full 5-node list (each node has a "source" tag)
+            "wind_nodes":        wind_nodes,
+            # Convenience splits — avoids boilerplate filtering in UI slots
+            "surface_wind":      wind_nodes[0] if wind_nodes else None,
+            "upper_wind_nodes":  wind_nodes[1:] if len(wind_nodes) > 1 else [],
         }
 
     def _run_mc_loop(
@@ -358,6 +411,28 @@ class SimulationWorker(QThread):
             "ellipse":      compute_error_ellipse(scatter, prob_pct=prob_pct),
             "cep_circle":   compute_cep_circle(scatter),
             "kde_contours": compute_kde_contours(scatter, conf_pct=prob_pct),
+        }
+
+    @staticmethod
+    def _package_mc(
+        scatter:  list[tuple[float, float]],
+        stats:    dict,
+        prob_pct: int,
+    ) -> dict:
+        """Package the MC statistics payload for sig_mc_done.
+
+        Carries only the Monte Carlo outputs so consumers connected to
+        sig_mc_done do not receive the full nominal trajectory arrays.
+        """
+        return {
+            "scatter":      scatter,
+            "r_N_radius":   float(stats.get("r_N_radius", 0.0)),
+            "cep":          float(stats.get("cep", 0.0)),
+            "ellipse":      stats.get("ellipse"),
+            "cep_circle":   stats.get("cep_circle"),
+            "kde_contours": stats.get("kde_contours", []),
+            "n_runs":       len(scatter),
+            "landing_prob": prob_pct,
         }
 
     @staticmethod

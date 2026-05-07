@@ -127,6 +127,22 @@ class AppState(QObject):
     # simulation artifacts before new results arrive, eliminating data ghosting.
     is_calculating_changed = Signal(bool)
 
+    # ── Two-stage rendering signals ────────────────────────────────────────────
+    # nominal_result_changed: carries the full nominal payload dict the instant
+    # the single-run completes — before any MC iterations start.  Views that
+    # render the 3-D trajectory connect here for the earliest possible draw.
+    nominal_result_changed = Signal(object)
+    # nominal_needs_redraw: zero-payload companion ping.  Lightweight observers
+    # that only need to know "nominal is ready" connect here instead of the
+    # heavier object-carrying signal.
+    nominal_needs_redraw   = Signal()
+
+    # ── MC run progress ────────────────────────────────────────────────────────
+    # progress_changed: 0–100 integer updated after every MC iteration.
+    # Setting progress_percentage to 0 signals idle / complete — QProgressBar
+    # connections can use this to clear the bar automatically.
+    progress_changed = Signal(int)
+
     # ── Rocket geometry parameters ─────────────────────────────────────────────
     # One signal per physical dimension so views can bind selectively.
     rocket_dry_mass_changed = Signal(float)   # airframe dry mass (kg)
@@ -228,6 +244,11 @@ class AppState(QObject):
 
         # Simulation busy flag — True while a SimulationWorker thread is live.
         self._is_calculating: bool = False
+
+        # Two-stage rendering: nominal result available before MC completes
+        self._nominal_result:      dict | None = None
+        # MC run progress 0-100; 0 = idle / complete
+        self._progress_percentage: int         = 0
 
         # Rocket geometry parameters (defaults mirror _DEFAULT_ROCKET in workers.py)
         self._rocket_dry_mass  = float(cfg.get("rocket_dry_mass",  1.0))
@@ -943,3 +964,40 @@ class AppState(QObject):
         if self._flight_mode != value:
             self._flight_mode = value
             self.flight_mode_changed.emit(value)
+
+    # ── Two-stage rendering ────────────────────────────────────────────────────
+
+    @Property(object, notify=nominal_result_changed)
+    def nominal_result(self):
+        """Nominal single-run payload; set before MC starts so views render early.
+
+        Setting this property emits both nominal_result_changed (carrying the
+        dict) and nominal_needs_redraw (no payload), so any connected canvas
+        can either consume the data or just repaint on the lightweight signal.
+        """
+        return self._nominal_result
+
+    @nominal_result.setter
+    def nominal_result(self, value) -> None:
+        self._nominal_result = value
+        self.nominal_result_changed.emit(value)
+        self.nominal_needs_redraw.emit()
+
+    # ── MC progress ───────────────────────────────────────────────────────────
+
+    @Property(int, notify=progress_changed)
+    def progress_percentage(self) -> int:
+        """Integer 0–100 tracking MC run completion.
+
+        0 means idle or finished (not in progress).  Clamped to [0, 100].
+        The equality guard suppresses spurious emissions when the value hasn't
+        changed (e.g. two consecutive batches that round to the same percent).
+        """
+        return self._progress_percentage
+
+    @progress_percentage.setter
+    def progress_percentage(self, value: int) -> None:
+        value = int(max(0, min(100, value)))
+        if self._progress_percentage != value:
+            self._progress_percentage = value
+            self.progress_changed.emit(value)

@@ -153,6 +153,26 @@ class SimController(QObject):
                 pass
             _btn.clicked.connect(self._on_advanced_settings_clicked)
 
+        # ── Two-stage rendering: AppState → UI ────────────────────────────────
+        # nominal_needs_redraw fires (via _on_nominal_done) before MC starts;
+        # draw the 3-D profile immediately so the operator sees the trajectory
+        # without waiting for the full Monte Carlo batch to finish.
+        state.nominal_needs_redraw.connect(window.update_profile_plot)
+
+        # progress_changed fires after every MC iteration (0–100 int) → push the
+        # value into the toolbar QProgressBar so the operator sees live progress.
+        state.progress_changed.connect(
+            lambda pct: window.set_progress(pct, f"MC  {pct}%")
+        )
+
+        # simulation_result_changed fires in _on_mc_done (after full MC) → render
+        # the 2-D landing map with scatter, CEP contours, and confidence ellipses.
+        # The signal carries the result dict as payload; update_map_plot reads from
+        # window.state directly so the payload is discarded here.
+        state.simulation_result_changed.connect(
+            lambda _: window.update_map_plot()
+        )
+
     # ── Button rewiring ────────────────────────────────────────────────────────
 
     def _rewire_buttons(self) -> None:
@@ -192,7 +212,13 @@ class SimController(QObject):
 
         self._worker = SimulationWorker(self._collect_params(), parent=self)
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
+        # ── Two-stage routing ──────────────────────────────────────────────────
+        # sig_nominal_done fires before any MC runs start; renders trajectory now.
+        self._worker.sig_nominal_done.connect(self._on_nominal_done)
+        # sig_progress_updated fires after every single MC iteration (current, total).
+        self._worker.sig_progress_updated.connect(self._on_progress_updated)
+        # finished covers both cancelled and full-MC-done paths (replaces _on_finished).
+        self._worker.finished.connect(self._on_mc_done)
         self._worker.error.connect(self._on_error)
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
@@ -220,11 +246,47 @@ class SimController(QObject):
         self._window.set_progress(value, f"Simulating...  {value}%")
 
     @Slot(dict)
-    def _on_finished(self, result: dict) -> None:
+    def _on_nominal_done(self, payload: dict) -> None:
+        """Invoked on the GUI thread when the nominal single run completes.
+
+        Sets AppState.nominal_result, which automatically emits both
+        nominal_result_changed (carrying the dict) and nominal_needs_redraw
+        (zero-payload), so any subscribed view repaints the 3-D trajectory
+        without waiting for the MC loop to finish.
+
+        Thread safety: sig_nominal_done crosses from the worker thread to the
+        main thread via Qt's automatic queued connection (different QThread
+        affinity), so this slot always executes on the GUI thread.
+        """
+        self._state.nominal_result = payload
+        apogee = payload.get("apogee_m", 0.0)
+        tof    = payload.get("hang_time", 0.0)
+        self._window.set_status(
+            f"Nominal done — Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s  |  MC running…",
+            "#f9e2af",
+        )
+
+    @Slot(int, int)
+    def _on_progress_updated(self, current: int, total: int) -> None:
+        """Invoked on the GUI thread after every single MC run.
+
+        Converts the raw (current, total) heartbeat into a 0–100 percentage
+        and pushes it to AppState.progress_percentage.  Division-by-zero is
+        guarded: if total == 0, percentage stays at 0.
+
+        Thread safety: sig_progress_updated crosses thread boundaries via Qt's
+        queued connection, so the AppState write always happens on the GUI thread.
+        """
+        pct = int(current / total * 100) if total > 0 else 0
+        self._state.progress_percentage = pct
+
+    @Slot(dict)
+    def _on_mc_done(self, result: dict) -> None:
         self._state.mc_running = False
 
         if result.get("cancelled"):
-            self._state.is_calculating = False
+            self._state.is_calculating    = False
+            self._state.progress_percentage = 0   # clear progress bar
             self._window.set_status("Simulation cancelled.", "#a6adc8")
             self._window.set_progress(0, "Idle")
             self._worker = None
@@ -299,7 +361,9 @@ class SimController(QObject):
         # Broadcast smart-redraw lifecycle signals.
         self._state.needs_full_redraw.emit(result)
         self._state.simulation_finished.emit(result)
-        self._state.is_calculating = False
+        # Task 3: reset progress bar and unlock UI atomically after MC done.
+        self._state.progress_percentage = 0   # reactive clear of any progress bar
+        self._state.is_calculating      = False
 
         self._worker = None
         self._set_run_buttons_enabled(True)

@@ -586,11 +586,11 @@ class AppWindow(QMainWindow):
         self.map_ax     = self.map_fig.add_subplot(111)
         self.map_canvas = _MplCanvas(self.map_fig)
 
-        # Single polar compass — replaces the old two-subplot wind figure.
-        # Task 3: WindProfile axes deleted; only the compass survives.
-        self.wind_fig    = Figure(figsize=(4, 4), facecolor="#1e1e1e")
-        self.wind_ax     = self.wind_fig.add_subplot(111, projection="polar")
-        self.wind_canvas = _MplCanvas(self.wind_fig)
+        # Dual wind panel: left = Cartesian speed profile, right = polar compass.
+        self.wind_fig        = Figure(figsize=(9, 3.5), facecolor="#1e1e1e")
+        self.wind_profile_ax = self.wind_fig.add_subplot(121)
+        self.wind_ax         = self.wind_fig.add_subplot(122, projection="polar")
+        self.wind_canvas     = _MplCanvas(self.wind_fig)
 
         # Overlay artist tracking — populated by update_map_plot() and
         # _render_overlays() so partial redraws can remove exactly these
@@ -723,7 +723,7 @@ class AppWindow(QMainWindow):
         bl  = QVBoxLayout(bot)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(0)
-        hdr = QLabel("  Wind Compass  ·  5 Altitude Nodes", bot)
+        hdr = QLabel("  Wind  ·  Speed Profile  &  Compass  ·  5 Altitude Nodes", bot)
         hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
         nav_w = NavigationToolbar2QT(self.wind_canvas, bot)
         nav_w.setIconSize(QSize(14, 14))
@@ -733,7 +733,7 @@ class AppWindow(QMainWindow):
 
         splitter.addWidget(top)
         splitter.addWidget(bot)
-        splitter.setSizes([600, 300])
+        splitter.setSizes([530, 370])
         return splitter
 
     # ── Parameters panel ──────────────────────────────────────────────────────
@@ -1242,32 +1242,27 @@ class AppWindow(QMainWindow):
 
     # ── Wind-node colour / label constants ───────────────────────────────────
     # One entry per WIND_SAMPLE_ALTS level: [3, 10, 150, 300, 600] m
+    # Warm (low alt) → cool (high alt) so the profile and compass share one key.
     _NODE_COLORS = ["#f38ba8", "#fab387", "#f9e2af", "#a6e3a1", "#89b4fa"]
     _NODE_LABELS = ["3 m", "10 m", "150 m", "300 m", "600 m"]
 
-    # ══ Plot: Polar Wind Compass (5 altitude nodes) ═══════════════════════════
+    # ══ Plot: Dual Wind Panel (Speed Profile  +  Polar Compass) ══════════════
     #
-    # Task 3: The old WindProfile bar chart and time-series axes are gone.
-    # This method draws ONLY the polar compass (self.wind_ax) with exactly 5
-    # arrows — one per altitude node returned by sample_wind_nodes().
+    # wind_fig has a 1×2 subplot layout:
+    #   wind_profile_ax (121) — Cartesian speed-vs-altitude profile
+    #   wind_ax         (122) — Polar compass with 5 altitude-node arrows
     #
-    # Arrow convention: tip points in the direction the wind is TRAVELLING
-    # (meteorological FROM direction + 180 °), length ∝ wind speed.
-    # Compass orientation: North at top, clockwise (standard aviation).
+    # Arrow convention: tip points in the direction the wind TRAVELS
+    # (meteorological FROM direction + 180°), length ∝ wind speed.
+    # Compass orientation: North at top, clockwise (aviation standard).
 
     def update_wind_plot(self) -> None:
-        fig = self.wind_fig
-        ax  = self.wind_ax
-        ax.cla()
+        fig  = self.wind_fig
+        ax_p = self.wind_profile_ax   # left — Cartesian speed profile
+        ax_c = self.wind_ax           # right — polar compass
+        ax_p.cla()
+        ax_c.cla()
         fig.patch.set_facecolor("#1e1e1e")
-        ax.set_facecolor("#1a1a2e")
-        ax.tick_params(colors="#555555", labelsize=6)
-        ax.grid(True, color="#333355", linewidth=0.6, alpha=0.7)
-
-        # Compass orientation: North at top, clockwise (aviation standard)
-        ax.set_theta_zero_location("N")
-        ax.set_theta_direction(-1)
-        ax.set_rlabel_position(135)
 
         # ── Gather wind-node data ─────────────────────────────────────────────
         res   = self.state.simulation_result
@@ -1281,74 +1276,121 @@ class AppWindow(QMainWindow):
                 "dir_deg":  self.state.wind_dir,
             }]
 
-        # Normalise arrow lengths to [0, 1] based on the max observed speed.
-        max_spd = max((n["speed_ms"] for n in nodes), default=1.0)
-        max_spd = max(max_spd, 1.0)
+        slice5   = nodes[:5]
+        max_spd  = max((float(n.get("speed_ms", 0.0)) for n in slice5), default=1.0)
+        max_spd  = max(max_spd, 1.0)
+        speeds   = [float(n.get("speed_ms", 0.0)) for n in slice5]
+        alts     = [float(n.get("alt_m",    0.0)) for n in slice5]
+        dirs     = [float(n.get("dir_deg",  0.0)) for n in slice5]
+        colors   = [
+            self._NODE_COLORS[i] if i < len(self._NODE_COLORS) else "#cdd6f4"
+            for i in range(len(slice5))
+        ]
+        labels   = [
+            self._NODE_LABELS[i] if i < len(self._NODE_LABELS)
+            else f"{n.get('alt_m', '?'):.0f} m"
+            for i, n in enumerate(slice5)
+        ]
+
+        # ════════════════════════════════════════════════════════════════════
+        # LEFT SUBPLOT: Wind Speed Profile (Cartesian, altitude on Y-axis)
+        # ════════════════════════════════════════════════════════════════════
+        ax_p.set_facecolor("#1a1a2e")
+        ax_p.tick_params(colors="#a6adc8", labelsize=6)
+        for spine in ax_p.spines.values():
+            spine.set_edgecolor("#45475a")
+        ax_p.grid(True, color="#333355", linewidth=0.5, alpha=0.7)
+
+        # Connecting line (drawn first so dots sit on top)
+        if len(speeds) > 1:
+            ax_p.plot(speeds, alts,
+                      color="#44445a", lw=1.2, alpha=0.55, zorder=1,
+                      linestyle="--")
+
+        # Note: 3 m node originates from the hardware anemometer
+        for spd, alt, col, lbl in zip(speeds, alts, colors, labels):
+            marker = "D" if alt == 3.0 else "o"   # diamond = anemometer
+            ax_p.scatter([spd], [alt], color=col, s=52, zorder=5,
+                         marker=marker, edgecolors="#1a1a2e", linewidths=0.8)
+            ax_p.text(spd + max_spd * 0.05, alt, f"{spd:.1f}",
+                      color=col, fontsize=6, va="center")
+
+        ax_p.set_xlabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
+        ax_p.set_ylabel("Altitude  (m)", color="#6c7086", fontsize=7, labelpad=3)
+        ax_p.set_title("Wind Speed Profile", color="#aaaaaa", fontsize=8, pad=6)
+        ax_p.set_xlim(0.0, max_spd * 1.40)
+        ax_p.set_ylim(-30.0, max(alts, default=600.0) * 1.18 + 10.0)
+
+        # Anemometer annotation on the 3 m node
+        if alts and alts[0] == 3.0:
+            ax_p.annotate(
+                "⬡ anemometer",
+                xy=(speeds[0], alts[0]),
+                xytext=(max_spd * 0.10, 60.0),
+                fontsize=5, color="#aaaaaa",
+                arrowprops=dict(arrowstyle="->", color="#555555",
+                                lw=0.8, shrinkA=4, shrinkB=4),
+            )
+
+        # ════════════════════════════════════════════════════════════════════
+        # RIGHT SUBPLOT: Polar Wind Compass
+        # ════════════════════════════════════════════════════════════════════
+        ax_c.set_facecolor("#1a1a2e")
+        ax_c.tick_params(colors="#555555", labelsize=6)
+        ax_c.grid(True, color="#333355", linewidth=0.6, alpha=0.7)
+
+        # North at top, clockwise — aviation standard
+        ax_c.set_theta_zero_location("N")
+        ax_c.set_theta_direction(-1)
+        ax_c.set_rlabel_position(135)
 
         # Radial axis: display speed ticks in m/s
-        ax.set_rmax(1.05)
-        ax.set_rticks([0.25, 0.5, 0.75, 1.0])
-        ax.set_yticklabels(
+        ax_c.set_rmax(1.05)
+        ax_c.set_rticks([0.25, 0.5, 0.75, 1.0])
+        ax_c.set_yticklabels(
             [f"{max_spd * r:.1f}" for r in (0.25, 0.5, 0.75, 1.0)],
             color="#666666", fontsize=5,
         )
 
-        # ── Draw one arrow per altitude node ─────────────────────────────────
-        for i, node in enumerate(nodes[:5]):
-            speed    = float(node.get("speed_ms", 0.0))
-            dir_from = float(node.get("dir_deg",  0.0))
-            color    = self._NODE_COLORS[i] if i < len(self._NODE_COLORS) else "#cdd6f4"
-            alt_lbl  = self._NODE_LABELS[i] if i < len(self._NODE_LABELS) else \
-                       f"{node.get('alt_m', '?'):.0f} m"
+        for spd, alt, d_from, col, lbl in zip(speeds, alts, dirs, colors, labels):
+            r_norm = spd / max_spd
+            # Arrow points TO where wind travels (FROM + 180°)
+            theta  = np.radians((d_from + 180.0) % 360.0)
 
-            # Arrow points TO where the wind travels (away from its source)
-            dir_to = (dir_from + 180.0) % 360.0
-            theta  = np.radians(dir_to)
-            r_norm = speed / max_spd
-
-            # Thick arrow from compass centre to arrow tip
-            ax.annotate(
+            ax_c.annotate(
                 "",
                 xy=(theta, r_norm),
                 xytext=(theta, 0.0),
                 arrowprops=dict(
                     arrowstyle="-|>",
-                    color=color,
+                    color=col,
                     lw=2.0,
                     mutation_scale=16,
                 ),
             )
 
-            # Speed label just beyond the arrow tip (clamped inside circle)
             if r_norm > 0.05:
-                label_r = min(r_norm + 0.09, 1.02)
-                ax.text(
-                    theta, label_r,
-                    f"{speed:.1f}",
-                    fontsize=6, color=color,
+                ax_c.text(
+                    theta, min(r_norm + 0.09, 1.02),
+                    f"{spd:.1f}",
+                    fontsize=6, color=col,
                     ha="center", va="center", fontweight="bold",
                 )
 
-            # Legend proxy (invisible line used only for the legend entry)
-            ax.plot(
-                [], [], color=color, lw=2.5,
-                label=f"{alt_lbl}  {speed:.1f} m/s @ {dir_from:.0f}°",
-            )
+            # Legend proxy
+            ax_c.plot([], [], color=col, lw=2.5,
+                      label=f"{lbl}  {spd:.1f} m/s @ {d_from:.0f}°")
 
-        ax.set_title(
-            "Wind Shear  ·  5 Altitude Nodes",
-            color="#aaaaaa", fontsize=8, pad=12,
-        )
-        ax.legend(
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.38),
+        ax_c.set_title("Wind Compass", color="#aaaaaa", fontsize=8, pad=12)
+        ax_c.legend(
+            loc="upper right",
             fontsize=6,
             facecolor="#2b2b2b", edgecolor="#555555",
             labelcolor="#ffffff", framealpha=0.88,
             ncol=1,
         )
 
-        fig.tight_layout(pad=0.4)
+        fig.tight_layout(pad=0.5)
         self.wind_canvas.draw()
 
     # ── Smart partial redraw ──────────────────────────────────────────────────

@@ -7,6 +7,10 @@ Public API
 WIND_SAMPLE_ALTS : list[float]
     Fixed diagnostic altitudes (m AGL) used by sample_wind_nodes.
 
+ANEMOMETER_ALT : float
+    Altitude (m AGL) of the surface anemometer node (3.0 m).
+    Matches obs_alt in create_wind_profile and WIND_SAMPLE_ALTS[0].
+
 WindLevel
     NamedTuple: (alt_m, speed_ms, dir_deg).
 
@@ -60,9 +64,19 @@ from typing import NamedTuple, Union
 # ── Diagnostic sample altitudes ───────────────────────────────────────────────
 
 # Five fixed nodes that span the boundary layer through the mid-troposphere.
-# Surface (3 m) captures the anemometer reading; 600 m captures free-atmosphere
-# flow above the terrain-influenced layer at typical launch sites.
+#
+# Data source split:
+#   3 m  → 自作風速計 (custom on-site anemometer) — surface truth
+#   10 m, 150 m, 300 m, 600 m → upper-wind API (GPV / JMA MSM)
+#
+# The 3 m node is intentionally kept separate because its value is measured
+# directly at the launch site; the upper nodes are model/API-derived and may
+# carry larger uncertainty, which is reflected in the MC perturbation budget.
 WIND_SAMPLE_ALTS: list[float] = [3.0, 10.0, 150.0, 300.0, 600.0]
+
+# Altitude (m AGL) of the surface anemometer observation.
+# Matches obs_alt passed to create_wind_profile and the first WIND_SAMPLE_ALTS entry.
+ANEMOMETER_ALT: float = 3.0
 
 
 # ── Data type ─────────────────────────────────────────────────────────────────
@@ -152,8 +166,16 @@ def sample_wind_nodes(
     """Sample U/V wind profile at fixed diagnostic altitude nodes.
 
     Provides structured per-layer data ready for the UI's vertical wind
-    shear display.  Each node dict contains all four representations of
-    the wind vector so no further conversion is needed in the UI layer.
+    shear display.  Each node carries a ``source`` tag that records whether
+    the value originates from the on-site anemometer or the upper-wind API:
+
+    * ``"anemometer"`` — 3 m AGL (自作風速計, custom launch-site hardware).
+      This is surface truth; it is entered directly as ``obs_speed`` /
+      ``obs_dir`` in :func:`create_wind_profile` and is NOT inferred from
+      any model.
+    * ``"api"`` — 10 m, 150 m, 300 m, 600 m AGL.  Values are derived from
+      the GPV / JMA-MSM upper-wind API and may carry larger uncertainty,
+      which drives the Monte Carlo perturbation budget.
 
     Args:
         u_prof: list of (alt_m, u_m_s) — east wind component, sorted.
@@ -168,6 +190,7 @@ def sample_wind_nodes(
             ``v``        — north component (m/s, + = northward)
             ``speed_ms`` — wind speed (m/s)
             ``dir_deg``  — meteorological direction (° FROM which wind blows)
+            ``source``   — ``"anemometer"`` for 3 m; ``"api"`` for all others
     """
     if alts is None:
         alts = WIND_SAMPLE_ALTS
@@ -182,6 +205,8 @@ def sample_wind_nodes(
             "v":        float(v),
             "speed_ms": float(speed),
             "dir_deg":  float(dir_deg),
+            # Distinguishes on-site hardware truth (3 m) from API-derived levels
+            "source":   "anemometer" if alt == ANEMOMETER_ALT else "api",
         })
     return nodes
 
@@ -333,6 +358,11 @@ def create_wind_profile(
     max_gpv_alt = gpv_uv[-1][0] if gpv_uv else blend_alt
     if max_gpv_alt < 5_000.0:
         alt_set.add(5_000.0)
+    # Explicitly include the five diagnostic sample altitudes so they are
+    # exact grid points rather than interpolated — avoids any floating-point
+    # drift when sample_wind_nodes reads them back from the profile.
+    for _diag_alt in WIND_SAMPLE_ALTS:
+        alt_set.add(float(_diag_alt))
 
     # ── Evaluate U/V at every grid altitude ──────────────────────────────────
     u_prof: list[tuple[float, float]] = []
