@@ -399,3 +399,36 @@ def create_wind_profile(
         v_prof.append((alt, v))
 
     return u_prof, v_prof
+
+
+# ── Phase B O(1) interlock ────────────────────────────────────────────────────
+
+def check_wind_limits(
+    current_wind_ms: float,
+    locked_mu: float,
+    locked_sigma: float,
+    k: float = 3.0,
+) -> bool:
+    """O(1) Phase B GO/NO-GO wind safety check.
+
+    Returns True (GO) when the current surface wind speed is within the
+    safety envelope established during Phase A.  The envelope is:
+
+        current_wind ≤ locked_mu + k × max(locked_sigma, 0.1)
+
+    The 0.1 m/s floor on sigma prevents a perfectly-calm Phase A baseline
+    from creating an impossibly tight envelope the instant the first gust
+    arrives.
+
+    Args:
+        current_wind_ms: Live surface wind speed (m/s).
+        locked_mu:       Mean surface wind speed recorded during Phase A (m/s).
+        locked_sigma:    Standard deviation of surface wind during Phase A (m/s).
+        k:               Safety multiplier (default 3.0 = 3-sigma boundary).
+
+    Returns:
+        True  → GO   — within the Phase A safety envelope
+        False → NO-GO — exceeds the envelope
+    """
+    threshold = locked_mu + k * max(locked_sigma, 0.1)
+    return float(current_wind_ms) <= threshold

@@ -38,11 +38,10 @@ from ui_qt.workers import SimulationWorker
 from utils.data_loader import RocketConfigError, load_rocket_config
 
 DEFAULT_CONFIG: dict = {
-    "wind_uncertainty":      0.20,
-    "thrust_uncertainty":    0.05,
-    "allowable_uncertainty": 20.0,
-    "landing_prob":          90,
-    "mc_n_runs":             200,
+    "wind_uncertainty":   0.20,
+    "thrust_uncertainty": 0.05,
+    "landing_prob":        90,
+    "mc_n_runs":          200,
 }
 
 
@@ -102,12 +101,12 @@ class SimController(QObject):
         self._wind_timer.start()
 
         # ── Partial-redraw wiring (no re-simulation) ───────────────────────────
-        # cep_prob_input value change → update landing_probability on AppState →
+        # cep_prob_input value change → update cep_probability on AppState →
         # needs_partial_redraw → _on_partial_redraw recomputes overlays only.
         state.needs_partial_redraw.connect(self._on_partial_redraw)
         _cep_input = getattr(window, 'cep_prob_input', None)
         if _cep_input is not None:
-            _cep_input.valueChanged.connect(self._on_landing_prob_changed)
+            _cep_input.valueChanged.connect(self._on_cep_prob_changed)
 
         # ── Mode ComboBox → AppState.flight_mode ───────────────────────────────
         # UI → AppState binding: sim_mode_combo drives flight_mode so the worker
@@ -116,6 +115,19 @@ class SimController(QObject):
         if _mode_combo is not None:
             state.flight_mode = _mode_combo.currentText()   # sync initial value
             _mode_combo.currentTextChanged.connect(self._on_flight_mode_changed)
+
+        # ── rmax_input → AppState.target_radius ────────────────────────────────
+        # Bidirectional: spinbox drives target_radius; external writes (JSON load)
+        # drive spinbox back via target_radius_changed signal.
+        _rmax = getattr(window, 'rmax_input', None)
+        if _rmax is not None:
+            state.target_radius = float(_rmax.value())
+            _rmax.valueChanged.connect(
+                lambda v: setattr(state, 'target_radius', float(v))
+            )
+            state.target_radius_changed.connect(
+                lambda v: _rmax.setValue(float(v))
+            )
 
         # ── Gust Input → AppState.gust_speed ───────────────────────────────────
         # Accepts both QDoubleSpinBox (valueChanged→float) and QLineEdit
@@ -183,6 +195,9 @@ class SimController(QObject):
         state.simulation_result_changed.connect(
             lambda _: window.update_map_plot()
         )
+        state.simulation_result_changed.connect(
+            lambda _: window.update_profile_plot()
+        )
 
         # ── Flight-mode → map circle switch ───────────────────────────────────
         # update_map_plot reads window.state.sim_mode (already kept in sync by
@@ -219,6 +234,19 @@ class SimController(QObject):
     def _on_run_clicked(self) -> None:
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
+
+        # ── 60-second surface wind buffer check ───────────────────────────────
+        surface_hist = list(self._state.wind_history_for_alt(3.0))
+        if len(surface_hist) < 5:
+            QMessageBox.warning(
+                self._window,
+                "Wind Buffer Insufficient",
+                f"Surface wind monitor has only {len(surface_hist)} sample(s) "
+                f"(minimum 5 required).\n\n"
+                "Wait a few seconds for the wind monitor to collect data, "
+                "then click RUN again.",
+            )
+            return
 
         self._state.mc_running = True
         self._state.simulation_started.emit()
@@ -363,12 +391,14 @@ class SimController(QObject):
                     if cos_lat > 1e-9 else lon)
 
         # ── Push scalar summaries into individual AppState properties ─────────
+        # scatter_points is the canonical key; "scatter" is the backward-compat alias.
+        _scatter = result.get("scatter_points", result.get("scatter", []))
         self._state.land_lat       = land_lat
         self._state.land_lon       = land_lon
         self._state.r90_radius     = result.get("r_N_radius",  0.0)
         self._state.mc_cep         = result.get("cep",         0.0)
         self._state.has_sim_result = True
-        self._state.mc_scatter     = result.get("scatter",     [])
+        self._state.mc_scatter     = _scatter
         self._state.mc_ellipse     = result.get("ellipse")
         self._state.kde_contours   = result.get("kde_contours", [])
 
@@ -390,35 +420,48 @@ class SimController(QObject):
         # ── Fire simulation_result_changed → update_map_plot + needs_redraw ───
         self._state.simulation_result = result
 
-        # ── Transition to Phase 2 (monitoring mode) ────────────────────────────
-        # Store the nominal wind baseline so check_tolerance has a reference,
-        # then activate the Phase 2 flag.  The wind timer is already running;
-        # from this point every tick evaluates tolerance against these bounds.
-        self._state.set_simulation_baseline(
-            result.get("nominal_surf_spd", self._window.surf_spd_input.value()),
-            result.get("nominal_surf_dir", self._window.surf_dir_input.value()),
-        )
-        self._state.phase2_active = True
-        self._window.set_go_nogo(True)
+        # ── Phase A verification: CEP50 ≤ target_radius → SAFE → Phase B ────────
+        cep50    = self._state.mc_cep
+        target_r = self._state.target_radius
+        is_safe  = cep50 <= target_r
+
+        if is_safe:
+            # Lock the Phase A wind distribution so Phase B O(1) GO/NO-GO ticks
+            # compare live wind against the exact baseline used in the MC run.
+            surf_spd = result.get("nominal_surf_spd",
+                                  self._window.surf_spd_input.value())
+            surf_dir = result.get("nominal_surf_dir",
+                                  self._window.surf_dir_input.value())
+            wind_unc = float(self._window.wind_unc_input.value())
+            mu_u = surf_spd * math.sin(math.radians(surf_dir))
+            mu_v = surf_spd * math.cos(math.radians(surf_dir))
+            self._state.set_wind_lock(mu_u, mu_v, wind_unc)
+            self._state.phase2_active = True
+            self._window.set_go_nogo(True)
+        else:
+            self._window.set_go_nogo(False)
 
         r90    = self._state.r90_radius
-        cep    = self._state.mc_cep
         apogee = result.get("apogee_m",  0.0)
         tof    = result.get("hang_time", 0.0)
         n      = result.get("n_runs",    0)
         prob   = result.get("landing_prob", int(self._window.cep_prob_input.value()))
+        verdict = (
+            f"SAFE  CEP {cep50:.0f} m <= {target_r:.0f} m"
+            if is_safe else
+            f"UNSAFE  CEP {cep50:.0f} m > {target_r:.0f} m"
+        )
         self._window.set_status(
-            f"Done  —  R{prob}: {r90:.1f} m   |   CEP50: {cep:.1f} m   |   "
-            f"Apogee: {apogee:.0f} m   |   ToF: {tof:.1f} s   ({n} MC runs)",
-            "#a6e3a1",
+            f"{verdict}   |   R{prob}: {r90:.1f} m   |   "
+            f"Apogee: {apogee:.0f} m   |   ToF: {tof:.1f} s   ({n} runs)",
+            "#a6e3a1" if is_safe else "#f9e2af",
         )
         self._window.set_progress(100, "Done")
 
         # Cache scatter as numpy so partial redraws (cep_prob change) can
         # recompute the error ellipse without re-running the simulation.
-        _scatter_raw = result.get("scatter", [])
         self._state.cached_mc_scatter = (
-            np.array(_scatter_raw, dtype=np.float64) if _scatter_raw else None
+            np.array(_scatter, dtype=np.float64) if _scatter else None
         )
 
         # Broadcast smart-redraw lifecycle signals.
@@ -465,17 +508,21 @@ class SimController(QObject):
 
     @Slot(str)
     def _on_tolerance_status_changed(self, status: str) -> None:
-        """Fires only when tolerance status *transitions* (breach starts or clears).
+        """Fires only when GO ↔ NO-GO status *transitions*.
 
         Using the transition signal (not the per-tick exceeded signal) to drive
-        GO/NO-GO eliminates visual chatter: the indicator flips exactly once
-        per transition, not once per second.
+        the GO/NO-GO indicator eliminates visual chatter: the label flips exactly
+        once per transition, not once per second.
         """
-        in_bounds = status.startswith("✓")  # "✓"
+        in_bounds = status.startswith("✓")
         self._window.set_go_nogo(in_bounds)
         if in_bounds:
             self._window.set_status(
-                f"Phase 2  (monitoring)  —  {status}", "#a6e3a1"
+                f"Phase B  (monitoring)  —  {status}", "#a6e3a1"
+            )
+        else:
+            self._window.set_status(
+                f"Phase B  {status}  —  wind outside Phase A envelope", "#f38ba8"
             )
 
     # ── Helpers ────────────────────────────────────────────────────────────────
@@ -487,12 +534,51 @@ class SimController(QObject):
         flight_mode, gust_speed, and all 12 rocket geometry properties are
         read from AppState (never from widgets) to keep the worker thread
         free of any UI coupling.
+
+        Turbulence intensity
+        --------------------
+        μ and σ are computed from the 60-second surface wind history buffer
+        (3 m AGL, updated at 1 Hz by the hardware anemometer).  The absolute
+        gust noise passed to the MC perturbation engine is:
+
+            auto_gust_ms = σ   (m/s)
+
+        This replaces the manual gust_speed UI input when σ > 0 so that MC
+        scatter reflects the actual observed turbulence at the launch site.
+
+        Unit contract (ALL values in SI — m, kg, s)
+        -------------------------------------------
+        All spinbox widgets display MKS values directly; AppState stores MKS.
+        _collect_params reads only from AppState, so every value in the
+        returned dict is already SI.  No conversion is applied in
+        workers._build_sim_params.
         """
         w = self._window
         s = self._state
+
+        # ── Turbulence intensity from 60s surface wind history ────────────────
+        # Use population std-dev (÷N, not ÷(N-1)) — we have the full population
+        # over the 60s window, not a sample from an infinite process.
+        _hist = list(s.wind_history_for_alt(3.0))
+        if len(_hist) >= 2:
+            _speeds     = [e["speed_ms"] for e in _hist]
+            _turb_mu    = sum(_speeds) / len(_speeds)
+            _turb_sigma = math.sqrt(
+                sum((_v - _turb_mu) ** 2 for _v in _speeds) / len(_speeds)
+            )
+        else:
+            # No history yet — fall back to the current anemometer reading
+            _turb_mu    = float(s.surf_wind_speed)
+            _turb_sigma = 0.0
+        # I = σ/μ  (dimensionless turbulence intensity)
+        _turb_intensity = _turb_sigma / _turb_mu if _turb_mu > 0.1 else 0.0
+
         return {
-            # ── Simulation / wind config (widget-sourced) ──────────────────────
-            "cep_prob":   w.cep_prob_input.value(),
+            # ── Simulation / wind config ───────────────────────────────────────
+            # cep_prob: read from AppState (authoritative) — updated by both the
+            # main-window cep_prob_input widget and the Advanced Settings dialog.
+            # Reading the widget directly would silently ignore Advanced Settings.
+            "cep_prob":   int(s.landing_prob),
             "launch_lat": w.lat_input.value(),
             "launch_lon": w.lon_input.value(),
             "elev":       w.elev_input.value(),
@@ -508,24 +594,38 @@ class SimController(QObject):
             # ── Mode and gust — sourced from AppState ──────────────────────────
             "flight_mode": s.flight_mode,
             "gust_speed":  s.gust_speed,
-            # ── 12 rocket geometry params — sourced from AppState ──────────────
-            # Key names match _DEFAULT_ROCKET in workers.py so SimulationWorker
-            # merges them directly without translation.
-            "airframe_mass":  s.rocket_dry_mass,
-            "airframe_cg":    s.rocket_cg,
-            "airframe_len":   s.rocket_length,
-            "radius":         s.rocket_diameter / 2.0,  # AppState stores diameter
-            "nose_len":       s.nose_length,
-            "fin_root":       s.fin_root_chord,
-            "fin_tip":        s.fin_tip_chord,
-            "fin_span":       s.fin_span,
-            "fin_pos":        s.fin_position,
-            "motor_pos":      s.motor_cg,
-            "motor_dry_mass": s.motor_dry_mass,
-            "para_cd":        s.parachute_cd,
-            "para_area":      s.parachute_area,
-            "para_lag":       s.parachute_lag,
-            "backfire_delay": s.backfire_delay,
+            # ── Turbulence (auto-computed from 60s wind history) ───────────────
+            "turb_mu":        _turb_mu,
+            "turb_sigma":     _turb_sigma,
+            "turb_intensity": _turb_intensity,
+            # auto_gust_ms = σ: absolute gust noise (m/s) for MC perturbation.
+            # Overrides the manual gust_speed when σ > 0 (observed turbulence
+            # is always more representative than a hand-set UI value).
+            "auto_gust_ms":   _turb_sigma,
+            # ── 12 rocket geometry params — sourced from AppState (SI) ─────────
+            # Key names match _DEFAULT_ROCKET in workers.py.
+            # AppState and spinboxes are both SI (m, kg) — no conversion needed.
+            "airframe_mass":  s.rocket_dry_mass,       # kg
+            "airframe_cg":    s.rocket_cg,             # m from nose
+            "airframe_len":   s.rocket_length,         # m
+            "radius":         s.rocket_diameter / 2.0, # m  (AppState holds diameter)
+            "nose_len":       s.nose_length,           # m
+            "fin_root":       s.fin_root_chord,        # m
+            "fin_tip":        s.fin_tip_chord,         # m
+            "fin_span":       s.fin_span,              # m
+            "fin_pos":        s.fin_position,          # m from nose
+            "motor_pos":      s.motor_cg,              # m from nose
+            "motor_dry_mass": s.motor_dry_mass,        # kg
+            "body_cd":        getattr(s, "drag_coeff", 0.45),  # rocket airframe Cd
+            "para_cd":        s.parachute_cd,              # parachute Cd (for CdS product)
+            "para_area":      s.parachute_area,            # m²
+            "para_lag":       s.parachute_lag,         # s
+            "backfire_delay": s.backfire_delay,        # s
+            # ── Motor thrust curve — persisted by AppWindow._on_load_motor() ──
+            **({
+                "thrust_data":     w._motor_thrust_data,
+                "motor_burn_time": w._motor_burn_time,
+            } if getattr(w, "_motor_thrust_data", None) else {}),
         }
 
     @Slot(str)
@@ -549,47 +649,39 @@ class SimController(QObject):
     # ── Airframe spinbox wiring ────────────────────────────────────────────────
 
     def _wire_airframe_spinboxes(self) -> None:
-        """Bind the 12 CGS airframe spinboxes bidirectionally to AppState (SI).
+        """Bind the 12 SI airframe spinboxes bidirectionally to AppState (SI).
 
-        Direction 1 — spinbox → AppState (user edits):
-            CGS value × conversion → AppState setter (SI).
-            AppState equality guard suppresses re-emission when value unchanged.
-
-        Direction 2 — AppState → spinbox (JSON load / external write):
-            AppState signal (SI) → spinbox.setValue(SI × inverse_factor).
-            Spinbox emits valueChanged only if value actually changes, so the
-            Direction-1 slot fires but the AppState equality guard terminates
-            the loop immediately (new_SI == current_SI → no emission).
+        Spinboxes now display SI values directly (m, kg, s) so both conversion
+        lambdas are identity functions, except af_radius_input which shows body
+        radius (m) while AppState stores full diameter (m) — factor of 2 only.
         """
         w = self._window
         s = self._state
 
-        def _bind(sb_name: str, prop: str, cgs_to_si, si_to_cgs) -> None:
+        def _bind(sb_name: str, prop: str, to_si, from_si) -> None:
             sb = getattr(w, sb_name, None)
             if sb is None:
                 return
-            # spinbox → AppState
             sb.valueChanged.connect(
-                lambda v, _p=prop, _f=cgs_to_si: setattr(s, _p, _f(v))
+                lambda v, _p=prop, _f=to_si: setattr(s, _p, _f(v))
             )
-            # AppState signal → spinbox
             sig = getattr(s, f"{prop}_changed", None)
             if sig is not None:
-                sig.connect(lambda v, _sb=sb, _g=si_to_cgs: _sb.setValue(_g(v)))
+                sig.connect(lambda v, _sb=sb, _g=from_si: _sb.setValue(_g(v)))
 
-        # af_radius_input shows body radius (cm); AppState stores full diameter (m)
-        _bind("af_mass_input",     "rocket_dry_mass", lambda v: v / 1000.0,       lambda v: v * 1000.0)
-        _bind("af_cg_input",       "rocket_cg",       lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_len_input",      "rocket_length",   lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_radius_input",   "rocket_diameter", lambda v: v / 100.0 * 2.0,  lambda v: v / 2.0 * 100.0)
-        _bind("af_nose_input",     "nose_length",     lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_finroot_input",  "fin_root_chord",  lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_fintip_input",   "fin_tip_chord",   lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_finspan_input",  "fin_span",        lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_finpos_input",   "fin_position",    lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_motorpos_input", "motor_cg",        lambda v: v / 100.0,        lambda v: v * 100.0)
-        _bind("af_motormass_input","motor_dry_mass",  lambda v: v / 1000.0,       lambda v: v * 1000.0)
-        _bind("af_backfire_input", "backfire_delay",  lambda v: float(v),         lambda v: float(v))
+        # af_radius_input shows body radius (m); AppState stores full diameter (m)
+        _bind("af_mass_input",     "rocket_dry_mass", lambda v: float(v),      lambda v: float(v))
+        _bind("af_cg_input",       "rocket_cg",       lambda v: float(v),      lambda v: float(v))
+        _bind("af_len_input",      "rocket_length",   lambda v: float(v),      lambda v: float(v))
+        _bind("af_radius_input",   "rocket_diameter", lambda v: v * 2.0,       lambda v: v / 2.0)
+        _bind("af_nose_input",     "nose_length",     lambda v: float(v),      lambda v: float(v))
+        _bind("af_finroot_input",  "fin_root_chord",  lambda v: float(v),      lambda v: float(v))
+        _bind("af_fintip_input",   "fin_tip_chord",   lambda v: float(v),      lambda v: float(v))
+        _bind("af_finspan_input",  "fin_span",        lambda v: float(v),      lambda v: float(v))
+        _bind("af_finpos_input",   "fin_position",    lambda v: float(v),      lambda v: float(v))
+        _bind("af_motorpos_input", "motor_cg",        lambda v: float(v),      lambda v: float(v))
+        _bind("af_motormass_input","motor_dry_mass",  lambda v: float(v),      lambda v: float(v))
+        _bind("af_backfire_input", "backfire_delay",  lambda v: float(v),      lambda v: float(v))
 
     # ── Airframe JSON loader ───────────────────────────────────────────────────
 
@@ -598,9 +690,9 @@ class SimController(QObject):
         """Open a file dialog, parse the Rocket.json, and push all parameters to AppState.
 
         Data flow (strict unidirectional MVVM):
-            File → load_rocket_config (→ CGS/converted)
-                 → airframe: CGS → SI → AppState rocket geometry properties
-                 → parachute: converted → SI → AppState parachute properties
+            File → load_rocket_config (SI pass-through — no conversion)
+                 → airframe SI values → AppState rocket geometry properties
+                 → parachute SI values → AppState parachute properties
                  → signals fire → spinboxes / bound widgets update automatically
 
         AppState equality guards prevent re-emission loops when spinbox
@@ -631,31 +723,33 @@ class SimController(QObject):
         af  = cfg["airframe"]
         par = cfg["parachute"]
 
-        # ── Airframe: CGS → SI; each setter emits signal → spinbox.setValue ──
-        s.rocket_dry_mass = af["mass"]           / 1000.0        # g   → kg
-        s.rocket_cg       = af["cg"]             / 100.0         # cm  → m
-        s.rocket_length   = af["length"]         / 100.0         # cm  → m
-        s.rocket_diameter = af["radius"]         / 100.0 * 2.0   # cm radius → m diameter
-        s.nose_length     = af["nose_length"]    / 100.0         # cm  → m
-        s.fin_root_chord  = af["fin_root"]       / 100.0         # cm  → m
-        s.fin_tip_chord   = af["fin_tip"]        / 100.0         # cm  → m
-        s.fin_span        = af["fin_span"]       / 100.0         # cm  → m
-        s.fin_position    = af["fin_pos"]        / 100.0         # cm  → m
-        s.motor_cg        = af["motor_pos"]      / 100.0         # cm  → m
-        s.motor_dry_mass  = af["motor_dry_mass"] / 1000.0        # g   → kg
-        s.backfire_delay  = af["backfire_delay"]                  # s   → s
+        # ── Airframe: JSON is SI; push directly into AppState ─────────────────
+        # Each setter emits a signal → bound spinbox.setValue updates the UI.
+        # JSON and spinboxes are both SI (m, kg); write directly, no conversion.
+        s.rocket_dry_mass = af["mass"]                # kg
+        s.rocket_cg       = af["cg"]                  # m from nose
+        s.rocket_length   = af["length"]              # m
+        s.rocket_diameter = af["radius"] * 2.0        # m radius → m diameter
+        s.nose_length     = af["nose_length"]         # m
+        s.fin_root_chord  = af["fin_root"]            # m
+        s.fin_tip_chord   = af["fin_tip"]             # m
+        s.fin_span        = af["fin_span"]            # m
+        s.fin_position    = af["fin_pos"]             # m from nose
+        s.motor_cg        = af["motor_pos"]           # m from nose
+        s.motor_dry_mass  = af["motor_dry_mass"]      # kg
+        s.backfire_delay  = af["backfire_delay"]      # s
 
-        # ── Parachute: load_rocket_config returns cd/lag unchanged, area in cm²
-        s.parachute_cd   = par["cd"]                             # dimensionless
-        s.parachute_area = par["area"] / 10_000.0               # cm² → m²
-        s.parachute_lag  = par["lag"]                            # s   → s
+        # ── Parachute: JSON is SI; push directly into AppState ────────────────
+        s.parachute_cd   = par["cd"]                  # dimensionless
+        s.parachute_area = par["area"]                # m²
+        s.parachute_lag  = par["lag"]                 # s
 
         name = _os.path.basename(path)
         self._window.set_status(
             f"Rocket loaded: {name}  ·  "
-            f"Mass {af['mass']:.0f} g  ·  "
-            f"Length {af['length']:.1f} cm  ·  "
-            f"Chute area {par['area']:.0f} cm²  ·  "
+            f"Mass {af['mass']:.4f} kg  ·  "
+            f"Length {af['length']:.3f} m  ·  "
+            f"Chute {par['area']:.4f} m²  ·  "
             f"Cd {par['cd']:.2f}",
             "#a6e3a1",
         )
@@ -691,12 +785,6 @@ class SimController(QObject):
         dlg.mc_runs_input.setValue(s.mc_n_runs)
         dlg.wind_unc_input.setValue(s.wind_uncertainty)
         dlg.thrust_unc_input.setValue(s.thrust_uncertainty)
-        dlg.allow_unc_input.setValue(s.allowable_uncertainty)
-        # Match the landing_prob_combo index to the current AppState value
-        for i in range(dlg.landing_prob_combo.count()):
-            if dlg.landing_prob_combo.itemData(i) == s.landing_probability:
-                dlg.landing_prob_combo.setCurrentIndex(i)
-                break
 
         # ── Execute dialog ─────────────────────────────────────────────────────
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -709,12 +797,8 @@ class SimController(QObject):
         s.upper_wind_dir       = dlg.up_dir_input.value()
         s.landing_prob         = dlg.cep_prob_input.value()
         s.mc_n_runs            = dlg.mc_runs_input.value()
-        s.wind_uncertainty     = dlg.wind_unc_input.value()
-        s.thrust_uncertainty   = dlg.thrust_unc_input.value()
-        s.allowable_uncertainty = dlg.allow_unc_input.value()
-        lp_data = dlg.landing_prob_combo.currentData()
-        if lp_data is not None:
-            s.landing_probability = int(lp_data)
+        s.wind_uncertainty   = dlg.wind_unc_input.value()
+        s.thrust_uncertainty = dlg.thrust_unc_input.value()
 
         self._window.set_status(
             f"Settings updated  ·  "
@@ -763,7 +847,7 @@ class SimController(QObject):
         (trajectory_x, mc_scatter_x, land_x, cep_ellipses, ...).  All values
         are converted to native Python types so no numpy scalars reach Qt.
         """
-        sc   = result.get("scatter", [])
+        sc   = result.get("scatter_points", result.get("scatter", []))
         prob = result.get("landing_prob", 90)
 
         cep_ellipses: list[dict] = []
@@ -812,13 +896,20 @@ class SimController(QObject):
 
     @Slot()
     def _on_partial_redraw(self) -> None:
-        """Recompute overlays at the new landing_probability without re-simulating."""
+        """Recompute overlays at the new cep_probability without re-simulating."""
         self._window.update_visual_overlays(self._state)
 
-    @Slot(int)
-    def _on_landing_prob_changed(self, value: int) -> None:
-        """Propagate cep_prob_input change to AppState.landing_probability."""
-        self._state.landing_probability = value
+    @Slot(float)
+    def _on_cep_prob_changed(self, value: float) -> None:
+        """Propagate cep_prob_input change → both AppState probability fields.
+
+        cep_probability drives partial visual redraws (float, emits needs_partial_redraw).
+        landing_prob is the authoritative integer used by _collect_params → worker.
+        Both must stay in sync so the map overlay and the MC computation always
+        use the same percentile, regardless of which widget last changed the value.
+        """
+        self._state.cep_probability = float(value)
+        self._state.landing_prob    = int(round(value))
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
         for btn in self._window.findChildren(QPushButton, "btn_run"):

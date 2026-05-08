@@ -28,6 +28,7 @@ matplotlib.rcParams['font.family'] = ['Yu Gothic', 'Meiryo', 'MS Gothic', 'DejaV
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
+from matplotlib.patches import Ellipse as MplEllipse
 
 from PySide6.QtCore import Qt, QSize, QObject, Signal, QTimer
 from PySide6.QtWidgets import (
@@ -38,7 +39,8 @@ from PySide6.QtWidgets import (
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
     QMessageBox, QToolBox, QSplitter, QSlider,
     QDialog, QDialogButtonBox,
-    QTableWidget, QTableWidgetItem,
+    QTableWidget, QTableWidgetItem, QHeaderView,
+    QAbstractButton,
 )
 from PySide6.QtGui import QAction, QColor
 
@@ -142,7 +144,7 @@ QMainWindow, QWidget {
 QDialog { background-color: #2b2b2b; color: #ffffff; }
 QToolBox::tab {
     background: #3c3c3c; color: #7eb3ff; font-weight: bold;
-    font-size: 8pt; padding: 6px 10px;
+    font-size: 9pt; padding: 6px 10px;
     border: 1px solid #555555; border-radius: 4px; margin-bottom: 2px;
 }
 QToolBox::tab:selected { background: #4a4a4a; color: #c5a5f7; border-color: #c5a5f7; }
@@ -188,8 +190,6 @@ QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
 QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
 QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
 QPushButton#btn_run:hover  { background: #8ed9a8; }
-QPushButton#btn_mc   { background: #7eb3ff; color: #1e1e1e; border-color: #7eb3ff; }
-QPushButton#btn_mc:hover   { background: #9dc5ff; }
 QPushButton#btn_stop { background: #f38ba8; color: #1e1e1e; border-color: #f38ba8; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
 QPushButton#btn_phase1_run {
@@ -263,6 +263,7 @@ QHeaderView::section {
 }
 QTableCornerButton::section { background: #2b2b2b; border: 1px solid #45475a; }
 QFormLayout QLabel { color: #aaaaaa; }
+QTabBar::tab { min-height: 30px; padding: 5px 10px; }
 """
 
 # Exported so main_qt.py can apply it to QApplication (global scope)
@@ -283,8 +284,6 @@ class AdvancedSettingsDialog(QDialog):
     The OK button simply closes the dialog (values already updated).
     Cancel restores the snapshot taken when the dialog was last opened.
     """
-
-    _LANDING_PROBS = (50, 68, 80, 85, 90, 95, 99)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -344,11 +343,6 @@ class AdvancedSettingsDialog(QDialog):
         self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
         self.mc_runs_input.setSingleStep(50)
 
-        self.landing_prob_combo = QComboBox()
-        for p in self._LANDING_PROBS:
-            self.landing_prob_combo.addItem(f"{p} %", p)
-        self.landing_prob_combo.setCurrentIndex(4)  # 90 %
-
         self.wind_unc_input = QDoubleSpinBox()
         self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
         self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
@@ -359,16 +353,10 @@ class AdvancedSettingsDialog(QDialog):
         self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
         self.thrust_unc_input.setSuffix("  (±ratio)")
 
-        self.allow_unc_input = QDoubleSpinBox()
-        self.allow_unc_input.setRange(0, 9999); self.allow_unc_input.setDecimals(1)
-        self.allow_unc_input.setValue(20.0);    self.allow_unc_input.setSuffix(" m")
-
-        frm2.addRow("CEP Probability:",      self.cep_prob_input)
-        frm2.addRow("MC Runs:",              self.mc_runs_input)
-        frm2.addRow("Landing Prob:",         self.landing_prob_combo)
-        frm2.addRow("Wind Uncertainty:",     self.wind_unc_input)
-        frm2.addRow("Thrust Uncertainty:",   self.thrust_unc_input)
-        frm2.addRow("Allowable Radius:",     self.allow_unc_input)
+        frm2.addRow("CEP Probability:",    self.cep_prob_input)
+        frm2.addRow("MC Runs:",            self.mc_runs_input)
+        frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
+        frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
 
         # ── OK / Cancel ───────────────────────────────────────────────────────
         btns = QDialogButtonBox(
@@ -397,10 +385,8 @@ class AdvancedSettingsDialog(QDialog):
             "up_dir":   self.up_dir_input.value(),
             "cep_prob": self.cep_prob_input.value(),
             "mc_runs":  self.mc_runs_input.value(),
-            "lp_idx":   self.landing_prob_combo.currentIndex(),
             "wind_unc": self.wind_unc_input.value(),
             "thr_unc":  self.thrust_unc_input.value(),
-            "allow":    self.allow_unc_input.value(),
         }
 
     def _on_cancel(self) -> None:
@@ -411,10 +397,8 @@ class AdvancedSettingsDialog(QDialog):
         self.up_dir_input.setValue(s["up_dir"])
         self.cep_prob_input.setValue(s["cep_prob"])
         self.mc_runs_input.setValue(s["mc_runs"])
-        self.landing_prob_combo.setCurrentIndex(s["lp_idx"])
         self.wind_unc_input.setValue(s["wind_unc"])
         self.thrust_unc_input.setValue(s["thr_unc"])
-        self.allow_unc_input.setValue(s["allow"])
         self.reject()
 
 
@@ -533,8 +517,6 @@ class AppWindow(QMainWindow):
     cep_prob_input                    : QSpinBox        (in AdvancedSettingsDialog)
     mc_runs_input                     : QSpinBox        (in AdvancedSettingsDialog)
     wind_unc_input, thrust_unc_input  : QDoubleSpinBox  (in AdvancedSettingsDialog)
-    allow_unc_input                   : QDoubleSpinBox  (in AdvancedSettingsDialog)
-    landing_prob_combo                : QComboBox       (in AdvancedSettingsDialog)
     wind_speed_input, wind_dir_input  : QDoubleSpinBox  (aliases → surf_spd/dir)
     lat_input, lon_input              : QDoubleSpinBox  (in Launch Settings tab)
     elev_input, azim_input            : QDoubleSpinBox  (in Launch Settings tab)
@@ -585,16 +567,18 @@ class AppWindow(QMainWindow):
         self.up_dir_input       = self._adv_dialog.up_dir_input
         self.cep_prob_input     = self._adv_dialog.cep_prob_input
         self.mc_runs_input      = self._adv_dialog.mc_runs_input
-        self.landing_prob_combo = self._adv_dialog.landing_prob_combo
         self.wind_unc_input     = self._adv_dialog.wind_unc_input
         self.thrust_unc_input   = self._adv_dialog.thrust_unc_input
-        self.allow_unc_input    = self._adv_dialog.allow_unc_input
         # Aliases used by _bind_state for the local reactive AppState
         self.wind_speed_input   = self._adv_dialog.surf_spd_input
         self.wind_dir_input     = self._adv_dialog.surf_dir_input
 
         self._setup_splitter()
         self._bind_state()
+
+        # Motor data persisted here after _on_load_motor(); read by SimController._collect_params()
+        self._motor_thrust_data: list | None = None
+        self._motor_burn_time:   float | None = None
 
     # ── Theme ──────────────────────────────────────────────────────────────────
 
@@ -645,10 +629,8 @@ class AppWindow(QMainWindow):
         fm.addAction(QAction("Quit", self, triggered=self.close))
 
         sm = mb.addMenu("&Simulation")
-        sm.addAction(QAction("▶  Run Simulation",    self, triggered=self._on_run))
-        sm.addAction(QAction("🎲  Monte Carlo",      self, triggered=self._on_mc))
-        sm.addAction(QAction("🔍  Phase 1 Optimize", self, triggered=self._on_phase1))
-        sm.addAction(QAction("⏹  Stop",              self, triggered=self._on_stop))
+        sm.addAction(QAction("▶  Run Simulation", self, triggered=self._on_run))
+        sm.addAction(QAction("⏹  Stop",           self, triggered=self._on_stop))
 
         self._view_menu = mb.addMenu("&View")
 
@@ -670,18 +652,13 @@ class AppWindow(QMainWindow):
             sep.setStyleSheet("color: #45475a;")
             tb.addWidget(sep)
 
-        btn_run  = QPushButton("▶  Run",     tb); btn_run.setObjectName("btn_run")
-        btn_mc   = QPushButton("🎲  MC",      tb); btn_mc.setObjectName("btn_mc")
-        btn_ph1  = QPushButton("🔍  Phase 1", tb); btn_ph1.setObjectName("btn_phase1_run")
-        btn_stop = QPushButton("⏹  Stop",    tb); btn_stop.setObjectName("btn_stop")
+        btn_run  = QPushButton("▶  Run",  tb); btn_run.setObjectName("btn_run")
+        btn_stop = QPushButton("⏹  Stop", tb); btn_stop.setObjectName("btn_stop")
 
-        btn_run.setFixedWidth(90);   btn_run.clicked.connect(self._on_run)
-        btn_mc.setFixedWidth(78);    btn_mc.clicked.connect(self._on_mc)
-        btn_ph1.setFixedWidth(94);   btn_ph1.clicked.connect(self._on_phase1)
-        btn_stop.setFixedWidth(74);  btn_stop.clicked.connect(self._on_stop)
+        btn_run.setFixedWidth(90);  btn_run.clicked.connect(self._on_run)
+        btn_stop.setFixedWidth(74); btn_stop.clicked.connect(self._on_stop)
 
-        for w in (btn_run, btn_mc, btn_ph1):
-            tb.addWidget(w)
+        tb.addWidget(btn_run)
         _vline()
         tb.addWidget(btn_stop)
 
@@ -854,6 +831,10 @@ class AppWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         tb.addItem(self._build_airframe_page(),        "🚀  Airframe")
         tb.addItem(self._build_launch_settings_page(), "📍  Launch Settings")
+        # QSS min-height on QToolBox::tab is ignored at widget-level; set height
+        # directly on the internal QAbstractButton children instead.
+        for _tab_btn in tb.findChildren(QAbstractButton):
+            _tab_btn.setMinimumHeight(44)
         lay.addWidget(tb, stretch=1)
 
         # ── Advanced Settings button ──────────────────────────────────────────
@@ -874,13 +855,14 @@ class AppWindow(QMainWindow):
         self.mode_combo.addItems(self.OPERATION_MODES)
         self.mode_combo.setCurrentText("自由")
 
-        self._rmax_label = QLabel("R_max:", mode_grp)
         self.rmax_input  = QDoubleSpinBox(mode_grp)
         self.rmax_input.setRange(0, 9999); self.rmax_input.setDecimals(1)
         self.rmax_input.setValue(50.0);    self.rmax_input.setSuffix(" m")
+        self.rmax_input.setToolTip(
+            "Target landing radius for GO/NO-GO assessment and map display")
 
-        mode_lay.addRow("飛行モード:", self.mode_combo)
-        mode_lay.addRow(self._rmax_label,  self.rmax_input)
+        mode_lay.addRow("飛行モード:",    self.mode_combo)
+        mode_lay.addRow("Target Radius:", self.rmax_input)
 
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         self._on_mode_changed("自由")
@@ -888,10 +870,11 @@ class AppWindow(QMainWindow):
         lay.addWidget(mode_grp)
 
         # ── GO / NO-GO indicator ──────────────────────────────────────────────
-        self._go_nogo_label = QLabel("●  STANDBY", container)
+        self._go_nogo_label = QLabel("⬤  STANDBY", container)
         self._go_nogo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._go_nogo_label.setStyleSheet(
-            "font-size: 12pt; font-weight: bold; color: #7a7e9a; padding: 6px;")
+            "font-size: 14pt; font-weight: bold; color: #7a7e9a; padding: 8px;"
+            "background: #1a1a2e; border-radius: 8px; border: 2px solid #3a3a52;")
         lay.addWidget(self._go_nogo_label)
 
         # ── Run button ────────────────────────────────────────────────────────
@@ -949,43 +932,44 @@ class AppWindow(QMainWindow):
         grp_motor_lay.addRow("Burn Time:",     self.lbl_burn_time)
         grp_motor_lay.addRow("Total Impulse:", self.lbl_total_impulse)
 
-        # ── Airframe parameters (12 fields, CGMS) ────────────────────────────
-        grp_af     = QGroupBox("Airframe  (cm · g · s from nose tip)", w)
+        # ── Airframe parameters (12 fields, SI: m · kg · s) ─────────────────
+        grp_af     = QGroupBox("Airframe  (m · kg · s  from nose tip)", w)
         frm        = QFormLayout(grp_af)
         frm.setSpacing(5)
         frm.setContentsMargins(10, 10, 10, 8)
 
-        def _dsb(lo, hi, val, dec, suffix):
+        def _dsb(lo, hi, val, dec, step, suffix):
             sb = QDoubleSpinBox(grp_af)
             sb.setRange(lo, hi); sb.setDecimals(dec)
-            sb.setValue(val);    sb.setSuffix(suffix)
+            sb.setValue(val);    sb.setSingleStep(step); sb.setSuffix(suffix)
             return sb
 
-        self.af_mass_input      = _dsb(1,    50_000, 1000.0, 1, " g")
-        self.af_cg_input        = _dsb(0,      500,    50.0, 1, " cm")
-        self.af_len_input       = _dsb(1,      500,   110.0, 1, " cm")
-        self.af_radius_input    = _dsb(0.5,     30,     3.5, 2, " cm")
-        self.af_nose_input      = _dsb(1,      200,    20.0, 1, " cm")
-        self.af_finroot_input   = _dsb(0.5,    100,    12.0, 1, " cm")
-        self.af_fintip_input    = _dsb(0.5,    100,     6.0, 1, " cm")
-        self.af_finspan_input   = _dsb(0.5,    100,     8.0, 1, " cm")
-        self.af_finpos_input    = _dsb(0,      500,    95.0, 1, " cm")
-        self.af_motorpos_input  = _dsb(0,      500,   100.0, 1, " cm")
-        self.af_motormass_input = _dsb(0,    5_000,   100.0, 1, " g")
-        self.af_backfire_input  = _dsb(0,       10,     0.5, 2, " s")
+        # Ranges cover typical small model rockets (0.05–5 kg, 0.1–3 m)
+        self.af_mass_input      = _dsb(0.001,  50.0,  0.087, 4, 0.001, " kg")
+        self.af_cg_input        = _dsb(0.0,     5.0,  0.210, 3, 0.001, " m")
+        self.af_len_input       = _dsb(0.01,    5.0,  0.383, 3, 0.001, " m")
+        self.af_radius_input    = _dsb(0.001,   0.5,  0.015, 4, 0.001, " m")
+        self.af_nose_input      = _dsb(0.01,    2.0,  0.080, 3, 0.001, " m")
+        self.af_finroot_input   = _dsb(0.001,   1.0,  0.040, 3, 0.001, " m")
+        self.af_fintip_input    = _dsb(0.001,   1.0,  0.020, 3, 0.001, " m")
+        self.af_finspan_input   = _dsb(0.001,   1.0,  0.030, 3, 0.001, " m")
+        self.af_finpos_input    = _dsb(0.0,     5.0,  0.350, 3, 0.001, " m")
+        self.af_motorpos_input  = _dsb(0.0,     5.0,  0.380, 3, 0.001, " m")
+        self.af_motormass_input = _dsb(0.0,     5.0,  0.015, 4, 0.001, " kg")
+        self.af_backfire_input  = _dsb(0.0,    10.0,  4.0,   2, 0.1,   " s")
 
-        frm.addRow("Mass:",              self.af_mass_input)
-        frm.addRow("CG (from nose):",    self.af_cg_input)
-        frm.addRow("Length:",            self.af_len_input)
-        frm.addRow("Body Radius:",       self.af_radius_input)
-        frm.addRow("Nose Length:",       self.af_nose_input)
-        frm.addRow("Fin Root Chord:",    self.af_finroot_input)
-        frm.addRow("Fin Tip Chord:",     self.af_fintip_input)
-        frm.addRow("Fin Semi-Span:",     self.af_finspan_input)
-        frm.addRow("Fin LE Position:",   self.af_finpos_input)
-        frm.addRow("Motor CG Pos.:",     self.af_motorpos_input)
-        frm.addRow("Motor Dry Mass:",    self.af_motormass_input)
-        frm.addRow("Backfire Delay:",    self.af_backfire_input)
+        frm.addRow("Mass [kg]:",           self.af_mass_input)
+        frm.addRow("CG from Nose [m]:",    self.af_cg_input)
+        frm.addRow("Length [m]:",          self.af_len_input)
+        frm.addRow("Body Radius [m]:",     self.af_radius_input)
+        frm.addRow("Nose Length [m]:",     self.af_nose_input)
+        frm.addRow("Fin Root Chord [m]:",  self.af_finroot_input)
+        frm.addRow("Fin Tip Chord [m]:",   self.af_fintip_input)
+        frm.addRow("Fin Semi-Span [m]:",   self.af_finspan_input)
+        frm.addRow("Fin LE Position [m]:", self.af_finpos_input)
+        frm.addRow("Motor CG Pos. [m]:",   self.af_motorpos_input)
+        frm.addRow("Motor Dry Mass [kg]:", self.af_motormass_input)
+        frm.addRow("Backfire Delay [s]:",  self.af_backfire_input)
 
         # ── Parachute parameters ──────────────────────────────────────────────
         grp_para     = QGroupBox("Parachute", w)
@@ -993,19 +977,19 @@ class AppWindow(QMainWindow):
         frm_para.setSpacing(5)
         frm_para.setContentsMargins(10, 10, 10, 8)
 
-        def _psb(lo, hi, val, dec, suffix):
+        def _psb(lo, hi, val, dec, step, suffix):
             sb = QDoubleSpinBox(grp_para)
             sb.setRange(lo, hi); sb.setDecimals(dec)
-            sb.setValue(val);    sb.setSuffix(suffix)
+            sb.setValue(val);    sb.setSingleStep(step); sb.setSuffix(suffix)
             return sb
 
-        self.para_cd_input   = _psb(0.10,   2.00,  0.90, 2, "")
-        self.para_area_input = _psb(1.0,  10_000, 400.0, 1, " cm²")
-        self.para_lag_input  = _psb(0.0,      30,   0.0, 2, " s")
+        self.para_cd_input   = _psb(0.10,  2.00,  0.80, 2, 0.01,  "")
+        self.para_area_input = _psb(0.001, 10.0,  0.126, 4, 0.001, " m²")
+        self.para_lag_input  = _psb(0.0,  30.0,   0.5,  2, 0.1,   " s")
 
-        frm_para.addRow("Drag Coeff. Cd:",      self.para_cd_input)
-        frm_para.addRow("Canopy Area:",          self.para_area_input)
-        frm_para.addRow("Deployment Lag:",       self.para_lag_input)
+        frm_para.addRow("Drag Coeff. Cd:",    self.para_cd_input)
+        frm_para.addRow("Canopy Area [m²]:",  self.para_area_input)
+        frm_para.addRow("Deployment Lag [s]:", self.para_lag_input)
 
         lay.addWidget(btn_json)
         lay.addWidget(btn_motor)
@@ -1141,8 +1125,10 @@ class AppWindow(QMainWindow):
             QTableWidget.EditTrigger.NoEditTriggers)
         self._wind_table.setSelectionMode(
             QTableWidget.SelectionMode.NoSelection)
-        self._wind_table.horizontalHeader().setStretchLastSection(True)
-        self._wind_table.setFixedWidth(210)
+        hh = self._wind_table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._wind_table.setMaximumWidth(260)
+        self._wind_table.setMinimumWidth(160)
         self._wind_table.setAlternatingRowColors(True)
         # Pre-populate with dashes; cells are reused (never re-created) for speed
         for r in range(5):
@@ -1195,7 +1181,7 @@ class AppWindow(QMainWindow):
         if res is not None:
             _equalise_3d_axes(ax)
         self.profile_fig.tight_layout(pad=0.5)
-        self.profile_canvas.draw()
+        self.profile_canvas.draw_idle()
 
     def _draw_empty_profile(self, ax) -> None:
         ax.set_xlim3d(-80, 80); ax.set_ylim3d(-80, 80); ax.set_zlim3d(0, 200)
@@ -1222,9 +1208,6 @@ class AppWindow(QMainWindow):
         tx = np.asarray(res.get("trajectory_x", [0.0]), dtype=float)
         ty = np.asarray(res.get("trajectory_y", [0.0]), dtype=float)
         tz = np.clip(np.asarray(res.get("trajectory_z", [0.0]), dtype=float), 0.0, None)
-        mc_x     = np.asarray(res.get("mc_scatter_x", []), dtype=float)
-        mc_y     = np.asarray(res.get("mc_scatter_y", []), dtype=float)
-        ellipses = res.get("cep_ellipses", [])
         land_x   = float(res.get("land_x", tx[-1] if len(tx) else 0.0))
         land_y   = float(res.get("land_y", ty[-1] if len(ty) else 0.0))
 
@@ -1232,6 +1215,23 @@ class AppWindow(QMainWindow):
                                float(tz.max()) if len(tz) > 0 else 0.0))
         phases = res.get("phases")
         events = res.get("events")
+
+        # ── KDE density projected flat onto the ground plane (z = 0) ─────────
+        # contourf with zdir='z', offset=0 paints the density heatmap on the
+        # floor before any trajectory lines are drawn — lowest visual layer.
+        # Levels start at 0.05 (5 % of peak) so the near-zero padding area
+        # outside the scatter cloud is never filled — eliminates the purple square.
+        kde_grid = res.get("kde")
+        if kde_grid:
+            try:
+                _X = np.asarray(kde_grid["X_m"], dtype=float)
+                _Y = np.asarray(kde_grid["Y_m"], dtype=float)
+                _Z = np.asarray(kde_grid["Z"],   dtype=float)
+                _lev3d = np.linspace(0.05, 1.0, 9)
+                ax.contourf(_X, _Y, _Z, zdir='z', offset=0.0,
+                            levels=_lev3d, cmap="plasma", alpha=0.50, zorder=1)
+            except Exception as e:
+                print(f"Drawing Error (KDE 3D projection): {e}")
 
         # Ground-track projection (always shown)
         ax.plot(tx, ty, np.zeros_like(tz),
@@ -1302,34 +1302,25 @@ class AppWindow(QMainWindow):
                           color="#f9e2af", alpha=0.65,
                           arrow_length_ratio=0.35, linewidth=1.0)
 
-        n_mc = min(len(mc_x), len(mc_y))
-        if n_mc > 0:
-            ax.scatter(mc_x[:n_mc], mc_y[:n_mc], np.zeros(n_mc),
-                       c="#fab387", s=6, alpha=0.35, marker=".",
-                       label=f"MC landings  (n = {n_mc})")
-
-        for ell in ellipses:
-            if "a" not in ell or "b" not in ell:
-                continue
-            _draw_ellipse_3d(
-                ax,
-                cx=float(ell.get("cx", land_x)), cy=float(ell.get("cy", land_y)),
-                a=float(ell["a"]), b=float(ell["b"]),
-                angle_rad=float(ell.get("angle_rad", 0.0)),
-                color=str(ell.get("color", "#cba6f7")),
-                lw=float(ell.get("lw", 1.6)),
-                label=str(ell.get("label", "")),
-            )
-
         ax.scatter([land_x], [land_y], [0.0], c="#f38ba8", s=130,
                    marker="v", zorder=7, label="Nominal landing")
         ax.scatter([0.0], [0.0], [0.0], c="#a6e3a1", s=130,
                    marker="^", zorder=8, label="Launch  (0, 0, 0)")
 
+        # MC landing scatter at Z=0 — single scatter3D call, max 500 pts
+        if "mc_scatter_x" in res and res["mc_scatter_x"]:
+            try:
+                _sc_x = np.asarray(res["mc_scatter_x"][:500], dtype=float)
+                _sc_y = np.asarray(res["mc_scatter_y"][:500], dtype=float)
+                ax.scatter(_sc_x, _sc_y, np.zeros(len(_sc_x)),
+                           c="#f38ba8", s=3, alpha=0.40, zorder=3,
+                           linewidths=0, label=f"MC impacts  ({len(res['mc_scatter_x'])})")
+            except Exception as e:
+                print(f"Drawing Error (3D MC scatter): {e}")
+
         h_dist = float(np.hypot(land_x, land_y))
         ax.text2D(0.98, 0.98,
-                  f"Apogee:  {apex_z:.0f} m\nH-dist:  {h_dist:.0f} m\n"
-                  f"n MC:    {n_mc if n_mc > 0 else '—'}",
+                  f"Apogee:  {apex_z:.0f} m\nH-dist:  {h_dist:.0f} m",
                   transform=ax.transAxes, ha="right", va="top",
                   color="#cdd6f4", fontsize=7.5,
                   bbox=dict(boxstyle="round,pad=0.4", facecolor="#313244",
@@ -1338,11 +1329,9 @@ class AppWindow(QMainWindow):
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.88, borderpad=0.6)
 
-        all_x = np.concatenate([tx, mc_x[:n_mc]]) if n_mc > 0 else tx
-        all_y = np.concatenate([ty, mc_y[:n_mc]]) if n_mc > 0 else ty
-        pad   = max(abs(all_x).max() * 0.12, abs(all_y).max() * 0.12, 10.0)
-        ax.set_xlim3d(all_x.min() - pad, all_x.max() + pad)
-        ax.set_ylim3d(all_y.min() - pad, all_y.max() + pad)
+        pad = max(abs(tx).max() * 0.12, abs(ty).max() * 0.12, 10.0)
+        ax.set_xlim3d(tx.min() - pad, tx.max() + pad)
+        ax.set_ylim3d(ty.min() - pad, ty.max() + pad)
         ax.set_zlim3d(0.0, max(tz.max() * 1.12, 10.0))
         ax.set_title(
             f"Mode: {s.sim_mode}   ·   "
@@ -1363,14 +1352,15 @@ class AppWindow(QMainWindow):
         _style_2d(ax, fig, bg="#0d0d1a")
 
         theta = np.linspace(0.0, 2.0 * np.pi, 200)
-        if self.state.sim_mode == "定点滞空":
-            ax.plot(50  * np.cos(theta), 50  * np.sin(theta),
-                    color="#f38ba8", lw=1.2, linestyle="--", alpha=0.60,
-                    label="Target r = 50 m")
-        else:
-            ax.plot(250 * np.cos(theta), 250 * np.sin(theta),
-                    color="#45475a", lw=1.0, linestyle="--", alpha=0.45,
-                    label="Target r = 250 m")
+        _rmax = getattr(self, 'rmax_input', None)
+        target_r = float(_rmax.value()) if _rmax is not None else (
+            50.0 if self.state.sim_mode == "定点滞空" else 250.0)
+        _is_hover = self.state.sim_mode == "定点滞空"
+        ax.plot(target_r * np.cos(theta), target_r * np.sin(theta),
+                color="#f38ba8" if _is_hover else "#45475a",
+                lw=1.2 if _is_hover else 1.0,
+                linestyle="--", alpha=0.60 if _is_hover else 0.45,
+                label=f"Target r = {target_r:.0f} m")
         ax.scatter([0], [0], c="#a6e3a1", s=130, marker="^", zorder=5,
                    label="Launch (0, 0)")
 
@@ -1382,65 +1372,86 @@ class AppWindow(QMainWindow):
             lx = float(res.get("land_x", 0.0))
             ly = float(res.get("land_y", 0.0))
 
-            mc_x = np.asarray(res.get("mc_scatter_x", []), dtype=float)
-            mc_y = np.asarray(res.get("mc_scatter_y", []), dtype=float)
-            n = min(len(mc_x), len(mc_y))
-            if n > 0:
-                ax.scatter(mc_x[:n], mc_y[:n], c="#fab387", s=4,
-                           alpha=0.30, marker=".", zorder=3,
-                           label=f"MC landings  (n = {n})")
-
-            _kde_pal = ["#89b4fa", "#cba6f7", "#f38ba8", "#fab387", "#f9e2af"]
-            for i, contour in enumerate(res.get("kde_contours", [])):
-                pts = contour.get("points_m", [])
-                if len(pts) < 2:
-                    continue
-                cx_pts = [float(p[0]) for p in pts]
-                cy_pts = [float(p[1]) for p in pts]
-                col = _kde_pal[i % len(_kde_pal)]
-                lbl = contour.get("label",
-                                  f"KDE {int(contour.get('prob_frac', 0)*100)} %")
-                (line,) = ax.plot(cx_pts + [cx_pts[0]], cy_pts + [cy_pts[0]],
-                                  color=col, lw=1.0, alpha=0.55, zorder=4, label=lbl)
-                self._overlay_artists.append(line)
-
-            target_prob = self.state.cep_prob
-            for ell in res.get("cep_ellipses", []):
-                if "a" not in ell or "b" not in ell:
-                    continue
-                lbl    = str(ell.get("label", ""))
-                is_tgt = str(target_prob) in lbl
-                col    = str(ell.get("color", "#cba6f7" if is_tgt else "#585b70"))
-                lw_val = float(ell.get("lw", 2.0 if is_tgt else 0.9))
-                line = _draw_ellipse_2d(
-                    ax,
-                    cx=float(ell.get("cx", lx)), cy=float(ell.get("cy", ly)),
-                    a=float(ell["a"]), b=float(ell["b"]),
-                    angle_rad=float(ell.get("angle_rad", 0.0)),
-                    color=col, lw=lw_val,
-                    alpha=0.95 if is_tgt else 0.35,
-                    label=lbl if lbl else "_nolegend_",
+            cep_r = float(res.get("cep", 0.0))
+            if cep_r > 0:
+                theta_c = np.linspace(0.0, 2.0 * np.pi, 200)
+                (cep_line,) = ax.plot(
+                    lx + cep_r * np.cos(theta_c),
+                    ly + cep_r * np.sin(theta_c),
+                    color="#cba6f7", lw=2.0, alpha=0.90, zorder=5,
+                    label=f"CEP {self.state.cep_prob} %  ({cep_r:.1f} m)",
                 )
-                self._overlay_artists.append(line)
+                cep_ann = ax.text(
+                    lx, ly + cep_r * 1.08,
+                    f"CEP Radius: {cep_r:.1f} m",
+                    color="#cba6f7", fontsize=7.5, ha="center", zorder=7,
+                )
+                self._overlay_artists.extend([cep_line, cep_ann])
+
+            # ── KDE density grid — gradient filled contours ───────────────────
+            # payload["kde"] carries X_m/Y_m/Z (100×100 nested lists, Z in [0,1])
+            # computed in the worker.  No math here — pure consume-and-render.
+            kde_grid = res.get("kde")
+            if kde_grid:
+                try:
+                    _X = np.asarray(kde_grid["X_m"], dtype=float)
+                    _Y = np.asarray(kde_grid["Y_m"], dtype=float)
+                    _Z = np.asarray(kde_grid["Z"],   dtype=float)
+                    # Start levels at 5 % of peak so near-zero padding outside
+                    # the scatter cloud is transparent — prevents purple square.
+                    _lev = np.linspace(0.05, 1.0, 9)
+                    ax.contourf(_X, _Y, _Z, levels=_lev, cmap="plasma",
+                                alpha=0.40, zorder=1)
+                    ax.contour( _X, _Y, _Z, levels=_lev[::2], cmap="plasma",
+                                alpha=0.75, linewidths=0.8, zorder=2)
+                except Exception as e:
+                    print(f"Drawing Error (KDE grid map): {e}")
+
+            # ── Error ellipse (chi² covariance at landing_prob %) ─────────────
+            ell = res.get("ellipse")
+            if ell and isinstance(ell, dict):
+                try:
+                    ecx     = float(ell.get("cx", lx))
+                    ecy     = float(ell.get("cy", ly))
+                    ea      = float(ell.get("a",  0.0))
+                    eb      = float(ell.get("b",  0.0))
+                    ang_deg = float(np.degrees(float(ell.get("angle_rad", 0.0))))
+                    if ea > 0 and eb > 0:
+                        prob = res.get("landing_prob", 90)
+                        patch = MplEllipse(
+                            (ecx, ecy), width=2.0 * ea, height=2.0 * eb,
+                            angle=ang_deg,
+                            fill=False, edgecolor="#cba6f7", linewidth=2.0,
+                            linestyle="--", alpha=0.85, zorder=6,
+                            label=f"Error ellipse  ({prob} %)",
+                        )
+                        ax.add_patch(patch)
+                except Exception as e:
+                    print(f"Drawing Error (error ellipse): {e}")
 
             ax.scatter([lx], [ly], c="#f38ba8", s=130, marker="v",
                        zorder=6, label="Nominal landing")
 
+            # MC scatter — safe extraction, single ax.scatter call (max 1000 pts)
+            _sc_x = np.empty(0, dtype=float)
+            _sc_y = np.empty(0, dtype=float)
+            if "mc_scatter_x" in res and res["mc_scatter_x"]:
+                try:
+                    _sc_x = np.asarray(res["mc_scatter_x"][:1000], dtype=float)
+                    _sc_y = np.asarray(res["mc_scatter_y"][:1000], dtype=float)
+                    ax.scatter(_sc_x, _sc_y, s=2, c="#f38ba8",
+                               alpha=0.35, zorder=3, linewidths=0,
+                               label=f"MC scatter  ({len(res['mc_scatter_x'])} runs)")
+                except Exception as e:
+                    print(f"Drawing Error (MC scatter map): {e}")
+
             # ── Dynamic bounding box ──────────────────────────────────────────
-            # Seed from launch (origin), nominal landing, and MC scatter.
-            _pts_x = np.concatenate([[0.0, lx],
-                                     mc_x[:n] if n > 0 else np.array([])])
-            _pts_y = np.concatenate([[0.0, ly],
-                                     mc_y[:n] if n > 0 else np.array([])])
-            # Expand by each ellipse's maximum semi-axis radius.
-            for _bb_ell in res.get("cep_ellipses", []):
-                if "a" not in _bb_ell or "b" not in _bb_ell:
-                    continue
-                _r   = max(float(_bb_ell["a"]), float(_bb_ell["b"]))
-                _ecx = float(_bb_ell.get("cx", lx))
-                _ecy = float(_bb_ell.get("cy", ly))
-                _pts_x = np.append(_pts_x, [_ecx - _r, _ecx + _r])
-                _pts_y = np.append(_pts_y, [_ecy - _r, _ecy + _r])
+            # Seed from launch (origin), nominal landing, CEP radius, and scatter.
+            _pts_x = np.array([0.0, lx - cep_r, lx + cep_r])
+            _pts_y = np.array([0.0, ly - cep_r, ly + cep_r])
+            if len(_sc_x) > 0:
+                _pts_x = np.concatenate([_pts_x, _sc_x])
+                _pts_y = np.concatenate([_pts_y, _sc_y])
 
             _xmin, _xmax = float(_pts_x.min()), float(_pts_x.max())
             _ymin, _ymax = float(_pts_y.min()), float(_pts_y.max())
@@ -1461,7 +1472,7 @@ class AppWindow(QMainWindow):
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.88)
         fig.tight_layout(pad=0.6)
-        self.map_canvas.draw()
+        self.map_canvas.draw_idle()
 
     # ── Wind-node colour / label constants ───────────────────────────────────
     # One entry per WIND_SAMPLE_ALTS level: [3, 10, 150, 300, 600] m
@@ -1542,6 +1553,12 @@ class AppWindow(QMainWindow):
                        if i < len(self._NODE_LABELS) else f"{alt:.0f} m")
                 ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85, label=lbl)
                 ax_p.scatter([xs[-1]], [ys[-1]], color=col, s=28, zorder=5)
+                # 10-second rolling average horizontal dotted line
+                recent = [p[1] for p in pts if p[0] >= -10.0]
+                if recent:
+                    avg = sum(recent) / len(recent)
+                    ax_p.axhline(avg, color=col, lw=1.0,
+                                 linestyle="--", alpha=0.55, zorder=4)
 
             ax_p.axvline(0.0, color="#45475a", lw=0.8, linestyle=":", alpha=0.6)
             ax_p.set_xlabel("Time  (s)", color="#6c7086", fontsize=7, labelpad=3)
@@ -1596,6 +1613,11 @@ class AppWindow(QMainWindow):
         ax_c.set_theta_zero_location("N")
         ax_c.set_theta_direction(-1)
         ax_c.set_rlabel_position(135)
+        ax_c.set_thetagrids(
+            [0, 45, 90, 135, 180, 225, 270, 315],
+            labels=["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
+            fontsize=6, color="#888888",
+        )
 
         # Radial axis: display speed ticks in m/s
         ax_c.set_rmax(1.05)
@@ -1651,7 +1673,7 @@ class AppWindow(QMainWindow):
         # bbox_to_anchor and would clip the legend.
         fig.subplots_adjust(left=0.07, right=0.71, top=0.90,
                             bottom=0.15, wspace=0.44)
-        self.wind_canvas.draw()
+        self.wind_canvas.draw_idle()
         self._update_wind_table(nodes)
 
     def update_wind_history(self, hist_dict) -> None:
@@ -1721,37 +1743,66 @@ class AppWindow(QMainWindow):
     # ── Smart partial redraw ──────────────────────────────────────────────────
 
     def update_visual_overlays(self, state) -> None:
-        """Recompute and repaint only the error-ellipse and KDE overlays.
+        """Recompute CEP circle immediately from cached scatter at new probability.
 
-        Retrieves cached_mc_scatter from *state*, recomputes error ellipse and
-        KDE contours at the current landing_probability, and replaces only
-        those artists on the map canvas.  The base scatter, target circles,
-        and landing/launch markers are untouched — no ax.cla() is called.
-
-        Exits silently if cached_mc_scatter is None or too small to fit a
-        covariance ellipse (fewer than 4 points).
+        No re-simulation needed: percentile of point distances gives the new
+        CEP radius.  Replaces only the CEP circle/annotation artists; all
+        other map artists (launch marker, target ring, nominal landing) are
+        untouched — no ax.cla() is called.
         """
-        from core.monte_carlo import compute_error_ellipse, compute_kde_contours
-
-        scatter = state.cached_mc_scatter
+        scatter = getattr(state, 'cached_mc_scatter', None)
         if scatter is None:
             return
 
         if isinstance(scatter, np.ndarray):
             if scatter.ndim != 2 or scatter.shape[1] < 2:
                 return
-            pts = [(float(r[0]), float(r[1])) for r in scatter]
+            pts = scatter[:, :2].astype(float)
         else:
-            pts = [(float(p[0]), float(p[1])) for p in scatter]
+            pts = np.array([(float(p[0]), float(p[1])) for p in scatter], dtype=float)
 
         if len(pts) < 4:
             return
 
-        prob         = state.landing_probability
-        ellipse      = compute_error_ellipse(pts, prob_pct=prob)
-        kde_contours = compute_kde_contours(pts, conf_pct=prob)
+        prob = int(getattr(state, 'cep_probability', 90))
 
-        self._render_overlays(ellipse, kde_contours, prob)
+        # CEP centre: mean of scatter (close to nominal landing)
+        cx = float(pts[:, 0].mean())
+        cy = float(pts[:, 1].mean())
+
+        # Use nominal landing as centre if available
+        res = self.state.simulation_result
+        lx = float(res.get("land_x", cx)) if res else cx
+        ly = float(res.get("land_y", cy)) if res else cy
+
+        dists = np.hypot(pts[:, 0] - lx, pts[:, 1] - ly)
+        cep_r = float(np.percentile(dists, prob))
+
+        # Remove old overlay artists
+        for artist in self._overlay_artists:
+            try:
+                artist.remove()
+            except ValueError:
+                pass
+        self._overlay_artists.clear()
+
+        ax = self.map_ax
+        if cep_r > 0:
+            theta_c = np.linspace(0.0, 2.0 * np.pi, 200)
+            (line,) = ax.plot(
+                lx + cep_r * np.cos(theta_c),
+                ly + cep_r * np.sin(theta_c),
+                color="#cba6f7", lw=2.0, alpha=0.90, zorder=5,
+                label=f"CEP {prob} %  ({cep_r:.1f} m)",
+            )
+            ann = ax.text(
+                lx, ly + cep_r * 1.08,
+                f"CEP Radius: {cep_r:.1f} m",
+                color="#cba6f7", fontsize=7.5, ha="center", zorder=7,
+            )
+            self._overlay_artists.extend([line, ann])
+
+        self.map_canvas.draw_idle()
 
     def _render_overlays(
         self,
@@ -1759,12 +1810,11 @@ class AppWindow(QMainWindow):
         kde_contours: list,
         prob: int,
     ) -> None:
-        """Remove stale overlay artists and draw fresh ones at *prob* level.
+        """Remove stale overlay artists and draw fresh CEP/KDE/ellipse overlays.
 
-        Called by both update_visual_overlays (partial redraw path) and
-        update_map_plot (full redraw path) so self._overlay_artists always
-        reflects exactly the currently visible overlay artists and subsequent
-        partial redraws can replace them cleanly.
+        Called only from update_visual_overlays (partial redraw on prob change).
+        update_map_plot handles its own overlay drawing inline after ax.cla().
+        Caller is responsible for calling map_canvas.draw_idle() afterwards.
         """
         for artist in self._overlay_artists:
             try:
@@ -1803,8 +1853,6 @@ class AppWindow(QMainWindow):
                 zorder=5, label=f"R{prob}",
             )
             self._overlay_artists.append(line)
-
-        self.map_canvas.draw_idle()
 
     # ── Action handlers ────────────────────────────────────────────────────────
 
@@ -1883,6 +1931,9 @@ class AppWindow(QMainWindow):
                     f"Motor: {name}  ·  Avg {avg_thrust:.1f} N  ·  "
                     f"Max {max_thrust:.1f} N  ·  Burn {burn_time:.3f} s",
                     "#a6e3a1")
+                # Persist for SimController._collect_params()
+                self._motor_thrust_data = [list(pt) for pt in thrust_data]
+                self._motor_burn_time   = burn_time
             else:
                 self.motor_label.setText(f"{name}  (no data)")
                 self.set_status(f"No valid thrust rows found in {name}", "#f38ba8")
@@ -1892,9 +1943,10 @@ class AppWindow(QMainWindow):
             self.set_status(f"Motor load error: {exc}", "#f38ba8")
 
     def _on_mode_changed(self, mode: str) -> None:
-        visible = mode in ("定点滞空", "高度", "有翼")
-        self._rmax_label.setVisible(visible)
-        self.rmax_input.setVisible(visible)
+        if mode == "定点滞空":
+            self.rmax_input.setValue(50.0)
+        elif mode in ("高度", "有翼"):
+            self.rmax_input.setValue(250.0)
 
     def _on_about(self) -> None:
         QMessageBox.information(
@@ -1924,13 +1976,15 @@ class AppWindow(QMainWindow):
 
     def set_go_nogo(self, go: bool) -> None:
         if go:
-            self._go_nogo_label.setText("✔   GO")
+            self._go_nogo_label.setText("🟢  GO  (LAUNCH CLEAR)")
             self._go_nogo_label.setStyleSheet(
-                "font-size: 12pt; font-weight: bold; color: #a8e6a1; padding: 6px;")
+                "font-size: 13pt; font-weight: bold; color: #a8e6a1; padding: 8px;"
+                "background: #0d1f0d; border-radius: 8px; border: 2px solid #a8e6a1;")
         else:
-            self._go_nogo_label.setText("✘   NO-GO")
+            self._go_nogo_label.setText("🔴  NO-GO  (WIND LIMIT EXCEEDED)")
             self._go_nogo_label.setStyleSheet(
-                "font-size: 12pt; font-weight: bold; color: #f38ba8; padding: 6px;")
+                "font-size: 12pt; font-weight: bold; color: #f38ba8; padding: 8px;"
+                "background: #1f0d0d; border-radius: 8px; border: 2px solid #f38ba8;")
 
     def set_progress(self, value: int, label: str = "") -> None:
         self._progress.setValue(max(0, min(100, value)))

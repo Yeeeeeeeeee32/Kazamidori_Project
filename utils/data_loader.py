@@ -6,6 +6,12 @@ motor CSV loading.
 All functions are pure (no tkinter, no class state).  The UI layer is
 responsible for picking file paths via filedialog and showing error
 messages; these helpers only raise ValueError/OSError on bad input.
+
+Unit contract
+-------------
+All values are in SI throughout: metres (m), kilograms (kg), seconds (s),
+square metres (m²).  JSON files store SI values; parsers return SI values;
+no conversions are applied at any layer.
 """
 
 from __future__ import annotations
@@ -18,31 +24,31 @@ from typing import Any
 # ── Config schema ────────────────────────────────────────────────────────────
 
 _AIRFRAME_DEFAULTS: dict[str, Any] = {
-    "mass":           0.0872,
-    "cg":             0.21,
-    "length":         0.383,
-    "radius":         0.015,
-    "nose_length":    0.08,
-    "fin_root":       0.04,
-    "fin_tip":        0.02,
-    "fin_span":       0.03,
-    "fin_pos":        0.35,
-    "motor_pos":      0.38,
-    "motor_dry_mass": 0.015,
-    "backfire_delay": 0.0,
+    "mass":           0.0872,   # kg
+    "cg":             0.21,     # m from nose
+    "length":         0.383,    # m
+    "radius":         0.015,    # m (body radius)
+    "nose_length":    0.08,     # m
+    "fin_root":       0.04,     # m
+    "fin_tip":        0.02,     # m
+    "fin_span":       0.03,     # m
+    "fin_pos":        0.35,     # m from nose
+    "motor_pos":      0.38,     # m from nose
+    "motor_dry_mass": 0.015,    # kg
+    "backfire_delay": 0.0,      # s
 }
 
 _PARACHUTE_DEFAULTS: dict[str, Any] = {
-    "cd":   1.5,
-    "area": 0.196,
-    "lag":  0.5,
+    "cd":   1.5,     # dimensionless
+    "area": 0.196,   # m²
+    "lag":  0.5,     # s
 }
 
 
 # ── Airframe helpers ─────────────────────────────────────────────────────────
 
 def parse_airframe(raw: dict) -> dict[str, Any]:
-    """Return a validated airframe dict, filling missing keys with defaults.
+    """Return a validated airframe dict, filling missing keys with SI defaults.
 
     Raises:
         ValueError: if a value cannot be converted to float.
@@ -58,7 +64,7 @@ def parse_airframe(raw: dict) -> dict[str, Any]:
 
 
 def parse_parachute(raw: dict) -> dict[str, Any]:
-    """Return a validated parachute dict, filling missing keys with defaults.
+    """Return a validated parachute dict, filling missing keys with SI defaults.
 
     Raises:
         ValueError: if a value cannot be converted to float.
@@ -76,7 +82,7 @@ def parse_parachute(raw: dict) -> dict[str, Any]:
 # ── JSON config I/O ──────────────────────────────────────────────────────────
 
 def save_config(filepath: str, airframe: dict, parachute: dict) -> None:
-    """Serialise airframe + parachute to a versioned JSON file.
+    """Serialise airframe + parachute to a versioned JSON file (SI units).
 
     Args:
         filepath:  Destination path (including filename).
@@ -96,7 +102,7 @@ def save_config(filepath: str, airframe: dict, parachute: dict) -> None:
 
 
 def load_config(filepath: str) -> tuple[dict | None, dict | None]:
-    """Load and parse a JSON config file.
+    """Load and parse a JSON config file (SI units).
 
     Supports both the v2 envelope format (``{"version": 2, "airframe": …,
     "parachute": …}``) and legacy flat files where the top-level dict
@@ -182,46 +188,11 @@ class MotorData:
         }
 
 
-# ── CGS → SI normalisation ───────────────────────────────────────────────────
+# ── Rocket JSON loader ────────────────────────────────────────────────────────
 
-_CGS_LENGTH_KEYS: frozenset[str] = frozenset({
-    "airframe_cg", "airframe_len", "radius", "nose_len",
-    "fin_root", "fin_tip", "fin_span", "fin_pos", "motor_pos", "rail",
-})
+class RocketConfigError(ValueError):
+    """Raised when a Rocket.json config file cannot be loaded or parsed."""
 
-_CGS_MASS_KEYS: frozenset[str] = frozenset({
-    "airframe_mass", "motor_dry_mass",
-})
-
-
-def normalize_rocket_parameters(raw_params: dict) -> dict:
-    """Convert rocket parameters from CGS units to SI units in-place copy.
-
-    Length keys (cm → m, ÷ 100): airframe_cg, airframe_len, radius,
-        nose_len, fin_root, fin_tip, fin_span, fin_pos, motor_pos, rail.
-
-    Mass keys (g → kg, ÷ 1000): airframe_mass, motor_dry_mass.
-
-    All other keys are passed through unchanged.
-
-    Args:
-        raw_params: Flat parameter dict with values in CGS units.
-
-    Returns:
-        New dict with length keys divided by 100 and mass keys divided
-        by 1000.  The original dict is not mutated.
-    """
-    out = dict(raw_params)
-    for key in _CGS_LENGTH_KEYS:
-        if key in out:
-            out[key] = float(out[key]) / 100.0
-    for key in _CGS_MASS_KEYS:
-        if key in out:
-            out[key] = float(out[key]) / 1000.0
-    return out
-
-
-# ── Airframe JSON loader (SI → CGS) ──────────────────────────────────────────
 
 class AirframeConfigError(ValueError):
     """Raised when an airframe JSON config file cannot be loaded or parsed."""
@@ -233,120 +204,27 @@ _AIRFRAME_REQUIRED_KEYS: frozenset[str] = frozenset({
     "motor_pos", "motor_dry_mass", "backfire_delay",
 })
 
-# Length keys in SI (m) that must be multiplied by 100 → cm
-_SI_LENGTH_KEYS: frozenset[str] = frozenset({
-    "cg", "length", "radius", "nose_length",
-    "fin_root", "fin_tip", "fin_span", "fin_pos", "motor_pos",
-})
-
-# Mass keys in SI (kg) that must be multiplied by 1000 → g
-_SI_MASS_KEYS: frozenset[str] = frozenset({
-    "mass", "motor_dry_mass",
-})
-
-
-def load_airframe_config(filepath: str) -> dict[str, float]:
-    """Load an SI-unit airframe JSON file and return a CGS-unit parameter dict.
-
-    The JSON must contain the 12 airframe keys (mass, cg, length, radius,
-    nose_length, fin_root, fin_tip, fin_span, fin_pos, motor_pos,
-    motor_dry_mass, backfire_delay) in SI units (kg, m, s).
-
-    The returned dict uses CGS units (g, cm, s) to match the UI spinboxes.
-
-    Conversion rules:
-        Length keys (m → cm, × 100): cg, length, radius, nose_length,
-                                      fin_root, fin_tip, fin_span,
-                                      fin_pos, motor_pos.
-        Mass keys  (kg → g, × 1000): mass, motor_dry_mass.
-        backfire_delay: passed through unchanged (seconds).
-
-    Args:
-        filepath: Path to the airframe JSON file.
-
-    Returns:
-        dict with all 12 keys in CGS units.
-
-    Raises:
-        AirframeConfigError: on missing file, invalid JSON, missing or
-                             extra keys, non-numeric values, or negative
-                             physical quantities.
-    """
-    # ── Load ────────────────────────────────────────────────────────────────
-    try:
-        with open(filepath, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except FileNotFoundError:
-        raise AirframeConfigError(
-            f"Airframe config not found: {filepath!r}"
-        ) from None
-    except json.JSONDecodeError as exc:
-        raise AirframeConfigError(
-            f"Invalid JSON in {filepath!r}: {exc}"
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise AirframeConfigError(
-            f"Expected a JSON object at top level, got {type(data).__name__!r}"
-        )
-
-    # ── Validate keys ────────────────────────────────────────────────────────
-    missing = _AIRFRAME_REQUIRED_KEYS - data.keys()
-    if missing:
-        raise AirframeConfigError(
-            f"Missing required keys in {filepath!r}: {sorted(missing)}"
-        )
-
-    # ── Parse, validate, and convert ─────────────────────────────────────────
-    out: dict[str, float] = {}
-    for key in _AIRFRAME_REQUIRED_KEYS:
-        raw = data[key]
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            raise AirframeConfigError(
-                f"Key {key!r} in {filepath!r} is not numeric: {raw!r}"
-            ) from None
-
-        if key != "backfire_delay" and val < 0.0:
-            raise AirframeConfigError(
-                f"Key {key!r} in {filepath!r} must be non-negative, got {val}"
-            )
-
-        if key in _SI_LENGTH_KEYS:
-            out[key] = val * 100.0      # m → cm
-        elif key in _SI_MASS_KEYS:
-            out[key] = val * 1000.0     # kg → g
-        else:
-            out[key] = val              # backfire_delay: s, no conversion
-
-    return out
-
-
-# ── Rocket JSON loader — full config (SI → CGS) ──────────────────────────────
-
-class RocketConfigError(ValueError):
-    """Raised when a Rocket.json config file cannot be loaded or parsed."""
-
-
 _PARACHUTE_REQUIRED_KEYS: frozenset[str] = frozenset({"cd", "area", "lag"})
-
-# Parachute area: m² → cm² (× 10 000); cd and lag pass through unchanged
-_PARA_AREA_KEYS: frozenset[str] = frozenset({"area"})
 
 
 def load_rocket_config(filepath: str) -> dict[str, dict[str, float]]:
-    """Load a Rocket.json config file and return SI→CGS-converted sections.
+    """Load a Rocket.json config file and return SI-unit sections.
 
     Expected JSON structure (version 2)::
 
         {
             "version": 2,
             "airframe": {
-                "mass": <kg>,  "cg": <m>,          "length": <m>,
-                "radius": <m>, "nose_length": <m>,  "fin_root": <m>,
-                "fin_tip": <m>, "fin_span": <m>,    "fin_pos": <m>,
-                "motor_pos": <m>, "motor_dry_mass": <kg>,
+                "mass":           <kg>,
+                "cg":             <m from nose>,
+                "length":         <m>,
+                "radius":         <m, body radius>,
+                "nose_length":    <m>,
+                "fin_root":       <m>,
+                "fin_tip":        <m>,
+                "fin_span":       <m>,
+                "motor_pos":      <m from nose>,
+                "motor_dry_mass": <kg>,
                 "backfire_delay": <s>
             },
             "parachute": {
@@ -356,21 +234,14 @@ def load_rocket_config(filepath: str) -> dict[str, dict[str, float]]:
             }
         }
 
-    Conversion rules
-    ----------------
-    Airframe length keys (m → cm, × 100):
-        cg, length, radius, nose_length, fin_root, fin_tip,
-        fin_span, fin_pos, motor_pos.
-    Airframe mass keys (kg → g, × 1000):
-        mass, motor_dry_mass.
-    Parachute area (m² → cm², × 10 000): area.
-    Pass-through (no conversion): backfire_delay, cd, lag.
+    All values are returned exactly as stored — no unit conversion is applied.
+    The JSON file is the authoritative source of truth and must be in SI.
 
     Args:
         filepath: Path to the Rocket.json file.
 
     Returns:
-        ``{"airframe": <cgs_dict>, "parachute": <converted_dict>}``
+        ``{"airframe": <si_dict>, "parachute": <si_dict>}``
 
     Raises:
         RocketConfigError: on missing file, invalid JSON, missing sections
@@ -403,7 +274,7 @@ def load_rocket_config(filepath: str) -> dict[str, dict[str, float]]:
             )
 
     # ── Parse airframe ───────────────────────────────────────────────────────
-    af_raw    = data["airframe"]
+    af_raw     = data["airframe"]
     missing_af = _AIRFRAME_REQUIRED_KEYS - af_raw.keys()
     if missing_af:
         raise RocketConfigError(
@@ -423,12 +294,7 @@ def load_rocket_config(filepath: str) -> dict[str, dict[str, float]]:
             raise RocketConfigError(
                 f"airframe['{key}'] in {filepath!r} must be non-negative, got {val}"
             )
-        if key in _SI_LENGTH_KEYS:
-            airframe[key] = val * 100.0     # m → cm
-        elif key in _SI_MASS_KEYS:
-            airframe[key] = val * 1000.0    # kg → g
-        else:
-            airframe[key] = val             # backfire_delay: s, unchanged
+        airframe[key] = val  # SI pass-through — no conversion
 
     # ── Parse parachute ──────────────────────────────────────────────────────
     pa_raw     = data["parachute"]
@@ -451,10 +317,7 @@ def load_rocket_config(filepath: str) -> dict[str, dict[str, float]]:
             raise RocketConfigError(
                 f"parachute['{key}'] in {filepath!r} must be non-negative, got {val}"
             )
-        if key in _PARA_AREA_KEYS:
-            parachute[key] = val * 10_000.0     # m² → cm²
-        else:
-            parachute[key] = val                # cd, lag: unchanged
+        parachute[key] = val  # SI pass-through — no conversion
 
     return {"airframe": airframe, "parachute": parachute}
 

@@ -36,11 +36,10 @@ _SURFACE_ALT: float = 3.0   # 自作風速計 (hardware anemometer) altitude (m 
 class AppState(QObject):
 
     # ── Simulation configuration ───────────────────────────────────────────────
-    wind_uncertainty_changed      = Signal(float)
-    thrust_uncertainty_changed    = Signal(float)
-    allowable_uncertainty_changed = Signal(float)
-    landing_prob_changed          = Signal(int)
-    mc_n_runs_changed             = Signal(int)
+    wind_uncertainty_changed   = Signal(float)
+    thrust_uncertainty_changed = Signal(float)
+    landing_prob_changed       = Signal(int)
+    mc_n_runs_changed          = Signal(int)
 
     # ── Launch site ────────────────────────────────────────────────────────────
     launch_lat_changed = Signal(float)
@@ -108,7 +107,6 @@ class AppState(QObject):
     simulation_finished  = Signal(dict)
 
     # ── Overlay display parameter signals ─────────────────────────────────────
-    landing_probability_changed       = Signal(int)
     wind_uncertainty_display_changed  = Signal(float)
     cached_mc_scatter_changed         = Signal(object)
 
@@ -119,8 +117,8 @@ class AppState(QObject):
     wind_updated = Signal()
 
     # tolerance_exceeded: emitted every wind tick while Phase 2 is active and
-    # the estimated landing drift exceeds the allowable_uncertainty bound.
-    # Payload: human-readable warning string with current Δwind and drift.
+    # the live wind vector is outside the locked Phase A k-sigma envelope.
+    # Payload: human-readable string with current speed vs. baseline.
     tolerance_exceeded = Signal(str)
 
     # tolerance_status_changed: emitted only when the status string transitions
@@ -184,11 +182,10 @@ class AppState(QObject):
         cfg = config or {}
 
         # Simulation configuration
-        self._wind_uncertainty      = float(cfg.get("wind_uncertainty",      0.20))
-        self._thrust_uncertainty    = float(cfg.get("thrust_uncertainty",    0.05))
-        self._allowable_uncertainty = float(cfg.get("allowable_uncertainty", 20.0))
-        self._landing_prob          = int(cfg.get("landing_prob",            90))
-        self._mc_n_runs             = int(cfg.get("mc_n_runs",               200))
+        self._wind_uncertainty   = float(cfg.get("wind_uncertainty",  0.20))
+        self._thrust_uncertainty = float(cfg.get("thrust_uncertainty", 0.05))
+        self._landing_prob       = int(cfg.get("landing_prob",         90))
+        self._mc_n_runs          = int(cfg.get("mc_n_runs",            200))
 
         # Launch site
         self._launch_lat = float(cfg.get("launch_lat", 35.6828))
@@ -244,19 +241,27 @@ class AppState(QObject):
             alt: deque(maxlen=60) for alt in _WIND_SAMPLE_ALTS
         }
 
+        # Zero-Order Hold (ZOH) cache — stores the last VALID sample per altitude.
+        # Unlike the rolling deque (which may become empty before data arrives),
+        # this dict retains its value indefinitely until overwritten by a new
+        # valid reading.  None = no valid reading has ever arrived for this alt.
+        # Only updated when speed_ms and dir_deg are present and not NaN.
+        self._wind_zoh: dict[float, dict | None] = {
+            alt: None for alt in _WIND_SAMPLE_ALTS
+        }
+
         # CEP probability — UI-driven percentile; changing it redraws, not re-simulates
         self._cep_probability: float = 90.0
 
         # Overlay display parameters — drive partial redraws without re-simulation
-        self._landing_probability      = int(cfg.get("landing_prob", 90))
         self._wind_uncertainty_display = float(cfg.get("wind_uncertainty", 0.20))
         # Stores the raw MC scatter as a numpy array; None until first simulation.
         self._cached_mc_scatter        = None
 
-        # Phase 2 baseline — nominal wind at the moment Phase 1 was executed.
-        # Stored so the tolerance monitor can compute Δwind vs. the simulation.
-        self._nominal_surf_speed: float = 0.0
-        self._nominal_surf_dir:   float = 0.0
+        # Phase B wind baseline — locked after a successful Phase A run.
+        # None until set_wind_lock() is called (CEP <= target_radius).
+        self._locked_mu:    tuple[float, float] | None = None   # (u_E, v_N) m/s
+        self._locked_sigma: float                      = 0.0    # fractional 1-σ
 
         # Current human-readable tolerance status string (compared on every
         # tick to avoid emitting tolerance_status_changed on every second).
@@ -270,22 +275,22 @@ class AppState(QObject):
         # MC run progress 0-100; 0 = idle / complete
         self._progress_percentage: int         = 0
 
-        # Rocket geometry parameters (defaults mirror _DEFAULT_ROCKET in workers.py)
-        self._rocket_dry_mass  = float(cfg.get("rocket_dry_mass",  1.0))
-        self._rocket_cg        = float(cfg.get("rocket_cg",        0.50))
-        self._rocket_length    = float(cfg.get("rocket_length",    1.10))
-        self._rocket_diameter  = float(cfg.get("rocket_diameter",  0.070))  # 70 mm diameter
-        self._nose_length      = float(cfg.get("nose_length",      0.20))
-        self._fin_root_chord   = float(cfg.get("fin_root_chord",   0.12))
-        self._fin_tip_chord    = float(cfg.get("fin_tip_chord",    0.06))
-        self._fin_span         = float(cfg.get("fin_span",         0.08))
-        self._fin_position     = float(cfg.get("fin_position",     0.95))
-        self._motor_cg         = float(cfg.get("motor_cg",         1.00))
-        self._motor_dry_mass   = float(cfg.get("motor_dry_mass",   0.10))
-        self._parachute_cd     = float(cfg.get("parachute_cd",    1.5))
-        self._parachute_area   = float(cfg.get("parachute_area",   0.28))
-        self._parachute_lag    = float(cfg.get("parachute_lag",    0.5))
-        self._backfire_delay   = float(cfg.get("backfire_delay",   0.5))
+        # Rocket geometry parameters — MKS defaults from Rocket.json v2
+        self._rocket_dry_mass  = float(cfg.get("rocket_dry_mass",  0.0872))  # kg
+        self._rocket_cg        = float(cfg.get("rocket_cg",        0.21))    # m from nose
+        self._rocket_length    = float(cfg.get("rocket_length",    0.383))   # m
+        self._rocket_diameter  = float(cfg.get("rocket_diameter",  0.030))   # m (= 2 × 15 mm radius)
+        self._nose_length      = float(cfg.get("nose_length",      0.08))    # m
+        self._fin_root_chord   = float(cfg.get("fin_root_chord",   0.04))    # m
+        self._fin_tip_chord    = float(cfg.get("fin_tip_chord",    0.02))    # m
+        self._fin_span         = float(cfg.get("fin_span",         0.03))    # m
+        self._fin_position     = float(cfg.get("fin_position",     0.35))    # m from nose
+        self._motor_cg         = float(cfg.get("motor_cg",         0.38))    # m from nose
+        self._motor_dry_mass   = float(cfg.get("motor_dry_mass",   0.015))   # kg
+        self._parachute_cd     = float(cfg.get("parachute_cd",     0.8))     # dimensionless
+        self._parachute_area   = float(cfg.get("parachute_area",   0.126))   # m²
+        self._parachute_lag    = float(cfg.get("parachute_lag",    0.5))     # s
+        self._backfire_delay   = float(cfg.get("backfire_delay",   4.0))     # s
 
         # Flight mode — mission profile selected by the operator
         self._flight_mode: str = str(cfg.get("flight_mode", "Altitude"))
@@ -313,17 +318,6 @@ class AppState(QObject):
         if self._thrust_uncertainty != value:
             self._thrust_uncertainty = value
             self.thrust_uncertainty_changed.emit(value)
-
-    @Property(float, notify=allowable_uncertainty_changed)
-    def allowable_uncertainty(self) -> float:
-        return self._allowable_uncertainty
-
-    @allowable_uncertainty.setter
-    def allowable_uncertainty(self, value: float) -> None:
-        value = float(value)
-        if self._allowable_uncertainty != value:
-            self._allowable_uncertainty = value
-            self.allowable_uncertainty_changed.emit(value)
 
     @Property(int, notify=landing_prob_changed)
     def landing_prob(self) -> int:
@@ -647,6 +641,9 @@ class AppState(QObject):
         deques are updated separately by append_wind_nodes() when a new wind
         profile arrives from the simulation.
 
+        Also updates the ZOH cache for 3 m so get_wind_zoh(3.0) always
+        returns the most recent anemometer reading.
+
         Args:
             speed:     Wind speed in m/s (non-negative).
             direction: Meteorological direction in degrees FROM which wind blows.
@@ -658,6 +655,7 @@ class AppState(QObject):
             "dir_deg":  float(direction),
         }
         self._wind_history[_SURFACE_ALT].append(sample)
+        self._wind_zoh[_SURFACE_ALT] = sample     # ZOH: persist last valid reading
         self.wind_history_updated.emit(self._wind_history)
         self.wind_updated.emit()          # lightweight ping for simple observers
         self.surf_wind_speed = float(speed)
@@ -671,80 +669,111 @@ class AppState(QObject):
         deque for its altitude; altitudes not in _WIND_SAMPLE_ALTS are silently
         ignored so callers do not need to filter.
 
+        Zero-Order Hold (ZOH) behaviour
+        ---------------------------------
+        If a node's ``speed_ms`` or ``dir_deg`` is ``None`` or ``NaN``, that
+        node is silently skipped — the deque and ZOH cache retain their last
+        valid value ("hold").  This prevents a transient API gap from injecting
+        a zero or garbage reading into the history.
+
         Args:
             nodes: List of node dicts, each containing at least:
                    ``alt_m`` (float), ``speed_ms`` (float), ``dir_deg`` (float).
                    Typically the direct output of ``core.wind_model.sample_wind_nodes``.
         """
+        import math as _math
         import time as _time
         ts = _time.monotonic()
         for node in nodes:
             alt = float(node.get("alt_m", -1.0))
             if alt not in self._wind_history:
                 continue
-            self._wind_history[alt].append({
-                "ts":       ts,
-                "speed_ms": float(node.get("speed_ms", 0.0)),
-                "dir_deg":  float(node.get("dir_deg",  0.0)),
-            })
+            raw_speed = node.get("speed_ms")
+            raw_dir   = node.get("dir_deg")
+            # ZOH: skip this tick if data is absent or not a finite number.
+            if raw_speed is None or raw_dir is None:
+                continue
+            try:
+                spd = float(raw_speed)
+                drc = float(raw_dir)
+            except (TypeError, ValueError):
+                continue
+            if _math.isnan(spd) or _math.isnan(drc):
+                continue
+            entry = {"ts": ts, "speed_ms": spd, "dir_deg": drc}
+            self._wind_history[alt].append(entry)
+            self._wind_zoh[alt] = entry    # update ZOH cache with last valid value
         self.wind_history_updated.emit(self._wind_history)
         self.wind_updated.emit()
 
-    # ── Phase 2 baseline + tolerance monitoring ───────────────────────────────
+    def get_wind_zoh(self, alt_m: float) -> "dict | None":
+        """Return the last valid wind reading for *alt_m* using Zero-Order Hold.
 
-    def set_simulation_baseline(self, surf_speed: float, surf_dir: float) -> None:
-        """Record the nominal surface wind used for Phase 1 as the Phase 2 reference.
+        Unlike ``wind_history_for_alt`` (which returns the full rolling deque),
+        this method returns a single sample dict — the most recent one for which
+        both speed_ms and dir_deg were finite — or ``None`` if no valid reading
+        has ever arrived for this altitude.
 
-        Called by SimController immediately after a successful simulation run.
-        The stored values define the "expected" wind; any live deviation from
-        them is evaluated by check_tolerance every wind tick.
+        The ZOH value persists across deque rollovers: even after 60 samples
+        have been replaced, the cache still holds the last known-good reading.
+
+        Returns:
+            dict with keys ``ts``, ``speed_ms``, ``dir_deg`` — or ``None``.
         """
-        self._nominal_surf_speed = float(surf_speed)
-        self._nominal_surf_dir   = float(surf_dir)
-        self._tolerance_status   = ""   # reset so first tick always emits
+        return self._wind_zoh.get(float(alt_m))
+
+    # ── Phase B wind baseline + O(1) tolerance monitoring ─────────────────────
+
+    def set_wind_lock(self, mu_u: float, mu_v: float, sigma: float) -> None:
+        """Lock the Phase A wind baseline for Phase B GO/NO-GO evaluation.
+
+        Called by SimController when Phase A completes with CEP ≤ target_radius.
+        The (mu_u, mu_v) vector is the nominal surface wind used by the MC run,
+        expressed as East/North components.  sigma is the fractional 1-σ wind
+        uncertainty parameter passed to the worker.
+
+        Resets the tolerance status so the first Phase B tick always emits
+        tolerance_status_changed and the indicator updates immediately.
+        """
+        self._locked_mu     = (float(mu_u), float(mu_v))
+        self._locked_sigma  = float(sigma)
+        self._tolerance_status = ""
 
     def check_tolerance(self, speed: float, direction: float) -> None:
-        """Evaluate one live wind reading against the Phase 1 allowable bounds.
+        """O(1) Phase B evaluation: compare live wind against the locked baseline.
 
-        Called every wind tick while Phase 2 is active.  Computes an estimated
-        additional landing drift caused by the deviation of the live wind from
-        the simulation baseline, then compares it against allowable_uncertainty.
+        Called every wind tick while Phase 2 is active.  Uses
+        core.monte_carlo.evaluate_wind_within_bounds which runs in O(1) time
+        (three arithmetic ops; no iteration).
 
         Signals emitted
         ---------------
-        tolerance_exceeded        — every tick the bound is breached (with msg)
-        tolerance_status_changed  — only when the status string changes
-                                    (i.e. on the tick a breach starts or clears)
+        tolerance_exceeded       — every tick the live wind is outside bounds.
+        tolerance_status_changed — only on GO ↔ NO-GO transitions, preventing
+                                   per-tick visual chatter on the indicator.
         """
-        if not self._phase2_active or not self._has_sim_result:
+        if not self._phase2_active or self._locked_mu is None:
             return
 
-        # ── Wind vector delta (live − baseline) ───────────────────────────────
-        nom_u  = self._nominal_surf_speed * math.sin(math.radians(self._nominal_surf_dir))
-        nom_v  = self._nominal_surf_speed * math.cos(math.radians(self._nominal_surf_dir))
+        from core.monte_carlo import evaluate_wind_within_bounds
+
         live_u = speed * math.sin(math.radians(direction))
         live_v = speed * math.cos(math.radians(direction))
-        wind_delta = math.hypot(live_u - nom_u, live_v - nom_v)
+        in_bounds = evaluate_wind_within_bounds(
+            live_u, live_v,
+            self._locked_mu[0], self._locked_mu[1],
+            self._locked_sigma,
+        )
 
-        # ── Estimated additional drift: δwind × flight_time ───────────────────
-        hang_time = 0.0
-        if self._simulation_result:
-            hang_time = float(self._simulation_result.get("hang_time", 0.0))
-        est_drift = wind_delta * max(hang_time, 1.0)
-
-        allowable = self._allowable_uncertainty
-        margin    = allowable - est_drift
-
-        # ── Classify and emit ──────────────────────────────────────────────────
-        if margin < 0:
-            msg = (
-                f"Δwind {wind_delta:.1f} m/s → "
-                f"est. drift {est_drift:.0f} m  (limit {allowable:.0f} m)"
+        if not in_bounds:
+            mu_spd = math.hypot(self._locked_mu[0], self._locked_mu[1])
+            self.tolerance_exceeded.emit(
+                f"Live {speed:.1f} m/s vs locked {mu_spd:.1f} m/s "
+                f"(σ={self._locked_sigma:.2f})"
             )
-            self.tolerance_exceeded.emit(msg)
-            new_status = f"⚠  EXCEEDED  +{-margin:.0f} m over limit"
+            new_status = "⚠  NO-GO"
         else:
-            new_status = f"✓  In bounds  ({margin:.0f} m margin)"
+            new_status = "✓  GO"
 
         if new_status != self._tolerance_status:
             self._tolerance_status = new_status
@@ -762,7 +791,7 @@ class AppState(QObject):
         if self._cep_probability != value:
             self._cep_probability = value
             self.cep_probability_changed.emit(value)
-            self.needs_redraw.emit()   # redraw only — never triggers SimulationWorker
+            self.needs_partial_redraw.emit()   # overlay-only recompute from cached scatter
 
     # ── Unified simulation result ──────────────────────────────────────────────
 
@@ -789,23 +818,6 @@ class AppState(QObject):
         self.needs_redraw.emit()
 
     # ── Overlay display parameters ─────────────────────────────────────────────
-
-    @Property(int, notify=landing_probability_changed)
-    def landing_probability(self) -> int:
-        """Percentile used for error-ellipse and KDE overlays (default 90).
-
-        Changing this emits needs_partial_redraw so overlays are recomputed
-        from cached_mc_scatter without triggering a new simulation run.
-        """
-        return self._landing_probability
-
-    @landing_probability.setter
-    def landing_probability(self, value: int) -> None:
-        value = int(value)
-        if self._landing_probability != value:
-            self._landing_probability = value
-            self.landing_probability_changed.emit(value)
-            self.needs_partial_redraw.emit()
 
     @Property(float, notify=wind_uncertainty_display_changed)
     def wind_uncertainty_display(self) -> float:

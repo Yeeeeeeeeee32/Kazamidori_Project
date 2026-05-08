@@ -34,8 +34,9 @@ params dict keys expected by simulate_once
   motor_pos                float   metres from nose tip  (nozzle exit, positive toward tail)
   motor_dry_mass           float   kg
   backfire_delay           float   seconds after burn-out
-  para_cd                  float   drag coefficient
-  para_area                float   reference area m²
+  body_cd                  float   rocket airframe drag coefficient, power on/off (default 0.45)
+  para_cd                  float   parachute drag coefficient (used as Cd in CdS product)
+  para_area                float   parachute reference area m²
   para_lag                 float   deployment lag seconds
   wind_u_prof              list[(alt_m, u_m_s)]   east component profile
   wind_v_prof              list[(alt_m, v_m_s)]   north component profile
@@ -53,10 +54,167 @@ nose tip and map directly to RocketPy positions without sign inversion.
 from __future__ import annotations
 
 import math
+import sys
+import time as _wall
 from typing import Any
 
 import numpy as np
 from rocketpy import Environment, SolidMotor, Rocket, Flight
+
+# ── Forensic diagnostic flag ──────────────────────────────────────────────────
+# Set True to dump physics state at every key milestone to stderr.
+# Flip to False (or delete the block) when the anomaly is resolved.
+_DIAG: bool = True
+
+def _diag(tag: str, **kw) -> None:
+    """Print one diagnostic line to stderr with wall-clock prefix."""
+    if not _DIAG:
+        return
+    vals = "  ".join(f"{k}={v}" for k, v in kw.items())
+    print(f"[DIAG {_wall.monotonic():.3f}s] {tag}  {vals}", file=sys.stderr, flush=True)
+
+
+# ── Motor builder ────────────────────────────────────────────────────────────
+
+def build_motor_from_curve(
+    thrust_data:   list,
+    burn_time:     float,
+    dry_mass:      float,
+    rocket_radius: float,
+    *,
+    isp_s:         float = 90.0,
+    grain_density: float = 1815.0,
+) -> SolidMotor:
+    """Build a physically consistent SolidMotor from a thrust curve.
+
+    Instead of using fixed grain dimensions, this function derives propellant
+    mass from the thrust curve's total impulse and an assumed specific impulse,
+    then back-calculates the BATES-cylinder grain geometry to match that mass.
+
+    The motor is guaranteed to physically fit inside the rocket body:
+    ``grain_outer_radius ≤ rocket_radius × 0.80``.
+
+    Parameters
+    ----------
+    thrust_data   : [[t_s, T_N], ...] — thrust curve in SI
+    burn_time     : float  — burn duration (s); used only for propellant-mass
+                    back-calculation — the actual SolidMotor burn_time is taken
+                    from the final time point in the (normalised) curve.
+    dry_mass      : float  — motor dry mass after burnout (kg)
+    rocket_radius : float  — rocket body radius (m); motor must fit inside
+    isp_s         : float  — specific impulse (s)
+                    Black-powder Estes motors : ~80–100 s  ← default (90)
+                    Low-power APCP            : ~130–170 s
+                    Mid/high-power APCP       : ~180–230 s
+    grain_density : float  — propellant bulk density (kg/m³); default 1815 (APCP)
+
+    Raises
+    ------
+    ValueError
+        If total impulse is non-positive, grain geometry would be non-physical,
+        or the implied exhaust velocity is implausibly low (< 100 m/s).
+    """
+    G0 = 9.80665  # m/s²
+
+    if not thrust_data or len(thrust_data) < 2:
+        raise ValueError("thrust_data must contain at least two points")
+
+    # ── Bug C: ensure curve is anchored at t=0 ───────────────────────────────
+    # RocketPy requires the thrust curve to start at t=0.  If the first data
+    # point has a non-zero time, prepend a zero-thrust point so the integrator
+    # and burn_time derivation are both anchored to the true ignition instant.
+    if thrust_data[0][0] != 0.0:
+        thrust_data = [[0.0, 0.0]] + list(thrust_data)
+
+    # ── Total impulse (trapezoidal integration of the thrust curve) ───────────
+    total_impulse = sum(
+        (thrust_data[i - 1][1] + thrust_data[i][1]) * 0.5
+        * (thrust_data[i][0] - thrust_data[i - 1][0])
+        for i in range(1, len(thrust_data))
+    )
+    if total_impulse <= 0.0:
+        raise ValueError(
+            f"Thrust curve total impulse is non-positive: {total_impulse:.3f} Ns. "
+            "Check that the thrust data contains valid (time_s, thrust_N) pairs."
+        )
+
+    # ── Propellant mass: m_prop = J / (Isp × g0) ─────────────────────────────
+    propellant_mass = total_impulse / (isp_s * G0)
+    implied_v_e     = total_impulse / propellant_mass   # = isp_s × g0
+
+    if implied_v_e < 100.0:
+        raise ValueError(
+            f"Implied exhaust velocity {implied_v_e:.1f} m/s < 100 m/s — "
+            f"isp_s={isp_s} s gives a physically impossible propellant model. "
+            "Increase isp_s or verify the thrust curve."
+        )
+
+    # ── Grain geometry: BATES hollow cylinder sized to fit inside rocket ──────
+    # Motor outer radius constrained to 80 % of rocket body radius (casing wall).
+    grain_r_out = rocket_radius * 0.80
+    # BATES standard: core/outer ratio 0.40 (port area ≈ 35 % of face area)
+    grain_r_in  = grain_r_out * 0.40
+
+    cross_area = math.pi * (grain_r_out ** 2 - grain_r_in ** 2)
+    if cross_area <= 0.0:
+        raise ValueError(
+            f"Grain cross-sectional area is zero or negative "
+            f"(r_out={grain_r_out:.4f} m, r_in={grain_r_in:.4f} m)"
+        )
+
+    total_volume = propellant_mass / grain_density
+
+    # Number of segments: aim for height ≈ 2 × outer diameter (BATES aspect).
+    ideal_h      = 2.0 * grain_r_out
+    grain_number = max(1, math.ceil(total_volume / (cross_area * ideal_h)))
+    grain_height = total_volume / (grain_number * cross_area)
+
+    if grain_height < 1e-4:
+        raise ValueError(
+            f"Computed grain height {grain_height*1000:.2f} mm is non-physical. "
+            f"total_impulse={total_impulse:.2f} Ns, "
+            f"propellant_mass={propellant_mass*1000:.1f} g, "
+            f"grain_r_out={grain_r_out*1000:.1f} mm. "
+            "Check isp_s and rocket_radius."
+        )
+
+    # Nozzle and throat: scale from grain core dimensions
+    nozzle_r = grain_r_in * 0.70
+    throat_r = nozzle_r  * 0.50
+
+    _diag("BUILD_MOTOR",
+          total_impulse_Ns=round(total_impulse, 3),
+          propellant_mass_g=round(propellant_mass * 1000, 2),
+          implied_v_exhaust_m_s=round(implied_v_e, 1),
+          grain_r_out_mm=round(grain_r_out * 1000, 2),
+          grain_r_in_mm=round(grain_r_in  * 1000, 2),
+          grain_height_mm=round(grain_height * 1000, 2),
+          grain_number=grain_number)
+
+    # Bug C: SolidMotor burn_time must match the final time in the curve exactly.
+    # Using the last data point avoids rounding mismatches between safe_burn_time
+    # (which is max(0.1, motor_burn_time)) and the actual end of the thrust curve.
+    curve_burn_time = float(thrust_data[-1][0])
+
+    return SolidMotor(
+        thrust_source=thrust_data,
+        burn_time=curve_burn_time,
+        grain_number=grain_number,
+        grain_density=grain_density,
+        grain_outer_radius=grain_r_out,
+        grain_initial_inner_radius=grain_r_in,
+        grain_initial_height=grain_height,
+        nozzle_radius=nozzle_r,
+        throat_radius=throat_r,
+        interpolation_method="linear",
+        nozzle_position=0,
+        coordinate_system_orientation="nozzle_to_combustion_chamber",
+        dry_mass=dry_mass,
+        dry_inertia=(1e-5, 1e-5, 1e-6),
+        grain_separation=0.0,
+        grains_center_of_mass_position=0.0,
+        center_of_dry_mass_position=0.0,
+    )
 
 
 # ── Trigger factory ───────────────────────────────────────────────────────────
@@ -130,7 +288,8 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         motor_pos      = params['motor_pos']
         motor_dry_mass = params['motor_dry_mass']
         backfire_delay = params['backfire_delay']
-        para_cd        = params['para_cd']
+        body_cd        = params.get('body_cd', 0.45)   # rocket airframe Cd during flight
+        para_cd        = params['para_cd']             # parachute Cd (used only for CdS product)
         para_area      = params['para_area']
         para_lag       = params['para_lag']
         rail           = params['rail']
@@ -159,34 +318,68 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
             wind_u=wind_u_prof, wind_v=wind_v_prof,
         )
 
-        def _build_rocket() -> Rocket:
-            motor = SolidMotor(
-                thrust_source=thrust_data,
+        def _build_rocket() -> tuple:
+            """Return (Rocket, SolidMotor) for physics inspection."""
+            _diag("THRUST_INPUT",
+                  n_points=len(thrust_data),
+                  t0=thrust_data[0][0] if thrust_data else None,
+                  t_end=thrust_data[-1][0] if thrust_data else None,
+                  T_max=max(pt[1] for pt in thrust_data) if thrust_data else None,
+                  burn_time_param=safe_burn_time)
+
+            # Derive grain geometry from thrust curve + Isp — no hard-coded values.
+            isp_s = float(params.get("motor_isp", 90.0))
+            motor = build_motor_from_curve(
+                thrust_data=thrust_data,
                 burn_time=safe_burn_time,
-                grain_number=1, grain_density=1815,
-                grain_outer_radius=radius * 0.8,
-                grain_initial_inner_radius=0.005,
-                grain_initial_height=0.1,
-                nozzle_radius=radius * 0.8, throat_radius=0.005,
-                interpolation_method="linear",
-                nozzle_position=0,
-                coordinate_system_orientation="nozzle_to_combustion_chamber",
                 dry_mass=motor_dry_mass,
-                dry_inertia=(1e-5, 1e-5, 1e-6),
-                grain_separation=0.0,
-                grains_center_of_mass_position=0.0,
-                center_of_dry_mass_position=0.0,
+                rocket_radius=radius,
+                isp_s=isp_s,
             )
+
+            # ── motor post-build diagnostics ──────────────────────────────────
+            try:
+                _mot_impulse = float(motor.total_impulse)
+            except Exception:
+                _mot_impulse = float("nan")
+            try:
+                _mot_burnout = float(motor.burn_out_time)
+            except Exception:
+                _mot_burnout = float("nan")
+            try:
+                _mot_max_T   = float(motor.max_thrust)
+            except Exception:
+                _mot_max_T   = float("nan")
+            try:
+                _mot_prop_m  = float(motor.propellant_mass(0))
+            except Exception:
+                _mot_prop_m  = float("nan")
+            _diag("MOTOR_BUILT",
+                  total_impulse_Ns=round(_mot_impulse, 3),
+                  burn_out_time_s=round(_mot_burnout, 4),
+                  max_thrust_N=round(_mot_max_T, 2),
+                  propellant_mass_kg=round(_mot_prop_m, 5))
+
             # coordinate_system_orientation="nose_to_tail":
             #   Position 0 is the nose tip; positive values run toward the tail.
             #   All UI position parameters (measured from the nose) map here
             #   directly — no minus signs needed.
+            _ref_area = math.pi * radius ** 2
+            _diag("ROCKET_PARAMS",
+                  airframe_mass_kg=round(airframe_mass, 4),
+                  radius_m=round(radius, 4),
+                  ref_area_m2=round(_ref_area, 6),
+                  body_cd=round(body_cd, 3),
+                  cd_type=type(body_cd).__name__,
+                  expected_drag_at_60ms=round(
+                      0.5 * 1.225 * 60**2 * _ref_area * body_cd, 2))
+
             rk = Rocket(
                 radius=radius,
                 mass=airframe_mass,
                 inertia=(I_xy, I_xy, I_z),
-                power_off_drag=para_cd,
-                power_on_drag=para_cd,
+                power_off_drag=body_cd,
+                power_on_drag=body_cd,
                 center_of_mass_without_motor=airframe_cg,
                 coordinate_system_orientation="nose_to_tail",
             )
@@ -196,10 +389,24 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
                 n=4, root_chord=fin_root, tip_chord=fin_tip,
                 span=fin_span, position=fin_pos,
             )
-            return rk
+
+            try:
+                _wet_mass = float(rk.total_mass(0))
+            except Exception:
+                _wet_mass = float("nan")
+            try:
+                _dry_mass_at_burnout = float(rk.total_mass(safe_burn_time))
+            except Exception:
+                _dry_mass_at_burnout = float("nan")
+            _diag("ROCKET_BUILT",
+                  total_wet_mass_kg=round(_wet_mass, 4),
+                  mass_at_burnout_kg=round(_dry_mass_at_burnout, 4))
+
+            return rk, motor
 
         # ── Pass 1: find backfire altitude ───────────────────────────────────
-        rk1 = _build_rocket()
+        rk1, _motor1 = _build_rocket()
+        _diag("PASS1_START", elev_deg=elev, azi_deg=azi, rail_m=rail)
         fl1 = Flight(
             rocket=rk1, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
@@ -207,6 +414,48 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         )
         t1_arr = fl1.z[:, 0]
         z1_arr = fl1.z[:, 1]
+
+        # ── Burnout state from Pass 1 ─────────────────────────────────────────
+        _idx_bo1 = int((np.abs(t1_arr - safe_burn_time)).argmin())
+        _bo1_t   = float(t1_arr[_idx_bo1])
+        _bo1_z   = float(z1_arr[_idx_bo1])
+        _bo1_vz  = float(fl1.vz[_idx_bo1, 1])
+        try:
+            _bo1_az = float(fl1.az(_bo1_t))   # Bug A: RocketPy Function — call with time
+        except Exception:
+            _bo1_az = float("nan")
+        _diag("PASS1_BURNOUT",
+              t_s=round(_bo1_t, 3),
+              alt_m=round(_bo1_z, 2),
+              vz_m_s=round(_bo1_vz, 2),
+              az_m_s2=round(_bo1_az, 2),
+              NOTE="if vz>300 m/s → motor too big; if az≈-9.81 → zero drag")
+
+        # ── Sample coasting deceleration from Pass 1 ─────────────────────────
+        # Expected a_z during coast ≈ -(g + drag/m).  If ≈ -9.81 → drag = 0.
+        _vz1  = fl1.vz[:, 1]
+        _t1   = fl1.vz[:, 0]
+        _coast_mask = _t1 > (safe_burn_time + 0.05)
+        if np.any(_coast_mask):
+            _ct = _t1[_coast_mask]
+            _cv = _vz1[_coast_mask]
+            for _sample_t in [_ct[0], _ct[len(_ct)//4], _ct[len(_ct)//2]]:
+                _si = int((np.abs(_ct - _sample_t)).argmin())
+                try:
+                    _az_s = float(fl1.az(float(_ct[_si])))  # Bug A: RocketPy Function call
+                except Exception:
+                    _az_s = float("nan")
+                _diag("PASS1_COAST_SAMPLE",
+                      t_s=round(float(_ct[_si]), 3),
+                      vz_m_s=round(float(_cv[_si]), 2),
+                      az_m_s2=round(_az_s, 3),
+                      expected_az_with_drag="<-9.81")
+
+        _p1_apogee = float(z1_arr.max())
+        _diag("PASS1_DONE",
+              apogee_m=round(_p1_apogee, 1),
+              flight_time_s=round(float(t1_arr[-1]), 2))
+
         if backfire_time >= t1_arr[-1]:
             backfire_alt = float(z1_arr[-1])
         else:
@@ -215,7 +464,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         backfire_alt = max(backfire_alt, 1.0)
 
         # ── Pass 2: full flight with parachute ───────────────────────────────
-        rk2  = _build_rocket()
+        rk2, _motor2 = _build_rocket()
         trig = make_backfire_trigger(backfire_alt)
         rk2.add_parachute(
             "Main",
@@ -263,6 +512,52 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         impact_y   = float(y_vals[-1])
         r_horiz    = math.hypot(impact_x, impact_y)
         hang_time  = float(t_vals[-1])
+
+        # ── Pass 2 burnout state ──────────────────────────────────────────────
+        _idx_bo2 = idx_burnout
+        _bo2_t   = float(t_vals[_idx_bo2])
+        _bo2_z   = float(z_vals[_idx_bo2])
+        _bo2_vz  = float(vz_vals[_idx_bo2])
+        try:
+            _bo2_az = float(fl2.az(_bo2_t))   # Bug A: RocketPy Function — call with time
+        except Exception:
+            _bo2_az = float("nan")
+        _diag("PASS2_BURNOUT",
+              t_s=round(_bo2_t, 3),
+              alt_m=round(_bo2_z, 2),
+              vz_m_s=round(_bo2_vz, 2),
+              az_m_s2=round(_bo2_az, 2))
+
+        # ── Coast sample: measured deceleration vs gravity-only expectation ───
+        _coast_start = _idx_bo2 + 1
+        _coast_end   = apogee_idx
+        if _coast_end > _coast_start + 4:
+            _n = _coast_end - _coast_start
+            for _frac in (0.05, 0.25, 0.50):
+                _ci = _coast_start + int(_frac * _n)
+                _vz_c = float(vz_vals[_ci])
+                _vz_prev = float(vz_vals[_ci - 1])
+                _dt = float(t_vals[_ci]) - float(t_vals[_ci - 1])
+                _measured_az = (_vz_c - _vz_prev) / _dt if _dt > 0 else float("nan")
+                # Expected: a_z = -(g + C_D * 0.5*rho*v^2*A/m)
+                # Bug D: coasting mass = airframe + motor dry (propellant exhausted)
+                _rho = 1.225
+                _coast_mass = airframe_mass + motor_dry_mass
+                _a_drag = (body_cd * 0.5 * _rho * _vz_c**2 * (math.pi * radius**2)
+                           / max(_coast_mass, 0.001))
+                _expected_az = -(9.81 + abs(_a_drag))
+                _diag("COAST_DECEL",
+                      t_s=round(float(t_vals[_ci]), 3),
+                      vz_m_s=round(_vz_c, 2),
+                      measured_az=round(_measured_az, 3),
+                      expected_az=round(_expected_az, 3),
+                      drag_contribution_m_s2=round(-abs(_a_drag), 3))
+
+        _diag("PASS2_RESULT",
+              apogee_m=round(apogee_m, 1),
+              hang_time_s=round(hang_time, 1),
+              impact_x_m=round(impact_x, 1),
+              impact_y_m=round(impact_y, 1))
 
         return {
             'ok':             True,

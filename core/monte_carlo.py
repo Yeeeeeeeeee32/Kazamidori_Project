@@ -249,6 +249,9 @@ def compute_error_ellipse(
     launch-point origin).  The UI layer is responsible for converting the
     returned metric parameters to geographic coordinates for display.
 
+    The scale factor applied to the standard-deviation axes is:
+        k = sqrt(chi²(2, prob_pct/100)) = sqrt(-2 × ln(1 - prob_pct/100))
+
     Args:
         scatter:  list of (x_east_m, y_north_m) landing positions.
         prob_pct: Confidence percentage; must be a key in CHI2_2DOF
@@ -256,10 +259,16 @@ def compute_error_ellipse(
 
     Returns:
         dict with keys:
-            cx, cy     — ellipse centre (metres East/North from origin)
-            a          — semi-major axis (metres)
-            b          — semi-minor axis (metres)
-            angle_rad  — major-axis angle from East (radians)
+            Math representation (semi-axes):
+                cx, cy     — ellipse centre (metres East/North from origin)
+                a          — semi-major axis length (metres)
+                b          — semi-minor axis length (metres)
+                angle_rad  — major-axis angle from East (radians)
+            UI-ready representation (full extents, degrees):
+                x, y       — ellipse centre (same as cx, cy)
+                width      — full major-axis extent = 2 × a  (metres)
+                height     — full minor-axis extent = 2 × b  (metres)
+                angle_deg  — major-axis angle from East (degrees)
         or None if fewer than 4 scatter points are available.
     """
     if len(scatter) < 4:
@@ -284,7 +293,15 @@ def compute_error_ellipse(
     b = k * math.sqrt(max(lam2, 0.0))
     b = max(b, max(0.5, a * 0.05))   # floor: prevent degenerate near-zero b
 
-    return {'cx': cx, 'cy': cy, 'a': a, 'b': b, 'angle_rad': angle_rad}
+    return {
+        # Math representation — semi-axes, radians
+        'cx': cx, 'cy': cy, 'a': a, 'b': b, 'angle_rad': angle_rad,
+        # UI-ready representation — full extents, degrees, aliased centre
+        'x': cx, 'y': cy,
+        'width':     2.0 * a,
+        'height':    2.0 * b,
+        'angle_deg': math.degrees(angle_rad),
+    }
 
 
 # ── CEP ───────────────────────────────────────────────────────────────────────
@@ -485,3 +502,133 @@ def compute_kde_contours(
             first = False
 
     return contours
+
+
+# ── KDE density grid ─────────────────────────────────────────────────────────
+
+def compute_kde_grid(
+    scatter: list[tuple[float, float]],
+    grid_size: int = 100,
+    padding_frac: float = 0.50,
+) -> "dict | None":
+    """Evaluate a Gaussian KDE on a 2-D metric grid and return the density field.
+
+    The UI can use the returned X_m / Y_m / Z arrays directly — as a heatmap,
+    as custom contour input, or as any other density visualisation.  No further
+    statistical computation is required on the UI side.
+
+    Grid resolution
+    ---------------
+    100 × 100 = 10 000 cells per axis pair.  This is the sweet spot between
+    smooth gradient rendering and payload size (100² × 3 arrays ≈ 240 KB as
+    JSON floats).  Halving to 50 saves ~75 % of the data but produces visibly
+    blocky contours; doubling to 200 quadruples the payload with marginal
+    visual improvement at typical map zoom levels.
+
+    Grid cells are spaced uniformly in metres.  The bounding box is expanded by
+    *padding_frac* × max(x_range, y_range) on all four sides to avoid edge
+    artefacts at the KDE bandwidth boundary.
+
+    Normalisation
+    -------------
+    Z is peak-normalised to [0, 1] by dividing by Z.max() so the UI can map Z
+    directly to a colour intensity without knowing the absolute density scale.
+    The shape of the density field (relative heights, contour positions) is
+    preserved exactly.
+
+    Args:
+        scatter:      list of (x_east_m, y_north_m) landing positions.
+        grid_size:    Number of grid points along each axis (default 100).
+        padding_frac: Fractional padding around the scatter bounding box.
+
+    Returns:
+        dict with keys:
+            X_m        — list[list[float]]  east coords of each grid cell (m)
+            Y_m        — list[list[float]]  north coords of each grid cell (m)
+            Z          — list[list[float]]  normalised density in [0, 1]
+            x_min_m    — float  western edge of the grid (m)
+            x_max_m    — float  eastern edge of the grid (m)
+            y_min_m    — float  southern edge of the grid (m)
+            y_max_m    — float  northern edge of the grid (m)
+        or None if scipy is unavailable or fewer than 5 points are provided.
+
+    All arrays are returned as Python lists of lists so the dict is safe to
+    pass through Qt queued signals and to serialise to JSON.
+    """
+    try:
+        from scipy.stats import gaussian_kde
+        import numpy as _np
+    except ImportError:
+        return None
+
+    if len(scatter) < 5:
+        return None
+
+    xs = _np.array([p[0] for p in scatter], dtype=float)
+    ys = _np.array([p[1] for p in scatter], dtype=float)
+
+    try:
+        kde = gaussian_kde(_np.vstack([xs, ys]))
+    except Exception:
+        return None
+
+    span    = max(float(xs.max() - xs.min()), float(ys.max() - ys.min()), 1.0)
+    pad     = span * padding_frac
+    x_min   = float(xs.min()) - pad
+    x_max   = float(xs.max()) + pad
+    y_min   = float(ys.min()) - pad
+    y_max   = float(ys.max()) + pad
+
+    gx      = _np.linspace(x_min, x_max, grid_size)
+    gy      = _np.linspace(y_min, y_max, grid_size)
+    GX, GY  = _np.meshgrid(gx, gy)
+    Z       = kde(_np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
+
+    # Peak-normalise to [0, 1]: preserves relative density shape; lets the
+    # UI apply any colour map by treating Z as a direct intensity value.
+    z_max = float(Z.max())
+    if z_max > 0.0:
+        Z = Z / z_max
+
+    return {
+        "X_m":     GX.tolist(),
+        "Y_m":     GY.tolist(),
+        "Z":       Z.tolist(),
+        "x_min_m": x_min,
+        "x_max_m": x_max,
+        "y_min_m": y_min,
+        "y_max_m": y_max,
+    }
+
+
+# ── Phase B O(1) wind evaluation ─────────────────────────────────────────────
+
+def evaluate_wind_within_bounds(
+    live_u:  float,
+    live_v:  float,
+    mu_u:    float,
+    mu_v:    float,
+    sigma:   float,
+    k:       float = 2.0,
+) -> bool:
+    """Return True if the live wind vector is within the Phase A k-sigma envelope.
+
+    Computes the Euclidean distance between the live wind vector and the
+    Phase A baseline (locked_mu), then compares it against k × σ × |μ|.
+    A minimum absolute bound of 1.0 m/s is applied so a near-calm baseline
+    does not shrink the acceptance region to zero.
+
+    Args:
+        live_u, live_v: Current East/North wind components (m/s).
+        mu_u, mu_v:     Phase A locked baseline East/North components (m/s).
+        sigma:          Fractional 1-σ wind uncertainty from Phase A (e.g. 0.20).
+        k:              Sigma multiplier (default 2.0 → 95 % single-trial bound).
+
+    Returns:
+        True  → within bounds (🟢 GO).
+        False → outside bounds (🔴 NO-GO).
+    """
+    delta    = math.hypot(live_u - mu_u, live_v - mu_v)
+    mu_speed = math.hypot(mu_u, mu_v)
+    bound    = k * sigma * max(mu_speed, 1.0)
+    return delta <= bound

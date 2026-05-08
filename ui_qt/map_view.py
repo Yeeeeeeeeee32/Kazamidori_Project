@@ -34,7 +34,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QPointF, QRectF, Slot
 from PySide6.QtGui import (
-    QBrush, QColor, QPainter, QPen, QPolygonF,
+    QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF,
 )
 from PySide6.QtWidgets import (
     QGraphicsEllipseItem,
@@ -241,10 +241,23 @@ class MapView(QWidget):
                 ellipse['a'], ellipse['b'], ellipse['angle_rad'])
             self._add_polygon(pts, fill='#00bb0030', outline='#00bb00', lw=2.0)
 
-        # MC scatter dots (first 100)
-        for px, py in scatter[:100]:
-            self._add_circle(float(px), float(py), self._SCATTER_R,
-                             fill='#ff880060', outline=None, lw=0)
+        # MC scatter — all points batched into one QPainterPath (one scene item).
+        # Individual QGraphicsEllipseItem per point freezes Qt at 1000+ pts.
+        if scatter:
+            try:
+                path = QPainterPath()
+                r = self._SCATTER_R
+                for px, py in scatter[:500]:
+                    path.addEllipse(QPointF(float(px), -float(py)), r, r)
+                sc_item = self._scene.addPath(
+                    path,
+                    QPen(Qt.PenStyle.NoPen),
+                    QBrush(QColor('#ff6633')),
+                )
+                sc_item.setOpacity(0.45)
+                self._sim_items.append(sc_item)
+            except Exception as e:
+                print(f"Drawing Error (QGraphicsScene scatter): {e}")
 
         # Info label
         self._info.setText(

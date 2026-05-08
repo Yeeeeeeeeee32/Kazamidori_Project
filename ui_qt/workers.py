@@ -50,52 +50,49 @@ import math
 import threading
 from typing import Any
 
+import numpy as np
 import traceback
 from PySide6.QtCore import QThread, Signal
 
 from core.simulation   import simulate_once
 from core.wind_model   import create_wind_profile, sample_wind_nodes
 from core.monte_carlo  import (
-    run_mc_scatter,
+    _perturb_wind_profile,
     compute_error_ellipse,
     compute_cep,
     compute_cep_circle,
     compute_kde_contours,
+    compute_kde_grid,
 )
 
-# ── Default rocket / motor configuration ─────────────────────────────────────
-# Represents a typical 70 mm-diameter competition rocket with an E-class motor
-# (~65 Ns total impulse, 1.2 s burn).  These values are used whenever the
-# user has not loaded a motor file or overridden rocket params via the UI.
+# ── Airframe defaults (NO motor data) ────────────────────────────────────────
+# Only airframe geometry and recovery system have defaults.
+# Motor data (thrust_data, motor_burn_time) must ALWAYS be supplied by the
+# caller via a loaded thrust-curve file — no silent fallback motor exists.
+# If thrust_data is absent the worker raises RuntimeError before simulation.
 
-_DEFAULT_ROCKET: dict[str, Any] = {
-    "rail":             1.5,      # launch rail length (m)
-    "airframe_mass":    1.0,      # airframe dry mass (kg)
-    "airframe_cg":      0.50,     # centre of gravity from nose (m)
-    "airframe_len":     1.10,     # total airframe length (m)
-    "radius":           0.035,    # body radius (m) — 70 mm diameter
-    "nose_len":         0.20,     # nose cone length (m)
-    "fin_root":         0.12,     # fin root chord (m)
-    "fin_tip":          0.06,     # fin tip chord (m)
-    "fin_span":         0.08,     # fin semi-span (m)
-    "fin_pos":          0.95,     # fin leading-edge position from nose (m)
-    "motor_pos":        1.00,     # motor CG from nose (m)
-    "motor_dry_mass":   0.10,     # motor dry mass (kg)
-    "backfire_delay":   0.5,      # ejection charge fires this many s after burnout
-    "para_cd":          1.5,      # parachute drag coefficient
-    "para_area":        0.28,     # parachute reference area (m²) — ≈ 60 cm diameter
-    "para_lag":         0.8,      # deployment lag (s)
-    # E-class thrust curve: peak 80 N, average ~54 N, total ~65 Ns
-    "thrust_data": [
-        [0.000,  0.0],
-        [0.050, 60.0],
-        [0.100, 80.0],
-        [0.400, 70.0],
-        [0.800, 65.0],
-        [1.100, 50.0],
-        [1.200,  0.0],
-    ],
-    "motor_burn_time": 1.2,
+_DEFAULT_AIRFRAME: dict[str, Any] = {
+    "rail":             1.5,     # launch rail length (m)
+    "airframe_mass":    0.0872,  # airframe dry mass (kg)
+    "airframe_cg":      0.21,    # centre of gravity from nose (m)
+    "airframe_len":     0.383,   # total airframe length (m)
+    "radius":           0.015,   # body radius (m) — 30 mm diameter
+    "nose_len":         0.08,    # nose cone length (m)
+    "fin_root":         0.04,    # fin root chord (m)
+    "fin_tip":          0.02,    # fin tip chord (m)
+    "fin_span":         0.03,    # fin semi-span (m)
+    "fin_pos":          0.35,    # fin leading-edge position from nose (m)
+    "motor_pos":        0.38,    # motor CG from nose (m)
+    "motor_dry_mass":   0.015,   # motor dry mass (kg)
+    "backfire_delay":   4.0,     # ejection charge fires this many s after burnout
+    "body_cd":          0.45,    # airframe drag coefficient (power on/off)
+    "para_cd":          0.8,     # parachute drag coefficient
+    "para_area":        0.126,   # parachute reference area (m²)
+    "para_lag":         0.5,     # deployment lag (s)
+    "motor_isp":        90.0,    # assumed Isp (s) used by build_motor_from_curve
+                                 # black-powder Estes: ~80-100 s  ← default (Bug E)
+                                 # low-power APCP:     ~130-170 s
+                                 # mid/high-power APCP: ~180-230 s
 }
 
 # Number of MC runs per progress tick.  Smaller → finer progress granularity
@@ -175,8 +172,17 @@ class SimulationWorker(QThread):
                 raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
             self.progress.emit(25)
 
+            # Build and augment the nominal payload with turbulence stats so
+            # the UI can lock the Phase B baseline immediately on receipt.
+            nom_pkg = self._package_nominal(nominal, wind_nodes)
+            nom_pkg.update({
+                "turb_mu":        float(p.get("turb_mu",        0.0)),
+                "turb_sigma":     float(p.get("turb_sigma",     0.0)),
+                "turb_intensity": float(p.get("turb_intensity", 0.0)),
+            })
+
             # Cross thread boundary: UI renders trajectory immediately
-            self.sig_nominal_done.emit(self._package_nominal(nominal, wind_nodes))
+            self.sig_nominal_done.emit(nom_pkg)
 
             # ── Mandatory stage boundary ──────────────────────────────────
             # sig_nominal_done is a queued signal: it was posted to the GUI
@@ -190,7 +196,14 @@ class SimulationWorker(QThread):
             QThread.msleep(0)
 
             if self._stop_event.is_set():
-                self.finished.emit({"cancelled": True, "has_sim_result": False})
+                self.finished.emit({
+                    "cancelled":      True,
+                    "has_sim_result": False,
+                    "impact_x":  nom_pkg["impact_x"],
+                    "impact_y":  nom_pkg["impact_y"],
+                    "apogee_m":  nom_pkg["apogee_m"],
+                    "hang_time": nom_pkg["hang_time"],
+                })
                 return
 
             # ════════════════════════════════════════════════════════════════
@@ -207,27 +220,101 @@ class SimulationWorker(QThread):
                 self.finished.emit({
                     "cancelled":      True,
                     "has_sim_result": False,
-                    "impact_x":  nominal["impact_x"],
-                    "impact_y":  nominal["impact_y"],
-                    "apogee_m":  nominal["apogee_m"],
-                    "hang_time": nominal["hang_time"],
+                    "impact_x":  nom_pkg["impact_x"],
+                    "impact_y":  nom_pkg["impact_y"],
+                    "apogee_m":  nom_pkg["apogee_m"],
+                    "hang_time": nom_pkg["hang_time"],
                 })
                 return
 
-            self.progress.emit(92)
+            # ════════════════════════════════════════════════════════════════
+            # STAGE 2b — Statistical analysis — ALL on this background thread
+            #
+            # Every scipy / numpy / matplotlib call below is intentionally
+            # placed here, in the worker's run() method, so the GUI thread
+            # is never blocked by heavy math.
+            #
+            # Execution order and GIL notes:
+            #   92 %  r_N / cov_matrix — pure Python + numpy (fast, ~10 ms)
+            #   93 %  error ellipse    — numpy eigendecomposition (~20 ms)
+            #   95 %  KDE contours     — scipy gaussian_kde + matplotlib
+            #                            contour extraction (HEAVY: 1–3 s)
+            #   97 %  KDE grid         — scipy gaussian_kde grid eval (HEAVY: ~1 s)
+            #   98 %  payload assembly
+            #
+            # yieldCurrentThread() is called before each heavy step so the OS
+            # scheduler can give the GUI thread a timeslice to paint and process
+            # input events between the long-running C-extension calls.
+            # ════════════════════════════════════════════════════════════════
+
             prob_pct = int(p.get("cep_prob", 90))
-            stats    = self._compute_stats(scatter, prob_pct)
+            n_pts    = len(scatter)
+
+            # ── Percentile radius + covariance (fast) ────────────────────────
+            self.progress.emit(92)
+            self.sig_status_text.emit("Computing landing statistics...")
+
+            if n_pts > 0:
+                _cx = sum(x for x, _ in scatter) / n_pts
+                _cy = sum(y for _, y in scatter) / n_pts
+                _radii = sorted(math.hypot(x - _cx, y - _cy) for x, y in scatter)
+                _idx_n = min(int(prob_pct / 100.0 * n_pts), n_pts - 1)
+                r_N    = _radii[_idx_n]
+                cep_val   = compute_cep(scatter)
+                cov_matrix = None
+                if n_pts >= 4:
+                    _arr = np.array(scatter, dtype=np.float64)
+                    cov_matrix = np.cov(_arr[:, 0], _arr[:, 1]).tolist()
+            else:
+                r_N = 0.0
+                cep_val    = 0.0
+                cov_matrix = None
+
+            # ── Error ellipse — numpy eigendecomposition ─────────────────────
+            # Yield before so the GUI can paint the 92% bar before we enter
+            # the numpy call that may briefly hold the GIL.
+            QThread.yieldCurrentThread()
+            self.progress.emit(93)
+            self.sig_status_text.emit("Fitting error ellipse...")
+            ellipse    = compute_error_ellipse(scatter, prob_pct=prob_pct)
+            cep_circle = compute_cep_circle(scatter)
+
+            # ── KDE contours — scipy + matplotlib (HEAVY) ────────────────────
+            # Yield before: allows the OS to switch to the GUI thread so the
+            # status bar ("Fitting error ellipse...") is visible before the
+            # 1-3 s scipy call starts and the GIL is intermittently held.
+            QThread.yieldCurrentThread()
+            self.progress.emit(95)
+            self.sig_status_text.emit("Computing KDE contours...")
+            kde_contours = compute_kde_contours(scatter, conf_pct=prob_pct)
+
+            # ── KDE density grid — scipy (HEAVY) ─────────────────────────────
+            QThread.yieldCurrentThread()
+            self.progress.emit(97)
+            self.sig_status_text.emit("Computing KDE density grid...")
+            kde_grid = compute_kde_grid(scatter)
+
+            # ── Assemble stats dict (all pre-computed above) ──────────────────
+            stats = {
+                "r_N_radius":   r_N,
+                "cep":          cep_val,
+                "ellipse":      ellipse,
+                "cep_circle":   cep_circle,
+                "kde_contours": kde_contours,
+                "kde":          kde_grid,
+                "cov_matrix":   cov_matrix,
+            }
+
             self.progress.emit(98)
+            self.sig_status_text.emit("Packaging results...")
 
             # Emit MC-specific payload for dedicated statistics consumers
             self.sig_mc_done.emit(self._package_mc(scatter, stats, prob_pct))
 
-            # Emit full combined result for the main controller
-            result = self._package_result(
-                nominal, scatter, stats, prob_pct, cancelled=False)
+            # Emit single combined payload (nominal + MC + turbulence baseline)
+            result = self._package_result(nom_pkg, scatter, stats, prob_pct, cancelled=False)
             result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
             result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
-            result["wind_nodes"]       = wind_nodes
             self.finished.emit(result)
 
         except Exception:
@@ -297,22 +384,68 @@ class SimulationWorker(QThread):
         root cause will be in _collect_params or the AppState spinbox bindings,
         NOT here.
         """
-        params = dict(_DEFAULT_ROCKET)
-        params.update({
-            "launch_lat":   float(p.get("launch_lat", 35.0)),
-            "launch_lon":   float(p.get("launch_lon", 135.0)),
-            "elev":         float(p.get("elev",       85.0)),
-            "azi":          float(p.get("azim",        0.0)),
-            "wind_u_prof":  u_prof,
-            "wind_v_prof":  v_prof,
-        })
-        # Override _DEFAULT_ROCKET keys with caller-supplied SI values.
-        # Keys not present in p (e.g. thrust_data, motor_burn_time) retain
-        # their _DEFAULT_ROCKET values unless a motor file has been loaded.
-        for key in _DEFAULT_ROCKET:
-            if key in p and key not in ("wind_u_prof", "wind_v_prof"):
-                params[key] = p[key]
+        # Motor data is mandatory — no silent fallback.
+        thrust_data = p.get("thrust_data")
+        if not thrust_data:
+            raise RuntimeError(
+                "モーターがロードされていません。\n"
+                "「推力曲線を読み込む」ボタンでスラストカーブ CSV を\n"
+                "読み込んでからシミュレーションを実行してください。\n"
+                "(No motor loaded: thrust_data is empty. "
+                "Load a thrust-curve file before running.)"
+            )
+        if "motor_burn_time" not in p:
+            raise RuntimeError(
+                "motor_burn_time が指定されていません。"
+                "モーターファイルを再読み込みしてください。"
+            )
+
+        # Base: airframe defaults; caller values override on a per-key basis.
+        params = dict(_DEFAULT_AIRFRAME)
+        for key, val in p.items():
+            if key not in ("wind_u_prof", "wind_v_prof"):
+                params[key] = val
+        # Wind profiles always come from the freshly built profile, not p
+        params["wind_u_prof"] = u_prof
+        params["wind_v_prof"] = v_prof
+        # Ensure launch coords are float
+        params["launch_lat"] = float(p.get("launch_lat", 35.0))
+        params["launch_lon"] = float(p.get("launch_lon", 135.0))
+        params["elev"]       = float(p.get("elev",       85.0))
+        params["azi"]        = float(p.get("azim",        0.0))
+        SimulationWorker._validate_si_units(params)
         return params
+
+    @staticmethod
+    def _validate_si_units(params: dict) -> None:
+        """Raise ValueError if obvious CGS values are detected in the params dict.
+
+        Thresholds are chosen so that any physically plausible competition
+        rocket in SI will pass, while CGS leaks (e.g. radius in cm instead
+        of metres) produce an immediate, actionable error before RocketPy
+        receives nonsense inputs.
+
+        All spinboxes display MKS values directly; AppState stores MKS; no
+        unit conversion is applied anywhere in the chain.
+        """
+        limits = [
+            ("radius",         params.get("radius",         0), 5.0,   "m   — expected < 5 m   (was cm passed?)"),
+            ("airframe_len",   params.get("airframe_len",   0), 50.0,  "m   — expected < 50 m  (was cm passed?)"),
+            ("nose_len",       params.get("nose_len",       0), 20.0,  "m   — expected < 20 m  (was cm passed?)"),
+            ("airframe_mass",  params.get("airframe_mass",  0), 500.0, "kg  — expected < 500 kg (was g passed?)"),
+            ("motor_dry_mass", params.get("motor_dry_mass", 0), 50.0,  "kg  — expected < 50 kg  (was g passed?)"),
+            ("para_area",      params.get("para_area",      0), 100.0, "m²  — expected < 100 m² (was cm² passed?)"),
+        ]
+        problems = [
+            f"  {name} = {val:.4g}  {unit}"
+            for name, val, limit, unit in limits
+            if val > limit
+        ]
+        if problems:
+            raise ValueError(
+                "SI unit validation failed — CGS leak suspected in sim params:\n"
+                + "\n".join(problems)
+            )
 
     @staticmethod
     def _package_nominal(nominal: dict, wind_nodes: list[dict]) -> dict:
@@ -406,57 +539,101 @@ class SimulationWorker(QThread):
         sim_params: dict,
         p: dict,
     ) -> list[tuple[float, float]]:
-        """Run the MC scatter one iteration at a time, emitting a heartbeat
-        signal after every run.
+        """Run the MC scatter inline — O(1) peak memory per iteration.
 
-        sig_progress_updated(i+1, n_total) fires on every iteration so the
-        UI's progress bar updates smoothly without waiting for a batch to
-        complete.  The coarser `progress` signal (0–100 int) is also emitted
-        at the same cadence for backwards compatibility with any slot already
-        connected to it.
+        The perturbation and simulation are inlined directly rather than
+        delegated to run_mc_scatter.  This eliminates three per-call
+        overheads that compound at large n_runs:
+          - no fresh Random() instance per call
+          - no wind_profiles accumulation list
+          - simulate_once result dict (full trajectory arrays) is explicitly
+            deleted at the end of each iteration via `del r`, so Python's
+            reference-counter frees the arrays before the next run starts
+            rather than waiting for the next GC cycle.
 
+        Only the two scalar landing coordinates are retained per run —
+        the scatter list grows O(n_runs) in scalar tuples (~40 bytes each).
+
+        sig_progress_updated(i+1, n_total) fires after every iteration.
         Progress moves from 25 % to 90 % as runs complete.
-
-        GIL note: RocketPy simulations hold Python's GIL for their duration.
-        QThread.yieldCurrentThread() is called after every iteration to release
-        the GIL and allow Qt's event queue to deliver queued signals (including
-        sig_progress_updated) to the GUI thread before the next simulation starts.
         """
-        n_total    = int(p.get("mc_runs",    50))
-        wind_unc   = float(p.get("wind_unc",  0.20))
-        thrust_unc = float(p.get("thrust_unc", 0.05))
-        # _collect_params stores gust under "gust_speed"; accept both names so
-        # callers that use "gust_intensity" (the run_mc_scatter parameter name)
-        # also work.  Without this fix gust was silently 0.0 for every MC run.
-        gust_intensity = float(p.get("gust_speed", p.get("gust_intensity", 0.0)))
+        import random as _random
+
+        n_total      = int(p.get("mc_runs",    50))
+        wind_unc     = float(p.get("wind_unc",  0.20))
+        thrust_unc   = float(p.get("thrust_unc", 0.05))
+        # Gust noise priority:
+        #   1. auto_gust_ms: σ computed from the 60s surface wind history buffer
+        #   2. gust_speed / gust_intensity: manual UI value, fallback only.
+        auto_gust    = float(p.get("auto_gust_ms", 0.0))
+        manual_gust  = float(p.get("gust_speed", p.get("gust_intensity", 0.0)))
+        gust_sigma   = auto_gust if auto_gust > 0.0 else manual_gust
+
+        # Extract sim_params invariants once — avoids repeated dict lookup
+        rng        = _random.Random()
+        tu         = max(thrust_unc, 0.0)
+        raw_thrust = sim_params["thrust_data"]
+        elev       = sim_params["elev"]
+        azi        = sim_params["azi"]
+        base_u: list = sim_params.get("wind_u_prof", [])
+        base_v: list = sim_params.get("wind_v_prof", [])
+
         scatter: list[tuple[float, float]] = []
+
+        # Throttle progress signal emissions to at most _MAX_PROG_SIGNALS
+        # cross-thread events regardless of n_total.  Emitting a signal on
+        # every single iteration (e.g. 200 signals for a 200-run batch) fills
+        # the GUI event queue and wastes GUI wakeup cycles on near-identical
+        # bar updates.  yieldCurrentThread() is still called every iteration
+        # so the OS scheduler keeps the GUI thread alive throughout the loop.
+        _MAX_PROG_SIGNALS = 20
+        _emit_every = max(1, n_total // _MAX_PROG_SIGNALS)
 
         for i in range(n_total):
             if self._stop_event.is_set():
                 break
 
-            # Run exactly 1 perturbed simulation per iteration so that
-            # sig_progress_updated fires at every run, not every batch.
-            batch_scatter, _ = run_mc_scatter(
-                sim_params,
-                1,                          # one run per iteration
-                wind_unc,
-                thrust_unc,
-                gust_intensity=gust_intensity,
-                stop_flag=self._stop_event,
+            # ── Wind perturbation (O(n_altitudes), discarded each iteration) ──
+            u_prof, v_prof, _ = _perturb_wind_profile(
+                base_u, base_v, rng,
+                wind_unc, gust_intensity=gust_sigma,
             )
-            scatter.extend(batch_scatter)
 
-            # Yield the GIL so Qt can drain its event queue before the
-            # next blocking simulation starts.  Without this the GUI thread
-            # may not process the queued signal until all n_total runs finish.
+            # ── Thrust perturbation ───────────────────────────────────────────
+            thrust_scale     = max(0.1, 1.0 + rng.gauss(0.0, tu))
+            perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
+
+            # ── Single perturbed simulation ───────────────────────────────────
+            # Spread sim_params and override only the three dynamic keys.
+            # The large static arrays (base profiles, motor metadata) are
+            # shared by reference — not copied — so memory is O(overrides).
+            trial_p = {**sim_params,
+                       "wind_u_prof": u_prof,
+                       "wind_v_prof": v_prof,
+                       "thrust_data": perturbed_thrust}
+
+            r = simulate_once(elev, azi, trial_p)
+
+            # Extract ONLY the two scalar coords.  Everything else in r
+            # (trajectory arrays, event dicts, …) is freed immediately
+            # when del r drops the reference count to zero.
+            if r["ok"]:
+                scatter.append((float(r["impact_x"]), float(r["impact_y"])))
+            del r, trial_p, u_prof, v_prof, perturbed_thrust
+
+            # ── Yield every iteration — scheduler fairness ────────────────────
+            # yieldCurrentThread() lets the OS give the GUI thread a timeslice
+            # to process any already-queued signals (e.g. repaint the progress
+            # bar from the PREVIOUS emission) without flooding the queue with
+            # a new signal on this iteration.
             QThread.yieldCurrentThread()
 
-            # Per-iteration heartbeat — drives fine-grained UI updates
-            self.sig_progress_updated.emit(i + 1, n_total)
-            # Coarse 0-100 progress for any connected progress bar
-            pct = 25 + int((i + 1) / n_total * 65)
-            self.progress.emit(min(pct, 90))
+            # Emit progress signals at most _MAX_PROG_SIGNALS times total.
+            # Always emit on the final iteration so the bar reaches 90%.
+            _done = i + 1
+            if _done % _emit_every == 0 or _done == n_total:
+                self.sig_progress_updated.emit(_done, n_total)
+                self.progress.emit(min(25 + int(_done / n_total * 65), 90))
 
         return scatter
 
@@ -465,15 +642,15 @@ class SimulationWorker(QThread):
         scatter: list[tuple[float, float]],
         prob_pct: int,
     ) -> dict:
-        """
-        Compute all statistical outputs from the landing scatter.
+        """Compute all statistical outputs from the landing scatter.
 
-        r_N_radius  — the prob_pct-th percentile radial distance from the
-                      scatter centroid.  Used as the displayed landing radius.
-        cep         — CEP50: 50th-percentile radius from the centroid.
-        ellipse     — chi-squared scaled covariance ellipse at prob_pct.
-        cep_circle  — metric polygon of the CEP50 circle.
-        kde_contours — KDE probability-mass contour dicts.
+        The production code path inlines each sub-step directly in run() with
+        explicit status text, progress milestones, and yieldCurrentThread()
+        calls between heavy scipy operations.  This helper exists for unit
+        tests and ad-hoc calls where those GUI-side side effects are unwanted.
+
+        Returns a dict with keys: r_N_radius, cep, ellipse, cep_circle,
+        kde_contours, kde, cov_matrix.
         """
         empty = {
             "r_N_radius":   0.0,
@@ -481,11 +658,13 @@ class SimulationWorker(QThread):
             "ellipse":      None,
             "cep_circle":   None,
             "kde_contours": [],
+            "kde":          None,
+            "cov_matrix":   None,
         }
         if not scatter:
             return empty
 
-        # Percentile radius from centroid
+        # Percentile radius from centroid (= CEP at prob_pct %)
         cx = sum(x for x, _ in scatter) / len(scatter)
         cy = sum(y for _, y in scatter) / len(scatter)
         radii = sorted(math.hypot(x - cx, y - cy) for x, y in scatter)
@@ -493,12 +672,29 @@ class SimulationWorker(QThread):
         idx  = min(int(prob_pct / 100.0 * n), n - 1)
         r_N  = radii[idx]
 
+        # 2×2 sample covariance matrix (metres²).  None when fewer than 4 points.
+        cov_matrix = None
+        if len(scatter) >= 4:
+            arr = np.array(scatter, dtype=float)
+            cov_matrix = np.cov(arr[:, 0], arr[:, 1]).tolist()
+
+        # KDE grid: raw density field for heatmap / custom contours in the UI.
+        # compute_kde_grid returns Python lists of lists — Qt signal safe.
+        kde_grid = compute_kde_grid(scatter)
+
         return {
             "r_N_radius":   r_N,
             "cep":          compute_cep(scatter),
+            # ellipse carries both math keys and UI-ready keys:
+            #   math: cx, cy, a, b, angle_rad
+            #   UI:   x, y, width (=2a), height (=2b), angle_deg
             "ellipse":      compute_error_ellipse(scatter, prob_pct=prob_pct),
             "cep_circle":   compute_cep_circle(scatter),
             "kde_contours": compute_kde_contours(scatter, conf_pct=prob_pct),
+            # kde: {X_m, Y_m, Z, x_min_m, x_max_m, y_min_m, y_max_m}
+            # All arrays are Python lists of lists — ready for heatmap rendering.
+            "kde":          kde_grid,
+            "cov_matrix":   cov_matrix,
         }
 
     @staticmethod
@@ -513,65 +709,113 @@ class SimulationWorker(QThread):
         sig_mc_done do not receive the full nominal trajectory arrays.
         """
         return {
-            "scatter":      scatter,
+            # ── Canonical unified payload keys ────────────────────────────────
+            "scatter_points": scatter,   # list[(x_east_m, y_north_m)] — canonical name
+            # ellipse: covariance error ellipse at prob_pct.
+            #   Math keys:  cx, cy, a (semi-major m), b (semi-minor m), angle_rad
+            #   UI keys:    x, y, width (=2a m), height (=2b m), angle_deg
+            "ellipse":        stats.get("ellipse"),
+            # kde: raw density grid for heatmap / client-side contour rendering.
+            #   Keys: X_m, Y_m, Z  (all list[list[float]]), plus bounding scalars.
+            "kde":            stats.get("kde"),
+            # ── MC statistics ─────────────────────────────────────────────────
             "r_N_radius":   float(stats.get("r_N_radius", 0.0)),
+            "cep_radius":   float(stats.get("r_N_radius", 0.0)),
             "cep":          float(stats.get("cep", 0.0)),
-            "ellipse":      stats.get("ellipse"),
             "cep_circle":   stats.get("cep_circle"),
             "kde_contours": stats.get("kde_contours", []),
+            "cov_matrix":   stats.get("cov_matrix"),
             "n_runs":       len(scatter),
             "landing_prob": prob_pct,
+            # ── Backward-compat alias ─────────────────────────────────────────
+            "scatter":      scatter,
         }
 
     @staticmethod
     def _package_result(
-        nominal:    dict,
-        scatter:    list,
-        stats:      dict,
-        prob_pct:   int,
+        nom_pkg:   dict,
+        scatter:   list,
+        stats:     dict,
+        prob_pct:  int,
         *,
-        cancelled:  bool,
+        cancelled: bool,
     ) -> dict:
-        """
-        Assemble the finished-signal payload.
+        """Assemble the single finished-signal payload.
 
-        Numpy arrays from simulate_once are converted to Python lists so the
-        dict is safe to pass through Qt's queued connection type system and
-        remains JSON-serialisable for future persistence.
-        """
-        def _to_list(v):
-            return v.tolist() if hasattr(v, "tolist") else list(v)
+        Takes the pre-packaged nominal payload (nom_pkg, already containing
+        list-converted arrays, phases, events, wind_by_alt, and turbulence
+        stats) and merges in the MC statistics so the finished signal carries
+        the complete simulation record in one dict.
 
-        t_vals = _to_list(nominal["t_vals"])
-        x_vals = _to_list(nominal["x_vals"])
-        y_vals = _to_list(nominal["y_vals"])
-        z_vals = _to_list(nominal["z_vals"])
+        All arrays are Python lists (not numpy) — safe for Qt queued signals
+        and JSON serialisation.
+        """
+        t_vals = nom_pkg["t_vals"]
+        x_vals = nom_pkg["x_vals"]
+        y_vals = nom_pkg["y_vals"]
+        z_vals = nom_pkg["z_vals"]
 
         return {
             "cancelled":      cancelled,
             "has_sim_result": not cancelled,
-            # Nominal trajectory (separate arrays)
+
+            # ── Canonical unified payload (structured, matches sig_mc_done) ───
+            # trajectory: full nominal flight data grouped under one key
+            "trajectory": {
+                "t_vals":    t_vals,
+                "x_vals":    x_vals,
+                "y_vals":    y_vals,
+                "z_vals":    z_vals,
+                "apogee_m":  nom_pkg["apogee_m"],
+                "hang_time": nom_pkg["hang_time"],
+                "impact_x":  nom_pkg["impact_x"],
+                "impact_y":  nom_pkg["impact_y"],
+                "r_horiz":   nom_pkg["r_horiz"],
+                "phases":    nom_pkg.get("phases", {}),
+                "events":    nom_pkg.get("events", {}),
+            },
+            # scatter_points: canonical MC landing positions (x_east_m, y_north_m)
+            "scatter_points": scatter,
+            # ellipse: covariance error ellipse — math keys + UI keys (see _package_mc)
+            "ellipse":        stats.get("ellipse"),
+            # kde: raw density grid {X_m, Y_m, Z, bounds} for heatmap rendering
+            "kde":            stats.get("kde"),
+
+            # ── Flat nominal keys (backward compat — direct field access) ─────
             "t_vals":    t_vals,
             "x_vals":    x_vals,
             "y_vals":    y_vals,
             "z_vals":    z_vals,
-            "apogee_m":  float(nominal["apogee_m"]),
-            "hang_time": float(nominal["hang_time"]),
-            "impact_x":  float(nominal["impact_x"]),   # East offset (m)
-            "impact_y":  float(nominal["impact_y"]),   # North offset (m)
-            "r_horiz":   float(nominal["r_horiz"]),
-            # MC statistics
-            "scatter":      scatter,
+            "apogee_m":  nom_pkg["apogee_m"],
+            "hang_time": nom_pkg["hang_time"],
+            "impact_x":  nom_pkg["impact_x"],
+            "impact_y":  nom_pkg["impact_y"],
+            "r_horiz":   nom_pkg["r_horiz"],
+            "phases":    nom_pkg.get("phases", {}),
+            "events":    nom_pkg.get("events", {}),
+            # ── Wind data (all 5 diagnostic altitudes) ────────────────────────
+            "wind_nodes":       nom_pkg.get("wind_nodes",       []),
+            "wind_by_alt":      nom_pkg.get("wind_by_alt",      {}),
+            "surface_wind":     nom_pkg.get("surface_wind"),
+            "upper_wind_nodes": nom_pkg.get("upper_wind_nodes", []),
+            # ── Phase A turbulence baseline (locked for Phase B GO/NO-GO) ─────
+            "turb_mu":        nom_pkg.get("turb_mu",        0.0),
+            "turb_sigma":     nom_pkg.get("turb_sigma",     0.0),
+            "turb_intensity": nom_pkg.get("turb_intensity", 0.0),
+            # ── MC statistics (local metric frame, origin at launch) ───────────
+            "scatter":      scatter,   # backward-compat alias for scatter_points
             "r_N_radius":   float(stats.get("r_N_radius", 0.0)),
-            "cep":          float(stats.get("cep", 0.0)),
-            "ellipse":      stats.get("ellipse"),
+            "cep_radius":   float(stats.get("r_N_radius", 0.0)),
+            "cep":          float(stats.get("cep",         0.0)),
+            "cep_circle":   stats.get("cep_circle"),
             "kde_contours": stats.get("kde_contours", []),
+            "kde":          stats.get("kde"),
+            "cov_matrix":   stats.get("cov_matrix"),
             "n_runs":       len(scatter),
             "landing_prob": prob_pct,
-            # ── Alias keys consumed by General B / future views ────────────────
-            # trajectory_3d: list of [East_m, North_m, Up_m] per time-step
+            # ── Legacy alias keys ─────────────────────────────────────────────
             "trajectory_3d":     list(zip(x_vals, y_vals, z_vals)),
-            "mc_scatter_points": scatter,                   # alias for scatter
-            "apogee":            float(nominal["apogee_m"]),
-            "impact_distance":   float(nominal["r_horiz"]),
+            "mc_scatter_points": scatter,
+            "apogee":            nom_pkg["apogee_m"],
+            "impact_distance":   nom_pkg["r_horiz"],
         }
