@@ -38,8 +38,9 @@ from PySide6.QtWidgets import (
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
     QMessageBox, QToolBox, QSplitter, QSlider,
     QDialog, QDialogButtonBox,
+    QTableWidget, QTableWidgetItem,
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QColor
 
 
 # ── Window-local reactive state ───────────────────────────────────────────────
@@ -250,6 +251,17 @@ QProgressBar::chunk { background: #7eb3ff; border-radius: 3px; }
 QScrollArea { border: none; background: transparent; }
 QScrollArea > QWidget > QWidget { background: #2b2b2b; }
 QLabel { color: #ffffff; }
+QTableWidget {
+    background: #1a1a2e; color: #cdd6f4; border: none;
+    gridline-color: #2a2a3e; alternate-background-color: #12121e;
+    selection-background-color: #313244;
+}
+QTableWidget::item { padding: 3px 5px; border: none; font-size: 8pt; }
+QHeaderView::section {
+    background: #2b2b2b; color: #7eb3ff; border: 1px solid #45475a;
+    padding: 3px 5px; font-weight: bold; font-size: 7pt;
+}
+QTableCornerButton::section { background: #2b2b2b; border: 1px solid #45475a; }
 QFormLayout QLabel { color: #aaaaaa; }
 """
 
@@ -678,11 +690,18 @@ class AppWindow(QMainWindow):
         tb.addWidget(spacer)
 
         self._progress = QProgressBar(tb)
-        self._progress.setFixedWidth(172)
+        self._progress.setFixedWidth(140)
         self._progress.setValue(0)
-        self._progress.setFormat("Idle")
+        self._progress.setFormat("%p%")
         self._progress.setTextVisible(True)
         tb.addWidget(self._progress)
+
+        self._phase_label = QLabel("Idle", tb)
+        self._phase_label.setFixedWidth(120)
+        self._phase_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._phase_label.setStyleSheet(
+            "color: #a6adc8; font-size: 8pt; background: transparent; padding: 0 4px;")
+        tb.addWidget(self._phase_label)
 
         self.addToolBar(tb)
 
@@ -704,19 +723,40 @@ class AppWindow(QMainWindow):
         sb.addWidget(self._status_label, stretch=1)
         sb.addPermanentWidget(self._wind_status)
 
-    # ── 3-column splitter layout ──────────────────────────────────────────────
+    # ── Nested splitter layout ─────────────────────────────────────────────────
     #
     # Build order: map panel FIRST so self.map_widget exists before
     # _build_parameters_panel() wires the lat/lon lambda closures.
-    # Splitter insertion order (left → right): params | profile | map.
+    #
+    # Structure:
+    #   _main_splitter (H)
+    #   ├── params_panel          (left, full height)
+    #   └── _right_splitter (V)
+    #       ├── _top_splitter (H)
+    #       │   ├── profile_panel   (3-D trajectory)
+    #       │   └── map_panel       (2-D landing map)
+    #       └── wind_panel          (wind history + compass + table, full width)
 
     def _setup_splitter(self) -> None:
         self._map_panel     = self._build_map_dock_widget()
         self._params_panel  = self._build_parameters_panel()
         self._profile_panel = self._build_profile_dock_widget()
+        self._wind_panel    = self._build_wind_panel()
 
-        for panel in (self._params_panel, self._profile_panel, self._map_panel):
-            self._main_splitter.addWidget(panel)
+        self._top_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._top_splitter.setChildrenCollapsible(False)
+        self._top_splitter.setHandleWidth(3)
+        self._top_splitter.addWidget(self._profile_panel)
+        self._top_splitter.addWidget(self._map_panel)
+
+        self._right_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._right_splitter.setChildrenCollapsible(False)
+        self._right_splitter.setHandleWidth(3)
+        self._right_splitter.addWidget(self._top_splitter)
+        self._right_splitter.addWidget(self._wind_panel)
+
+        self._main_splitter.addWidget(self._params_panel)
+        self._main_splitter.addWidget(self._right_splitter)
 
     # ── Column sizing (deferred to first paint) ───────────────────────────────
 
@@ -725,27 +765,29 @@ class AppWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_initial_sizes)
 
     def _apply_initial_sizes(self) -> None:
-        # parameters: 300 px  |  profile: 650 px  |  map: 650 px
-        self._main_splitter.setSizes([300, 650, 650])
+        # Main: params 300 | right rest
+        self._main_splitter.setSizes([300, 1300])
+        # Right vertical: top (3D+map) 60% | wind 40%
+        self._right_splitter.setSizes([560, 340])
+        # Top horizontal: profile | map equal
+        self._top_splitter.setSizes([650, 650])
 
     # ── Profile dock content (3-D trajectory + wind) ──────────────────────────
 
     def _build_profile_dock_widget(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setHandleWidth(2)
-        splitter.setChildrenCollapsible(False)
+        """3-D trajectory panel (azimuth slider, no wind section — that is in wind_panel)."""
+        container = QWidget()
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
 
-        top = QWidget(splitter)
-        tl  = QVBoxLayout(top)
-        tl.setContentsMargins(0, 0, 0, 0)
-        tl.setSpacing(0)
-        nav3d = NavigationToolbar2QT(self.profile_canvas, top)
+        nav3d = NavigationToolbar2QT(self.profile_canvas, container)
         nav3d.setIconSize(QSize(14, 14))
-        tl.addWidget(nav3d)
-        tl.addWidget(self.profile_canvas)
+        lay.addWidget(nav3d)
+        lay.addWidget(self.profile_canvas, stretch=1)
 
         # ── Azimuth control row ───────────────────────────────────────────────
-        azim_row = QWidget(top)
+        azim_row = QWidget(container)
         azim_row.setFixedHeight(26)
         azim_lay = QHBoxLayout(azim_row)
         azim_lay.setContentsMargins(8, 0, 8, 0)
@@ -778,27 +820,10 @@ class AppWindow(QMainWindow):
         azim_lay.addWidget(azim_lbl)
         azim_lay.addWidget(self._azim_slider)
         azim_lay.addWidget(self._azim_val_lbl)
-        tl.addWidget(azim_row)
+        lay.addWidget(azim_row)
 
-        # Link the canvas wheel event to the slider
         self.profile_canvas._azim_slider = self._azim_slider
-
-        bot = QWidget(splitter)
-        bl  = QVBoxLayout(bot)
-        bl.setContentsMargins(0, 0, 0, 0)
-        bl.setSpacing(0)
-        hdr = QLabel("  Wind  ·  Speed Profile  &  Compass  ·  5 Altitude Nodes", bot)
-        hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
-        nav_w = NavigationToolbar2QT(self.wind_canvas, bot)
-        nav_w.setIconSize(QSize(14, 14))
-        bl.addWidget(hdr)
-        bl.addWidget(nav_w)
-        bl.addWidget(self.wind_canvas)
-
-        splitter.addWidget(top)
-        splitter.addWidget(bot)
-        splitter.setSizes([530, 370])
-        return splitter
+        return container
 
     # ── Parameters panel ──────────────────────────────────────────────────────
     #
@@ -1082,6 +1107,53 @@ class AppWindow(QMainWindow):
         self.map_widget = _MapCoordProxy(self._map_launch_lbl, self._map_landing_lbl)
         return container
 
+    # ── Wind panel (history graph + compass + current-values table) ──────────
+
+    def _build_wind_panel(self) -> QWidget:
+        """Bottom row: wind speed history  ·  polar compass  ·  current-values table."""
+        container = QWidget()
+        lay = QHBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        # ── Left: matplotlib canvas (2 subplots) ──────────────────────────────
+        canvas_wrap = QWidget(container)
+        cwl = QVBoxLayout(canvas_wrap)
+        cwl.setContentsMargins(0, 0, 0, 0)
+        cwl.setSpacing(0)
+        hdr = QLabel(
+            "  Wind  ·  Speed History  &  Compass  ·  5 Altitude Nodes",
+            canvas_wrap)
+        hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
+        nav_w = NavigationToolbar2QT(self.wind_canvas, canvas_wrap)
+        nav_w.setIconSize(QSize(14, 14))
+        cwl.addWidget(hdr)
+        cwl.addWidget(nav_w)
+        cwl.addWidget(self.wind_canvas, stretch=1)
+        lay.addWidget(canvas_wrap, stretch=1)
+
+        # ── Right: current-values table ───────────────────────────────────────
+        self._wind_table = QTableWidget(5, 3, container)
+        self._wind_table.setObjectName("WindTable")
+        self._wind_table.setHorizontalHeaderLabels(["Alt", "Speed (m/s)", "Dir (°)"])
+        self._wind_table.verticalHeader().setVisible(False)
+        self._wind_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self._wind_table.setSelectionMode(
+            QTableWidget.SelectionMode.NoSelection)
+        self._wind_table.horizontalHeader().setStretchLastSection(True)
+        self._wind_table.setFixedWidth(210)
+        self._wind_table.setAlternatingRowColors(True)
+        # Pre-populate with dashes; cells are reused (never re-created) for speed
+        for r in range(5):
+            for c in range(3):
+                item = QTableWidgetItem("—")
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._wind_table.setItem(r, c, item)
+        lay.addWidget(self._wind_table)
+
+        return container
+
     # ── Reactive binding ───────────────────────────────────────────────────────
 
     def _bind_state(self) -> None:
@@ -1156,12 +1228,62 @@ class AppWindow(QMainWindow):
         land_x   = float(res.get("land_x", tx[-1] if len(tx) else 0.0))
         land_y   = float(res.get("land_y", ty[-1] if len(ty) else 0.0))
 
-        ax.plot(tx, ty, np.zeros_like(tz),
-                color="#45475a", lw=0.8, linestyle=":", alpha=0.45)
-        if len(tx) > 1:
-            ax.add_collection3d(_make_altitude_lc(tx, ty, tz))
-        ax.plot([], [], [], color="#89b4fa", lw=2.0, label="Trajectory  (cool = alt)")
+        apex_z = float(res.get("apogee_m",
+                               float(tz.max()) if len(tz) > 0 else 0.0))
+        phases = res.get("phases")
+        events = res.get("events")
 
+        # Ground-track projection (always shown)
+        ax.plot(tx, ty, np.zeros_like(tz),
+                color="#45475a", lw=0.8, linestyle=":", alpha=0.35)
+
+        if phases:
+            # ── Phase-coloured trajectory: Thrust / Coast / Parachute ─────────
+            _PH = [
+                ("thrust", "#f38ba8", "Thrust  (推進)"),
+                ("coast",  "#89b4fa", "Coast  (滑空)"),
+                ("chute",  "#a6e3a1", "Parachute  (降下)"),
+            ]
+            for ph_key, ph_col, ph_lbl in _PH:
+                ph = phases.get(ph_key, {})
+                px = np.asarray(ph.get("x", []), dtype=float)
+                py = np.asarray(ph.get("y", []), dtype=float)
+                pz = np.clip(np.asarray(ph.get("z", []), dtype=float), 0.0, None)
+                if len(px) > 1:
+                    ax.plot(px, py, pz, color=ph_col, lw=2.2, alpha=0.90,
+                            label=ph_lbl)
+
+            if events:
+                # ── Key-event markers: Burnout / Apogee / Chute Deploy ────────
+                _EV = [
+                    ("burnout", "#fab387", "X", 90,  "Burnout"),
+                    ("apogee",  "#f9e2af", "*", 120, f"Apogee  {apex_z:.0f} m"),
+                    ("chute",   "#a6e3a1", "^", 80,  "Chute Deploy"),
+                ]
+                for ev_key, ev_col, ev_mk, ev_sz, ev_lbl in _EV:
+                    ev = events.get(ev_key)
+                    if ev is None:
+                        continue
+                    ex = float(ev[0]); ey = float(ev[1])
+                    ez = max(0.0, float(ev[2]))
+                    ax.scatter([ex], [ey], [ez], c=ev_col, s=ev_sz,
+                               marker=ev_mk, zorder=9, label=ev_lbl)
+                    ax.text(ex, ey, ez * 1.04 + 1.5,
+                            f"  {ez:.0f} m", color=ev_col, fontsize=6)
+        else:
+            # ── Fallback: altitude-gradient single line ───────────────────────
+            if len(tx) > 1:
+                ax.add_collection3d(_make_altitude_lc(tx, ty, tz))
+            ax.plot([], [], [], color="#89b4fa", lw=2.0,
+                    label="Trajectory  (cool = alt)")
+            apex_i = int(np.argmax(tz))
+            ax.scatter([tx[apex_i]], [ty[apex_i]], [apex_z],
+                       c="#f9e2af", s=90, marker="*", zorder=6,
+                       label=f"Apogee  {apex_z:.0f} m")
+            ax.text(tx[apex_i], ty[apex_i], apex_z * 1.04,
+                    f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
+
+        # ── Wind quivers (shown in both phase and fallback modes) ─────────────
         profile = s.wind_profile
         if profile and len(tx) > 1:
             n_q   = min(6, len(profile))
@@ -1179,14 +1301,6 @@ class AppWindow(QMainWindow):
                           w_e, w_n, 0.0,
                           color="#f9e2af", alpha=0.65,
                           arrow_length_ratio=0.35, linewidth=1.0)
-
-        apex_i = int(np.argmax(tz))
-        apex_z = float(tz[apex_i])
-        ax.scatter([tx[apex_i]], [ty[apex_i]], [apex_z],
-                   c="#f9e2af", s=90, marker="*", zorder=6,
-                   label=f"Apogee  {apex_z:.0f} m")
-        ax.text(tx[apex_i], ty[apex_i], apex_z * 1.04,
-                f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
 
         n_mc = min(len(mc_x), len(mc_y))
         if n_mc > 0:
@@ -1415,12 +1529,13 @@ class AppWindow(QMainWindow):
 
         if hist_buf:
             # ── Time-series mode: X = relative time (s), Y = speed (m/s) ──────
+            # pts are 3-tuples: (relative_t, speed_ms, dir_deg)
             for i, alt in enumerate(_HIST_ALTS):
                 pts = hist_buf.get(alt, [])
                 if not pts:
                     continue
-                xs = [t for t, _ in pts]
-                ys = [s for _, s in pts]
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
                 col = (self._NODE_COLORS[i]
                        if i < len(self._NODE_COLORS) else "#cdd6f4")
                 lbl = (self._NODE_LABELS[i]
@@ -1537,6 +1652,7 @@ class AppWindow(QMainWindow):
         fig.subplots_adjust(left=0.07, right=0.71, top=0.90,
                             bottom=0.15, wspace=0.44)
         self.wind_canvas.draw()
+        self._update_wind_table(nodes)
 
     def update_wind_history(self, hist_dict) -> None:
         """Receive the global 5-altitude wind history and switch the left subplot to time-series.
@@ -1550,12 +1666,57 @@ class AppWindow(QMainWindow):
         now = _t.monotonic()
         self._wind_hist_buf = {
             float(alt): [
-                (float(e["ts"]) - now, float(e["speed_ms"]))
+                (float(e["ts"]) - now, float(e["speed_ms"]), float(e["dir_deg"]))
                 for e in entries
             ]
             for alt, entries in hist_dict.items()
         }
         self.update_wind_plot()
+
+    def _update_wind_table(self, nodes: list | None = None) -> None:
+        """Refresh the current-values table with the most recent wind readings.
+
+        Priority: rolling hist_buf (live, per second) > nodes from last result.
+        Cells are mutated in-place; no items are created after first population.
+        """
+        table = getattr(self, '_wind_table', None)
+        if table is None:
+            return
+
+        hist_buf = self._wind_hist_buf
+        if nodes is None:
+            res   = self.state.simulation_result
+            nodes = res.get("wind_nodes", []) if res is not None else []
+
+        for r, (alt, lbl) in enumerate(zip(
+                [3.0, 10.0, 150.0, 300.0, 600.0], self._NODE_LABELS)):
+            spd_str = "—"
+            dir_str = "—"
+
+            pts = hist_buf.get(alt, [])
+            if pts:
+                # 3-tuple: (relative_t, speed_ms, dir_deg)
+                spd_str = f"{pts[-1][1]:.1f}"
+                dir_str = f"{pts[-1][2]:.0f}"
+            elif nodes:
+                for n in nodes:
+                    if abs(float(n.get("alt_m", -1)) - alt) < 1.0:
+                        spd_str = f"{float(n.get('speed_ms', 0)):.1f}"
+                        dir_str = f"{float(n.get('dir_deg',  0)):.0f}"
+                        break
+
+            col = (self._NODE_COLORS[r]
+                   if r < len(self._NODE_COLORS) else "#cdd6f4")
+            for c, txt in enumerate([lbl, spd_str, dir_str]):
+                item = table.item(r, c)
+                if item is None:
+                    item = QTableWidgetItem(txt)
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                    table.setItem(r, c, item)
+                else:
+                    item.setText(txt)
+                if c == 0:
+                    item.setData(Qt.ItemDataRole.ForegroundRole, QColor(col))
 
     # ── Smart partial redraw ──────────────────────────────────────────────────
 
@@ -1773,8 +1934,13 @@ class AppWindow(QMainWindow):
 
     def set_progress(self, value: int, label: str = "") -> None:
         self._progress.setValue(max(0, min(100, value)))
+        lbl = getattr(self, '_phase_label', None)
         if label:
-            self._progress.setFormat(label)
+            self._progress.setFormat("%p%")
+            if lbl is not None:
+                lbl.setText(label)
+        elif lbl is not None and value == 0:
+            lbl.setText("Idle")
 
 
 # ── Standalone entry point ────────────────────────────────────────────────────

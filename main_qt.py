@@ -72,6 +72,9 @@ class SimController(QObject):
         self._window: AppWindow               = window
         self._state:  AppState                = state
         self._worker: SimulationWorker | None = None
+        # Cache the sig_nominal_done payload so _on_mc_done can forward
+        # phases/events (phase-coloured 3-D trajectory) into the final result.
+        self._nominal_payload: dict | None    = None
 
         self._rewire_buttons()
 
@@ -162,6 +165,10 @@ class SimController(QObject):
         # wind_history_updated fires every second (surface) and once per
         # simulation (all 5 altitudes) — drives the rolling wind time-series.
         state.wind_history_updated.connect(window.update_wind_history)
+        # After update_wind_history refreshes _wind_hist_buf, update the
+        # instantaneous "Current Wind Speed" table that sits beside the plot.
+        # Connection order guarantees hist_buf is populated before the table reads it.
+        state.wind_history_updated.connect(lambda _: window._update_wind_table())
 
         # progress_changed fires after every MC iteration (0–100 int) → push the
         # value into the toolbar QProgressBar so the operator sees live progress.
@@ -220,9 +227,8 @@ class SimController(QObject):
         self._window.set_status("Simulation running...", "#f9e2af")
         self._window.set_progress(0, "Simulating...")
 
-        # Clear stale MC scatter from the previous run so the operator starts
-        # with a clean map.  update_map_plot renders only the launch marker when
-        # window.state.simulation_result is None.
+        # Clear stale data from the previous run.
+        self._nominal_payload                 = None
         self._window.state.simulation_result = None
         self._window.update_map_plot()
 
@@ -284,23 +290,27 @@ class SimController(QObject):
         main thread via Qt's automatic queued connection (different QThread
         affinity), so this slot always executes on the GUI thread.
         """
-        # Populate window state BEFORE firing nominal_result.
-        # nominal_result.setter emits nominal_needs_redraw → update_profile_plot,
-        # which reads window.state.simulation_result.  Without this write the
-        # method finds None and draws the "Run a simulation" placeholder instead
-        # of the actual Stage-1 trajectory.
-        # _adapt_for_window handles missing scatter/ellipse keys gracefully (→ []).
-        self._window.state.simulation_result = self._adapt_for_window(payload)
+        # Populate window state with the rich nominal payload BEFORE firing
+        # nominal_result.  nominal_result.setter emits nominal_needs_redraw →
+        # update_profile_plot, which reads window.state.simulation_result.
+        # _adapt_nominal_for_window preserves all original keys (phases, events,
+        # wind_nodes, …) so _draw_real_result gets full phase-colour data.
+        self._window.state.simulation_result = (
+            self._adapt_nominal_for_window(payload))
 
-        # Setting nominal_result fires both nominal_result_changed and
+        # Setting nominal_result fires nominal_result_changed and
         # nominal_needs_redraw; the latter triggers update_profile_plot.
         self._state.nominal_result = payload
+        self._nominal_payload      = payload
 
-        # Populate all 5 altitude wind-history deques with the nominal snapshot.
-        # wind_nodes[0] = 3 m (anemometer), wind_nodes[1:] = 10–600 m (API).
+        # Populate all 5 altitude wind-history deques with the nominal snapshot
+        # and immediately refresh the Current Wind Speed table with the
+        # instantaneous values that were just sampled from the simulation wind
+        # profile — one call covers all 5 altitudes at once.
         wind_nodes = payload.get("wind_nodes", [])
         if wind_nodes:
             self._state.append_wind_nodes(wind_nodes)
+            self._window._update_wind_table(nodes=wind_nodes)
 
         apogee = payload.get("apogee_m", 0.0)
         tof    = payload.get("hang_time", 0.0)
@@ -366,6 +376,13 @@ class SimController(QObject):
         self._window.map_widget.update_landing(land_lat, land_lon)
 
         # ── Populate window state FIRST ────────────────────────────────────────
+        # Carry phases/events from the nominal payload into the final result so
+        # the phase-coloured 3-D trajectory persists after MC finishes.
+        if self._nominal_payload:
+            result = dict(result)
+            result["phases"] = self._nominal_payload.get("phases")
+            result["events"] = self._nominal_payload.get("events")
+
         # simulation_result_changed (fired on the next line) triggers
         # update_map_plot via the __init__ connection.  update_map_plot reads
         # from window.state, so that write must precede the signal.
@@ -428,7 +445,11 @@ class SimController(QObject):
 
     @Slot(str)
     def _on_worker_status(self, msg: str) -> None:
+        # Update the main status bar (colour-coded amber for in-progress stages).
         self._window.set_status(msg, "#f9e2af")
+        # Mirror the same label onto the progress bar format string so the
+        # "Simulating..." / "Monte Carlo..." text appears next to the bar value.
+        self._window.set_progress(self._state.progress_percentage, msg)
 
     # ── Phase 2 tolerance slots ────────────────────────────────────────────────
 
@@ -765,6 +786,27 @@ class SimController(QObject):
             "land_x":       float(result.get("impact_x", 0.0)),
             "land_y":       float(result.get("impact_y", 0.0)),
             "cep_ellipses": cep_ellipses,
+        })
+        return adapted
+
+    @staticmethod
+    def _adapt_nominal_for_window(payload: dict) -> dict:
+        """Adapt a sig_nominal_done payload so AppWindow._draw_real_result can render it.
+
+        Translates ``x_vals / y_vals / z_vals`` → ``trajectory_x/y/z`` and
+        fills in empty MC arrays.  All original keys (phases, events,
+        wind_nodes, …) are preserved so _draw_real_result gets full phase data.
+        """
+        adapted = dict(payload)
+        adapted.update({
+            "trajectory_x": [float(v) for v in payload.get("x_vals", [])],
+            "trajectory_y": [float(v) for v in payload.get("y_vals", [])],
+            "trajectory_z": [float(v) for v in payload.get("z_vals", [])],
+            "mc_scatter_x": [],
+            "mc_scatter_y": [],
+            "land_x":       float(payload.get("impact_x", 0.0)),
+            "land_y":       float(payload.get("impact_y", 0.0)),
+            "cep_ellipses": [],
         })
         return adapted
 
