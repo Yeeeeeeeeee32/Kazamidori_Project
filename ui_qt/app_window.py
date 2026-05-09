@@ -30,7 +30,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.patches import Ellipse as MplEllipse
 
-from PySide6.QtCore import Qt, QSize, QObject, Signal, QTimer
+from PySide6.QtCore import Qt, QSize, QObject, Signal, Slot, QTimer
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
@@ -410,6 +410,108 @@ class AdvancedSettingsDialog(QDialog):
         self.reject()
 
 
+# ── Manual rocket geometry dialog ─────────────────────────────────────────────
+
+class ManualSetupDialog(QDialog):
+    """
+    Modal dialog for manually entering all 12 rocket airframe geometry parameters.
+
+    Spinbox widgets are public attributes; AppWindow exposes them as proxy
+    attributes so SimController._wire_airframe_spinboxes() requires zero changes.
+
+    The Load JSON / Save JSON buttons emit signals that AppWindow forwards to the
+    controller — no file I/O occurs inside the dialog itself.
+    """
+
+    sig_load_json = Signal()   # forwarded → AppWindow.sig_load_rocket_json_clicked
+    sig_save_json = Signal()   # forwarded → AppWindow.sig_save_rocket_json_clicked
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Manual Rocket Configuration")
+        self.setMinimumWidth(440)
+        self.setModal(True)
+        self._build()
+
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 10)
+
+        # ── Scrollable airframe form ──────────────────────────────────────────
+        inner  = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(0, 0, 0, 0)
+        inner_lay.setSpacing(6)
+
+        grp = QGroupBox("Airframe  (m · kg · s  from nose tip)")
+        frm = QFormLayout(grp)
+        frm.setSpacing(5)
+        frm.setContentsMargins(10, 10, 10, 8)
+
+        def _dsb(hi, dec, step, suffix):
+            sb = QDoubleSpinBox()
+            sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
+            sb.setRange(-9999.0, hi)
+            sb.setSpecialValueText("")
+            sb.setValue(-9999.0)
+            sb.wheelEvent = lambda event: event.ignore()
+            return sb
+
+        self.af_mass_input      = _dsb(50.0, 4, 0.001, " kg")
+        self.af_cg_input        = _dsb( 5.0, 3, 0.001, " m")
+        self.af_len_input       = _dsb( 5.0, 3, 0.001, " m")
+        self.af_radius_input    = _dsb( 0.5, 4, 0.001, " m")
+        self.af_nose_input      = _dsb( 2.0, 3, 0.001, " m")
+        self.af_finroot_input   = _dsb( 1.0, 3, 0.001, " m")
+        self.af_fintip_input    = _dsb( 1.0, 3, 0.001, " m")
+        self.af_finspan_input   = _dsb( 1.0, 3, 0.001, " m")
+        self.af_finpos_input    = _dsb( 5.0, 3, 0.001, " m")
+        self.af_motorpos_input  = _dsb( 5.0, 3, 0.001, " m")
+        self.af_motormass_input = _dsb( 5.0, 4, 0.001, " kg")
+        self.af_backfire_input  = _dsb(10.0, 2, 0.1,   " s")
+
+        frm.addRow("Mass [kg]:",           self.af_mass_input)
+        frm.addRow("CG from Nose [m]:",    self.af_cg_input)
+        frm.addRow("Length [m]:",          self.af_len_input)
+        frm.addRow("Body Radius [m]:",     self.af_radius_input)
+        frm.addRow("Nose Length [m]:",     self.af_nose_input)
+        frm.addRow("Fin Root Chord [m]:",  self.af_finroot_input)
+        frm.addRow("Fin Tip Chord [m]:",   self.af_fintip_input)
+        frm.addRow("Fin Semi-Span [m]:",   self.af_finspan_input)
+        frm.addRow("Fin LE Position [m]:", self.af_finpos_input)
+        frm.addRow("Motor CG Pos. [m]:",   self.af_motorpos_input)
+        frm.addRow("Motor Dry Mass [kg]:", self.af_motormass_input)
+        frm.addRow("Backfire Delay [s]:",  self.af_backfire_input)
+
+        inner_lay.addWidget(grp)
+
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sa.setFrameShape(QFrame.Shape.NoFrame)
+        sa.setWidget(inner)
+
+        # ── Load / Save JSON buttons ──────────────────────────────────────────
+        btn_load = QPushButton("📂  Load JSON (rocket.json)")
+        btn_save = QPushButton("💾  Save JSON")
+        btn_load.clicked.connect(self.sig_load_json.emit)
+        btn_save.clicked.connect(self.sig_save_json.emit)
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(btn_load)
+        btn_row.addWidget(btn_save)
+
+        # ── Close ─────────────────────────────────────────────────────────────
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(self.reject)
+
+        root.addWidget(sa, stretch=1)
+        root.addLayout(btn_row)
+        root.addWidget(btns)
+
+        self.setMinimumHeight(500)
+
+
 # ── Matplotlib canvas wrapper ─────────────────────────────────────────────────
 
 class _MplCanvas(FigureCanvasQTAgg):
@@ -542,7 +644,10 @@ class AppWindow(QMainWindow):
     state : AppState  — drives profile / map / wind canvases via needs_redraw
     """
 
-    sig_load_rocket_json_clicked = Signal()
+    sig_load_rocket_json_clicked = Signal()   # Load rocket.json (from ManualSetupDialog)
+    sig_load_rkt_clicked         = Signal()   # Load .rkt file
+    sig_load_para_json_clicked   = Signal()   # Load parachute-only JSON
+    sig_save_rocket_json_clicked = Signal()   # Export rocket.json
 
     OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
 
@@ -580,6 +685,25 @@ class AppWindow(QMainWindow):
         # Aliases used by _bind_state for the local reactive AppState
         self.wind_speed_input   = self._adv_dialog.surf_spd_input
         self.wind_dir_input     = self._adv_dialog.surf_dir_input
+
+        # Create the persistent ManualSetupDialog and expose its airframe spinboxes
+        # at window level so SimController._wire_airframe_spinboxes() can find them
+        # by attribute name without knowing they live inside a dialog.
+        self._manual_dialog = ManualSetupDialog(self)
+        self._manual_dialog.sig_load_json.connect(self._on_load_airframe_json)
+        self._manual_dialog.sig_save_json.connect(self.sig_save_rocket_json_clicked.emit)
+        self.af_mass_input      = self._manual_dialog.af_mass_input
+        self.af_cg_input        = self._manual_dialog.af_cg_input
+        self.af_len_input       = self._manual_dialog.af_len_input
+        self.af_radius_input    = self._manual_dialog.af_radius_input
+        self.af_nose_input      = self._manual_dialog.af_nose_input
+        self.af_finroot_input   = self._manual_dialog.af_finroot_input
+        self.af_fintip_input    = self._manual_dialog.af_fintip_input
+        self.af_finspan_input   = self._manual_dialog.af_finspan_input
+        self.af_finpos_input    = self._manual_dialog.af_finpos_input
+        self.af_motorpos_input  = self._manual_dialog.af_motorpos_input
+        self.af_motormass_input = self._manual_dialog.af_motormass_input
+        self.af_backfire_input  = self._manual_dialog.af_backfire_input
 
         self._setup_splitter()
         self._bind_state()
@@ -908,9 +1032,20 @@ class AppWindow(QMainWindow):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
 
-        # ── Load buttons ──────────────────────────────────────────────────────
-        btn_json  = QPushButton("📂  Load Rocket JSON", w)
-        btn_json.clicked.connect(self._on_load_airframe_json)
+        # ── Model loading buttons ─────────────────────────────────────────────
+        btn_rkt = QPushButton("📂  Load .rkt File", w)
+        btn_rkt.setToolTip("Load an OpenRocket .rkt file")
+        btn_rkt.clicked.connect(self.sig_load_rkt_clicked.emit)
+
+        self.rkt_label = QLabel("(no .rkt loaded)", w)
+        self.rkt_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.rkt_label.setStyleSheet(
+            "color: #f9a86b; font-style: italic; font-size: 8pt; padding: 2px 4px;")
+        self.rkt_label.setWordWrap(True)
+
+        btn_manual = QPushButton("⚙  Manual Config…", w)
+        btn_manual.setToolTip("Manually enter all rocket geometry parameters")
+        btn_manual.clicked.connect(self._on_manual_config)
 
         btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
         btn_motor.clicked.connect(self._on_load_motor)
@@ -944,76 +1079,40 @@ class AppWindow(QMainWindow):
         grp_motor_lay.addRow("Burn Time:",     self.lbl_burn_time)
         grp_motor_lay.addRow("Total Impulse:", self.lbl_total_impulse)
 
-        # ── Airframe parameters (12 fields, SI: m · kg · s) ─────────────────
-        grp_af     = QGroupBox("Airframe  (m · kg · s  from nose tip)", w)
-        frm        = QFormLayout(grp_af)
-        frm.setSpacing(5)
-        frm.setContentsMargins(10, 10, 10, 8)
-
-        def _dsb(_lo, hi, _val, dec, step, suffix):
-            sb = QDoubleSpinBox(grp_af)
-            sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
-            sb.setRange(-9999.0, hi)
-            sb.setSpecialValueText("")  # blank until the operator enters a value
-            sb.setValue(-9999.0)
-            sb.wheelEvent = lambda event: event.ignore()
-            return sb
-
-        # Ranges cover typical small model rockets (0.05–5 kg, 0.1–3 m)
-        self.af_mass_input      = _dsb(0.001,  50.0,  0.087, 4, 0.001, " kg")
-        self.af_cg_input        = _dsb(0.0,     5.0,  0.210, 3, 0.001, " m")
-        self.af_len_input       = _dsb(0.01,    5.0,  0.383, 3, 0.001, " m")
-        self.af_radius_input    = _dsb(0.001,   0.5,  0.015, 4, 0.001, " m")
-        self.af_nose_input      = _dsb(0.01,    2.0,  0.080, 3, 0.001, " m")
-        self.af_finroot_input   = _dsb(0.001,   1.0,  0.040, 3, 0.001, " m")
-        self.af_fintip_input    = _dsb(0.001,   1.0,  0.020, 3, 0.001, " m")
-        self.af_finspan_input   = _dsb(0.001,   1.0,  0.030, 3, 0.001, " m")
-        self.af_finpos_input    = _dsb(0.0,     5.0,  0.350, 3, 0.001, " m")
-        self.af_motorpos_input  = _dsb(0.0,     5.0,  0.380, 3, 0.001, " m")
-        self.af_motormass_input = _dsb(0.0,     5.0,  0.015, 4, 0.001, " kg")
-        self.af_backfire_input  = _dsb(0.0,    10.0,  4.0,   2, 0.1,   " s")
-
-        frm.addRow("Mass [kg]:",           self.af_mass_input)
-        frm.addRow("CG from Nose [m]:",    self.af_cg_input)
-        frm.addRow("Length [m]:",          self.af_len_input)
-        frm.addRow("Body Radius [m]:",     self.af_radius_input)
-        frm.addRow("Nose Length [m]:",     self.af_nose_input)
-        frm.addRow("Fin Root Chord [m]:",  self.af_finroot_input)
-        frm.addRow("Fin Tip Chord [m]:",   self.af_fintip_input)
-        frm.addRow("Fin Semi-Span [m]:",   self.af_finspan_input)
-        frm.addRow("Fin LE Position [m]:", self.af_finpos_input)
-        frm.addRow("Motor CG Pos. [m]:",   self.af_motorpos_input)
-        frm.addRow("Motor Dry Mass [kg]:", self.af_motormass_input)
-        frm.addRow("Backfire Delay [s]:",  self.af_backfire_input)
-
-        # ── Parachute parameters ──────────────────────────────────────────────
-        grp_para     = QGroupBox("Parachute", w)
+        # ── Recovery / Parachute parameters ──────────────────────────────────
+        grp_para     = QGroupBox("Recovery / Parachute", w)
         frm_para     = QFormLayout(grp_para)
         frm_para.setSpacing(5)
         frm_para.setContentsMargins(10, 10, 10, 8)
 
-        def _psb(_lo, hi, _val, dec, step, suffix):
+        def _psb(hi, dec, step, suffix):
             sb = QDoubleSpinBox(grp_para)
             sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
             sb.setRange(-9999.0, hi)
-            sb.setSpecialValueText("")  # blank until the operator enters a value
+            sb.setSpecialValueText("")
             sb.setValue(-9999.0)
             sb.wheelEvent = lambda event: event.ignore()
             return sb
 
-        self.para_cd_input   = _psb(0.10,  2.00,  0.80, 2, 0.01,  "")
-        self.para_area_input = _psb(0.001, 10.0,  0.126, 4, 0.001, " m²")
-        self.para_lag_input  = _psb(0.0,  30.0,   0.5,  2, 0.1,   " s")
+        self.para_cd_input   = _psb(2.00,  2, 0.01,  "")
+        self.para_area_input = _psb(10.0,  4, 0.001, " m²")
+        self.para_lag_input  = _psb(30.0,  2, 0.1,   " s")
 
-        frm_para.addRow("Drag Coeff. Cd:",    self.para_cd_input)
-        frm_para.addRow("Canopy Area [m²]:",  self.para_area_input)
+        frm_para.addRow("Drag Coeff. Cd:",     self.para_cd_input)
+        frm_para.addRow("Canopy Area [m²]:",   self.para_area_input)
         frm_para.addRow("Deployment Lag [s]:", self.para_lag_input)
 
-        lay.addWidget(btn_json)
+        btn_para_json = QPushButton("📂  Load Parachute JSON", w)
+        btn_para_json.setToolTip("Load a parachute-only JSON config file")
+        btn_para_json.clicked.connect(self.sig_load_para_json_clicked.emit)
+        frm_para.addRow(btn_para_json)
+
+        lay.addWidget(btn_rkt)
+        lay.addWidget(self.rkt_label)
+        lay.addWidget(btn_manual)
         lay.addWidget(btn_motor)
         lay.addWidget(self.motor_label)
         lay.addWidget(grp_motor)
-        lay.addWidget(grp_af)
         lay.addWidget(grp_para)
 
         sa = QScrollArea()
@@ -2037,6 +2136,10 @@ class AppWindow(QMainWindow):
         """Emit sig_load_rocket_json_clicked so external consumers can handle file I/O."""
         self.sig_load_rocket_json_clicked.emit()
 
+    def _on_manual_config(self) -> None:
+        """Open the ManualSetupDialog modally."""
+        self._manual_dialog.exec()
+
     def _on_run(self) -> None:
         self.set_status("Simulation running…", "#f9e2af")
         self._progress.setFormat("Simulating…"); self._progress.setValue(30)
@@ -2130,6 +2233,11 @@ class AppWindow(QMainWindow):
             "Both UIs share the same core/ simulation engine.")
 
     # ── Public API ─────────────────────────────────────────────────────────────
+
+    @Slot(str)
+    def show_error_message(self, message: str) -> None:
+        """Display a critical error dialog. Called by the Controller on file-parse failures."""
+        QMessageBox.critical(self, "Error", message)
 
     def set_status(self, msg: str, color: Optional[str] = None) -> None:
         self._status_label.setText(msg)

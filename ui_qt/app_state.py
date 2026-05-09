@@ -171,6 +171,11 @@ class AppState(QObject):
     #           "burn_time": float, "curve_data": list}
     engine_loaded = Signal(dict)
 
+    # ── Moment of Inertia (from .rkt parser) ──────────────────────────────────
+    # Emitted by set_moi() after an .rkt file is parsed.
+    # Carries (Ixx, Iyy, Izz) in kg·m² — roll, pitch, yaw.
+    moi_updated = Signal(float, float, float)
+
     # ── Launch settings ────────────────────────────────────────────────────────
     launch_angle_changed = Signal(float)   # elevation angle (degrees)
     launch_rail_changed  = Signal(float)   # rail length (m)
@@ -269,6 +274,12 @@ class AppState(QObject):
         self._wind_uncertainty_display = _ff("wind_uncertainty")
         # Stores the raw MC scatter as a numpy array; None until first simulation.
         self._cached_mc_scatter        = None
+
+        # Moment of Inertia (kg·m²) — populated by set_moi() after .rkt parsing.
+        # Zero until an .rkt file is loaded; not required for the RUN interlock.
+        self._moi_roll:  float = 0.0   # Ixx — about longitudinal axis
+        self._moi_pitch: float = 0.0   # Iyy — about lateral Y axis
+        self._moi_yaw:   float = 0.0   # Izz — about lateral Z axis
 
         # Phase B wind baseline — locked after a successful Phase A run.
         # None until set_wind_lock() is called (CEP <= target_radius).
@@ -381,6 +392,35 @@ class AppState(QObject):
         if ready != self._is_ready:
             self._is_ready = ready
             self.sig_ready_state_changed.emit(ready)
+
+    # ── Moment of Inertia ─────────────────────────────────────────────────────
+
+    def set_moi(self, ixx: float, iyy: float, izz: float) -> None:
+        """Store system MoI (kg·m²) and broadcast moi_updated signal.
+
+        Called by the controller after a successful .rkt parse.  The three
+        values correspond to roll (Ixx), pitch (Iyy), and yaw (Izz) moments
+        about the system CG.
+        """
+        self._moi_roll  = float(ixx)
+        self._moi_pitch = float(iyy)
+        self._moi_yaw   = float(izz)
+        self.moi_updated.emit(self._moi_roll, self._moi_pitch, self._moi_yaw)
+
+    @property
+    def moi_roll(self) -> float:
+        """Roll moment of inertia Ixx about the longitudinal axis (kg·m²)."""
+        return self._moi_roll
+
+    @property
+    def moi_pitch(self) -> float:
+        """Pitch moment of inertia Iyy about the lateral Y axis (kg·m²)."""
+        return self._moi_pitch
+
+    @property
+    def moi_yaw(self) -> float:
+        """Yaw moment of inertia Izz about the lateral Z axis (kg·m²)."""
+        return self._moi_yaw
 
     # ── Simulation configuration ───────────────────────────────────────────────
 

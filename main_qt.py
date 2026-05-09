@@ -36,7 +36,12 @@ from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow, GLOBAL_QSS
 from ui_qt.workers import SimulationWorker
 from core.monte_carlo  import compute_cep_ellipse
-from utils.data_loader import RocketConfigError, load_rocket_config
+from utils.data_loader import (
+    RocketConfigError,
+    load_rocket_config,
+    parse_parachute_json,
+    parse_rkt_file,
+)
 
 DEFAULT_CONFIG: dict = {
     "wind_uncertainty":   0.20,
@@ -165,6 +170,16 @@ class SimController(QObject):
         _json_sig = getattr(window, 'sig_load_rocket_json_clicked', None)
         if _json_sig is not None:
             _json_sig.connect(self._on_load_rocket_json)
+
+        # ── Load .rkt (RockSim) button → controller ────────────────────────────
+        _rkt_sig = getattr(window, 'sig_load_rkt_clicked', None)
+        if _rkt_sig is not None:
+            _rkt_sig.connect(self._on_load_rkt)
+
+        # ── Load Parachute JSON button → controller ────────────────────────────
+        _para_sig = getattr(window, 'sig_load_para_json_clicked', None)
+        if _para_sig is not None:
+            _para_sig.connect(self._on_load_para_json)
 
         # ── Advanced Settings button → controller-managed dialog ───────────────
         # Reconnect from AppWindow's bare exec() stub to the controller's
@@ -817,6 +832,146 @@ class SimController(QObject):
             f"Length {af['length']:.3f} m  ·  "
             f"Chute {par['area']:.4f} m²  ·  "
             f"Cd {par['cd']:.2f}",
+            "#a6e3a1",
+        )
+
+    # ── RockSim .rkt file loader ──────────────────────────────────────────────
+
+    @Slot()
+    def _on_load_rkt(self) -> None:
+        """Open a file dialog, parse the RockSim .rkt file, push all
+        parameters (airframe geometry, parachute, MoI) into AppState.
+
+        Error handling
+        --------------
+        RocketConfigError → QMessageBox.critical (bad format / missing element)
+        Any other Exception → QMessageBox.critical + console traceback
+        Neither case crashes the application.
+        """
+        import os as _os
+        path, _ = QFileDialog.getOpenFileName(
+            self._window,
+            "Load RockSim File",
+            "",
+            "RockSim Files (*.rkt);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            cfg = parse_rkt_file(path)
+        except RocketConfigError as exc:
+            print(f"[_on_load_rkt] RocketConfigError: {exc}")
+            QMessageBox.critical(
+                self._window, "RKT File Error",
+                f"Failed to parse:\n{path}\n\n{exc}",
+            )
+            self._window.set_status(f".rkt parse failed: {exc}", "#f38ba8")
+            return
+        except Exception as exc:
+            print(f"[_on_load_rkt] Unexpected error: {type(exc).__name__}: {exc}")
+            QMessageBox.critical(
+                self._window, "RKT File Error",
+                f"Unexpected error loading:\n{path}\n\n"
+                f"{type(exc).__name__}: {exc}",
+            )
+            self._window.set_status(f".rkt load error: {exc}", "#f38ba8")
+            return
+
+        s   = self._state
+        af  = cfg["airframe"]
+        par = cfg["parachute"]
+        moi = cfg["moi"]
+
+        # ── Airframe geometry → AppState ───────────────────────────────────────
+        # Each setter emits its signal → bound spinbox updates automatically.
+        s.rocket_dry_mass = af["mass"]
+        s.rocket_cg       = af["cg"]
+        s.rocket_length   = af["length"]
+        s.rocket_diameter = af["radius"] * 2.0
+        s.nose_length     = af["nose_length"]
+        s.fin_root_chord  = af["fin_root"]
+        s.fin_tip_chord   = af["fin_tip"]
+        s.fin_span        = af["fin_span"]
+        s.fin_position    = af["fin_pos"]
+        s.motor_cg        = af["motor_pos"]
+        s.motor_dry_mass  = af["motor_dry_mass"]
+        s.backfire_delay  = af["backfire_delay"]
+
+        # ── Parachute → AppState ───────────────────────────────────────────────
+        s.parachute_cd   = par["cd"]
+        s.parachute_area = par["area"]
+        s.parachute_lag  = par["lag"]
+
+        # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
+        s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
+
+        name = _os.path.basename(path)
+        w = self._window
+        w.rkt_label.setText(name)
+        w.rkt_label.setStyleSheet(
+            "color: #a6e3a1; font-style: normal; font-size: 8pt; padding: 2px 4px;")
+        w.set_status(
+            f"RKT loaded: {name}  ·  "
+            f"Mass {af['mass']:.3f} kg  ·  "
+            f"CG {af['cg']:.3f} m  ·  "
+            f"Iyy {moi['iyy']:.4f} kg·m²",
+            "#a6e3a1",
+        )
+
+    # ── Parachute JSON loader ─────────────────────────────────────────────────
+
+    @Slot()
+    def _on_load_para_json(self) -> None:
+        """Open a file dialog, parse a Parachute JSON file, push cd/area/lag
+        into AppState.
+
+        Error handling
+        --------------
+        RocketConfigError → QMessageBox.critical (bad values)
+        Any other Exception → QMessageBox.critical + console print
+        """
+        import os as _os
+        path, _ = QFileDialog.getOpenFileName(
+            self._window,
+            "Load Parachute JSON",
+            "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            par = parse_parachute_json(path)
+        except RocketConfigError as exc:
+            print(f"[_on_load_para_json] RocketConfigError: {exc}")
+            QMessageBox.critical(
+                self._window, "Parachute JSON Error",
+                f"Failed to parse:\n{path}\n\n{exc}",
+            )
+            self._window.set_status(f"Parachute JSON failed: {exc}", "#f38ba8")
+            return
+        except Exception as exc:
+            print(f"[_on_load_para_json] Unexpected: {type(exc).__name__}: {exc}")
+            QMessageBox.critical(
+                self._window, "Parachute JSON Error",
+                f"Unexpected error:\n{path}\n\n"
+                f"{type(exc).__name__}: {exc}",
+            )
+            self._window.set_status(f"Parachute JSON error: {exc}", "#f38ba8")
+            return
+
+        s = self._state
+        s.parachute_cd   = par["cd"]
+        s.parachute_area = par["area"]
+        s.parachute_lag  = par["lag"]
+
+        name = _os.path.basename(path)
+        self._window.set_status(
+            f"Parachute loaded: {name}  ·  "
+            f"Cd {par['cd']:.2f}  ·  "
+            f"Area {par['area']:.4f} m²  ·  "
+            f"Lag {par['lag']:.2f} s",
             "#a6e3a1",
         )
 

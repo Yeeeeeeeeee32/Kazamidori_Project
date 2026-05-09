@@ -281,9 +281,9 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         radius         = max(0.001, params['radius'])
         airframe_cg    = params['airframe_cg']
         nose_len       = params['nose_len']
-        fin_root       = params['fin_root']
-        fin_tip        = params['fin_tip']
-        fin_span       = params['fin_span']
+        fin_root       = max(0.001, params['fin_root'])   # must be > 0 for RocketPy Af calc
+        fin_tip        = max(0.0,   params['fin_tip'])
+        fin_span       = max(0.001, params['fin_span'])   # must be > 0 for RocketPy AR calc
         fin_pos        = params['fin_pos']
         motor_pos      = params['motor_pos']
         motor_dry_mass = params['motor_dry_mass']
@@ -593,8 +593,12 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
             'azi':            azi,
         }
 
-    except ZeroDivisionError:
-        return {'ok': False,
-                'error': 'ZeroDivisionError (launch failure or unstable attitude)'}
+    except ZeroDivisionError as _zdx:
+        import traceback as _tb
+        _tb_str = _tb.format_exc()
+        print(f"[simulate_once] ZeroDivisionError:\n{_tb_str}", flush=True)
+        return {'ok': False, 'error': f'ZeroDivisionError: {_zdx}\n{_tb_str}'}
     except Exception as exc:
+        import traceback as _tb
+        print(f"[simulate_once] {type(exc).__name__}: {exc}\n{_tb.format_exc()}", flush=True)
         return {'ok': False, 'error': str(exc)}
