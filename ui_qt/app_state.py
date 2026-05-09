@@ -171,9 +171,18 @@ class AppState(QObject):
     #           "burn_time": float, "curve_data": list}
     engine_loaded = Signal(dict)
 
+    # ── Launch settings ────────────────────────────────────────────────────────
+    launch_angle_changed = Signal(float)   # elevation angle (degrees)
+    launch_rail_changed  = Signal(float)   # rail length (m)
+
     # ── Flight mode ────────────────────────────────────────────────────────────
     # Mission profile selected by the operator (e.g. "Altitude", "Precision").
     flight_mode_changed = Signal(str)
+
+    # ── Parameter readiness interlock ─────────────────────────────────────────
+    # Emitted True when all critical geometry + recovery parameters are non-None.
+    # The RUN button connects here to enable/disable itself without polling.
+    sig_ready_state_changed = Signal(bool)
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -181,26 +190,29 @@ class AppState(QObject):
         super().__init__(parent)
         cfg = config or {}
 
-        # Simulation configuration
-        self._wind_uncertainty   = float(cfg.get("wind_uncertainty",  0.20))
-        self._thrust_uncertainty = float(cfg.get("thrust_uncertainty", 0.05))
-        self._landing_prob       = int(cfg.get("landing_prob",         90))
-        self._mc_n_runs          = int(cfg.get("mc_n_runs",            200))
+        # Simulation configuration — None until the operator explicitly enters values.
+        # _f_int / _f_float: None when the key is absent from cfg, float/int otherwise.
+        _fi = lambda k: (int(cfg[k])   if k in cfg else None)
+        _ff = lambda k: (float(cfg[k]) if k in cfg else None)
+        self._wind_uncertainty   = _ff("wind_uncertainty")    # fractional σ, e.g. 0.20
+        self._thrust_uncertainty = _ff("thrust_uncertainty")  # fractional σ, e.g. 0.05
+        self._landing_prob       = _fi("landing_prob")        # percentile (e.g. 90)
+        self._mc_n_runs          = _fi("mc_n_runs")           # run count (e.g. 200)
 
-        # Launch site
-        self._launch_lat = float(cfg.get("launch_lat", 35.6828))
-        self._launch_lon = float(cfg.get("launch_lon", 139.7590))
+        # Launch site — must be confirmed by GPS / manual entry; no hardcoded fallback.
+        self._launch_lat = _ff("launch_lat")    # decimal degrees
+        self._launch_lon = _ff("launch_lon")    # decimal degrees
 
         # Rocket / flight parameters
-        self._mass           = float(cfg.get("mass",          0.5))
-        self._drag_coeff     = float(cfg.get("drag_coeff",    0.47))
-        self._ref_area       = float(cfg.get("ref_area",      0.007854))
-        self._target_radius  = float(cfg.get("target_radius", 25.0))
-        self._operation_mode = str(cfg.get("operation_mode",  "Precision Landing"))
+        self._mass           = _ff("mass")           # kg   (legacy scalar; geometry detail below)
+        self._drag_coeff     = _ff("drag_coeff")     # dimensionless
+        self._ref_area       = _ff("ref_area")       # m²
+        self._target_radius  = _ff("target_radius")  # m   (landing-zone radius)
+        self._operation_mode = str(cfg.get("operation_mode", "Precision Landing"))
 
-        # Simulation results
-        self._land_lat       = self._launch_lat
-        self._land_lon       = self._launch_lon
+        # Simulation results (outputs — None until first run)
+        self._land_lat       = None   # not meaningful until a simulation completes
+        self._land_lon       = None
         self._r90_radius     = 0.0
         self._has_sim_result = False
         self._phase1_result  = None
@@ -253,8 +265,8 @@ class AppState(QObject):
         # CEP probability — UI-driven percentile; changing it redraws, not re-simulates
         self._cep_probability: float = 90.0
 
-        # Overlay display parameters — drive partial redraws without re-simulation
-        self._wind_uncertainty_display = float(cfg.get("wind_uncertainty", 0.20))
+        # Overlay display parameters — mirrors wind_uncertainty; None until set
+        self._wind_uncertainty_display = _ff("wind_uncertainty")
         # Stores the raw MC scatter as a numpy array; None until first simulation.
         self._cached_mc_scatter        = None
 
@@ -275,25 +287,100 @@ class AppState(QObject):
         # MC run progress 0-100; 0 = idle / complete
         self._progress_percentage: int         = 0
 
-        # Rocket geometry parameters — MKS defaults from Rocket.json v2
-        self._rocket_dry_mass  = float(cfg.get("rocket_dry_mass",  0.0872))  # kg
-        self._rocket_cg        = float(cfg.get("rocket_cg",        0.21))    # m from nose
-        self._rocket_length    = float(cfg.get("rocket_length",    0.383))   # m
-        self._rocket_diameter  = float(cfg.get("rocket_diameter",  0.030))   # m (= 2 × 15 mm radius)
-        self._nose_length      = float(cfg.get("nose_length",      0.08))    # m
-        self._fin_root_chord   = float(cfg.get("fin_root_chord",   0.04))    # m
-        self._fin_tip_chord    = float(cfg.get("fin_tip_chord",    0.02))    # m
-        self._fin_span         = float(cfg.get("fin_span",         0.03))    # m
-        self._fin_position     = float(cfg.get("fin_position",     0.35))    # m from nose
-        self._motor_cg         = float(cfg.get("motor_cg",         0.38))    # m from nose
-        self._motor_dry_mass   = float(cfg.get("motor_dry_mass",   0.015))   # kg
-        self._parachute_cd     = float(cfg.get("parachute_cd",     0.8))     # dimensionless
-        self._parachute_area   = float(cfg.get("parachute_area",   0.126))   # m²
-        self._parachute_lag    = float(cfg.get("parachute_lag",    0.5))     # s
-        self._backfire_delay   = float(cfg.get("backfire_delay",   4.0))     # s
+        # Rocket geometry parameters — None until explicitly loaded from Rocket.json.
+        # No silent numeric defaults: the operator MUST supply all values before
+        # the RUN button becomes active (enforced by _check_readiness / interlock).
+        _f = lambda k: (float(cfg[k]) if k in cfg else None)
+        self._rocket_dry_mass  = _f("rocket_dry_mass")   # kg
+        self._rocket_cg        = _f("rocket_cg")         # m from nose
+        self._rocket_length    = _f("rocket_length")     # m
+        self._rocket_diameter  = _f("rocket_diameter")   # m (= 2 × radius)
+        self._nose_length      = _f("nose_length")       # m
+        self._fin_root_chord   = _f("fin_root_chord")    # m
+        self._fin_tip_chord    = _f("fin_tip_chord")     # m
+        self._fin_span         = _f("fin_span")          # m
+        self._fin_position     = _f("fin_position")      # m from nose
+        self._motor_cg         = _f("motor_cg")          # m from nose
+        self._motor_dry_mass   = _f("motor_dry_mass")    # kg
+        self._parachute_cd     = _f("parachute_cd")      # dimensionless
+        self._parachute_area   = _f("parachute_area")    # m²
+        self._parachute_lag    = _f("parachute_lag")     # s
+        self._backfire_delay   = _f("backfire_delay")    # s
+
+        # Launch settings — pre-filled with safe operational defaults so the
+        # RUN button interlock does NOT wait for these to be entered.
+        self._launch_angle: float = float(cfg.get("launch_angle", 85.0))  # degrees
+        self._launch_rail:  float = float(cfg.get("launch_rail",   1.0))  # m
 
         # Flight mode — mission profile selected by the operator
         self._flight_mode: str = str(cfg.get("flight_mode", "Altitude"))
+
+        # Interlock readiness flag — updated by _check_readiness() on every setter
+        self._is_ready: bool = False
+        self._check_readiness()
+
+    # ── Parameter readiness interlock ─────────────────────────────────────────
+
+    @property
+    def is_ready_to_run(self) -> bool:
+        """True when all 15 critical geometry + recovery parameters are non-None.
+
+        Motor thrust data (thrust_data, motor_burn_time) lives in
+        AppWindow._motor_thrust_data and is checked separately by the controller
+        via ``getattr(w, '_motor_thrust_data', None)``.
+        """
+        return self._is_ready
+
+    def _check_readiness(self) -> None:
+        """Re-evaluate and broadcast the parameter readiness state.
+
+        Called by every critical setter and once at the end of __init__.
+        Only emits sig_ready_state_changed when the boolean result flips,
+        preventing per-keystroke signal floods.
+
+        Required fields (19–20 total):
+          - 15 rocket geometry + recovery fields (require Rocket.json load)
+          -  2 launch-site coordinates           (require GPS / manual entry)
+          -  2 MC uncertainty params             (set by UI spinboxes)
+          -  1 landing-zone target radius        (required UNLESS Free Mode)
+
+        Motor thrust data (thrust_data, motor_burn_time) lives in
+        AppWindow._motor_thrust_data and is checked separately.
+        """
+        is_free_mode = "free" in str(self._flight_mode).lower()
+
+        ready = all(v is not None for v in (
+            # ── Rocket geometry (Rocket.json) ─────────────────────────────
+            self._rocket_dry_mass,
+            self._rocket_cg,
+            self._rocket_length,
+            self._rocket_diameter,
+            self._nose_length,
+            self._fin_root_chord,
+            self._fin_tip_chord,
+            self._fin_span,
+            self._fin_position,
+            self._motor_cg,
+            self._motor_dry_mass,
+            self._parachute_cd,
+            self._parachute_area,
+            self._parachute_lag,
+            self._backfire_delay,
+            # ── Launch site (GPS / spinbox) ───────────────────────────────
+            self._launch_lat,
+            self._launch_lon,
+            # ── Simulation uncertainty params (spinboxes) ─────────────────
+            self._wind_uncertainty,
+            self._thrust_uncertainty,
+        ))
+        # Target radius is only required outside Free Mode — the input is
+        # disabled in Free Mode so it will naturally be None.
+        if not is_free_mode:
+            ready = ready and (self._target_radius is not None)
+
+        if ready != self._is_ready:
+            self._is_ready = ready
+            self.sig_ready_state_changed.emit(ready)
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
@@ -307,6 +394,7 @@ class AppState(QObject):
         if self._wind_uncertainty != value:
             self._wind_uncertainty = value
             self.wind_uncertainty_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=thrust_uncertainty_changed)
     def thrust_uncertainty(self) -> float:
@@ -318,6 +406,7 @@ class AppState(QObject):
         if self._thrust_uncertainty != value:
             self._thrust_uncertainty = value
             self.thrust_uncertainty_changed.emit(value)
+            self._check_readiness()
 
     @Property(int, notify=landing_prob_changed)
     def landing_prob(self) -> int:
@@ -353,6 +442,7 @@ class AppState(QObject):
         if self._launch_lat != value:
             self._launch_lat = value
             self.launch_lat_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=launch_lon_changed)
     def launch_lon(self) -> float:
@@ -364,6 +454,7 @@ class AppState(QObject):
         if self._launch_lon != value:
             self._launch_lon = value
             self.launch_lon_changed.emit(value)
+            self._check_readiness()
 
     # ── Rocket / flight parameters ─────────────────────────────────────────────
 
@@ -410,6 +501,7 @@ class AppState(QObject):
         if self._target_radius != value:
             self._target_radius = value
             self.target_radius_changed.emit(value)
+            self._check_readiness()
 
     @Property(str, notify=operation_mode_changed)
     def operation_mode(self) -> str:
@@ -873,6 +965,7 @@ class AppState(QObject):
         if self._rocket_dry_mass != value:
             self._rocket_dry_mass = value
             self.rocket_dry_mass_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=rocket_cg_changed)
     def rocket_cg(self) -> float:
@@ -885,6 +978,7 @@ class AppState(QObject):
         if self._rocket_cg != value:
             self._rocket_cg = value
             self.rocket_cg_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=rocket_length_changed)
     def rocket_length(self) -> float:
@@ -897,6 +991,7 @@ class AppState(QObject):
         if self._rocket_length != value:
             self._rocket_length = value
             self.rocket_length_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=rocket_diameter_changed)
     def rocket_diameter(self) -> float:
@@ -909,6 +1004,7 @@ class AppState(QObject):
         if self._rocket_diameter != value:
             self._rocket_diameter = value
             self.rocket_diameter_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=nose_length_changed)
     def nose_length(self) -> float:
@@ -921,6 +1017,7 @@ class AppState(QObject):
         if self._nose_length != value:
             self._nose_length = value
             self.nose_length_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=fin_root_chord_changed)
     def fin_root_chord(self) -> float:
@@ -933,6 +1030,7 @@ class AppState(QObject):
         if self._fin_root_chord != value:
             self._fin_root_chord = value
             self.fin_root_chord_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=fin_tip_chord_changed)
     def fin_tip_chord(self) -> float:
@@ -945,6 +1043,7 @@ class AppState(QObject):
         if self._fin_tip_chord != value:
             self._fin_tip_chord = value
             self.fin_tip_chord_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=fin_span_changed)
     def fin_span(self) -> float:
@@ -957,6 +1056,7 @@ class AppState(QObject):
         if self._fin_span != value:
             self._fin_span = value
             self.fin_span_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=fin_position_changed)
     def fin_position(self) -> float:
@@ -969,6 +1069,7 @@ class AppState(QObject):
         if self._fin_position != value:
             self._fin_position = value
             self.fin_position_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=motor_cg_changed)
     def motor_cg(self) -> float:
@@ -981,6 +1082,7 @@ class AppState(QObject):
         if self._motor_cg != value:
             self._motor_cg = value
             self.motor_cg_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=motor_dry_mass_changed)
     def motor_dry_mass(self) -> float:
@@ -993,6 +1095,7 @@ class AppState(QObject):
         if self._motor_dry_mass != value:
             self._motor_dry_mass = value
             self.motor_dry_mass_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=parachute_cd_changed)
     def parachute_cd(self) -> float:
@@ -1005,6 +1108,7 @@ class AppState(QObject):
         if self._parachute_cd != value:
             self._parachute_cd = value
             self.parachute_cd_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=parachute_area_changed)
     def parachute_area(self) -> float:
@@ -1017,6 +1121,7 @@ class AppState(QObject):
         if self._parachute_area != value:
             self._parachute_area = value
             self.parachute_area_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=parachute_lag_changed)
     def parachute_lag(self) -> float:
@@ -1029,6 +1134,7 @@ class AppState(QObject):
         if self._parachute_lag != value:
             self._parachute_lag = value
             self.parachute_lag_changed.emit(value)
+            self._check_readiness()
 
     @Property(float, notify=backfire_delay_changed)
     def backfire_delay(self) -> float:
@@ -1041,6 +1147,7 @@ class AppState(QObject):
         if self._backfire_delay != value:
             self._backfire_delay = value
             self.backfire_delay_changed.emit(value)
+            self._check_readiness()
 
     # ── Engine / motor loader ─────────────────────────────────────────────────
 
@@ -1072,6 +1179,32 @@ class AppState(QObject):
         }
         self.engine_loaded.emit(payload)
 
+    # ── Launch settings ────────────────────────────────────────────────────────
+
+    @Property(float, notify=launch_angle_changed)
+    def launch_angle(self) -> float:
+        """Rail elevation angle in degrees (default 85.0; range 0–90)."""
+        return self._launch_angle
+
+    @launch_angle.setter
+    def launch_angle(self, value: float) -> None:
+        value = float(value)
+        if self._launch_angle != value:
+            self._launch_angle = value
+            self.launch_angle_changed.emit(value)
+
+    @Property(float, notify=launch_rail_changed)
+    def launch_rail(self) -> float:
+        """Launch rail length in metres (default 1.0)."""
+        return self._launch_rail
+
+    @launch_rail.setter
+    def launch_rail(self, value: float) -> None:
+        value = float(value)
+        if self._launch_rail != value:
+            self._launch_rail = value
+            self.launch_rail_changed.emit(value)
+
     # ── Flight mode ────────────────────────────────────────────────────────────
 
     @Property(str, notify=flight_mode_changed)
@@ -1085,6 +1218,7 @@ class AppState(QObject):
         if self._flight_mode != value:
             self._flight_mode = value
             self.flight_mode_changed.emit(value)
+            self._check_readiness()
 
     # ── Two-stage rendering ────────────────────────────────────────────────────
 

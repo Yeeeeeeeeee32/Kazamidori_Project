@@ -123,6 +123,7 @@ class SimulationWorker(QThread):
     sig_progress_updated = Signal(int, int)   # Stage 2: (current_iteration, total_iterations)
     sig_mc_done          = Signal(dict)       # Stage 2: emitted after MC loop + statistics
     sig_status_text      = Signal(str)        # Human-readable stage label for the status bar
+    sig_early_warning    = Signal(str)        # Nominal pre-eval: emitted before MC if out of target
 
     def __init__(self, params: dict[str, Any], parent=None) -> None:
         super().__init__(parent)
@@ -194,6 +195,28 @@ class SimulationWorker(QThread):
             # the full MC loop finishes — defeating the two-stage UX.
             # msleep(0) releases the GIL and lets the event queue flush.
             QThread.msleep(0)
+
+            # ── Nominal pre-evaluation — early NO-GO warning ───────────────────
+            # Compare the deterministic nominal landing distance against
+            # target_radius so the operator gets an immediate red flag before
+            # the full MC scatter is even started.
+            # IMPORTANT: this block NEVER returns — the MC loop is always
+            # executed so the operator has complete statistical evidence even
+            # for a NO-GO result (forced continuation per mission requirement).
+            # In Free Mode the rocket may land anywhere — NO-GO is meaningless.
+            # Also skip if target_radius was not provided (None).
+            _is_free  = bool(p.get("is_free_mode", False))
+            _target_r = p.get("target_radius")
+            if not _is_free and _target_r is not None:
+                _nom_dist = math.hypot(
+                    float(nom_pkg["impact_x"]),
+                    float(nom_pkg["impact_y"]),
+                )
+                if _nom_dist > float(_target_r):
+                    self.sig_early_warning.emit(
+                        f"NO-GO (OUT OF TARGET)  —  nominal impact "
+                        f"{_nom_dist:.0f} m  >  {float(_target_r):.0f} m radius"
+                    )
 
             if self._stop_event.is_set():
                 self.finished.emit({
@@ -394,16 +417,18 @@ class SimulationWorker(QThread):
                 "(No motor loaded: thrust_data is empty. "
                 "Load a thrust-curve file before running.)"
             )
-        if "motor_burn_time" not in p:
+        if not p.get("motor_burn_time"):
             raise RuntimeError(
                 "motor_burn_time が指定されていません。"
                 "モーターファイルを再読み込みしてください。"
             )
 
         # Base: airframe defaults; caller values override on a per-key basis.
+        # None values are skipped — they preserve the valid _DEFAULT_AIRFRAME value
+        # rather than clobbering it (AppState returns None for fields not yet set).
         params = dict(_DEFAULT_AIRFRAME)
         for key, val in p.items():
-            if key not in ("wind_u_prof", "wind_v_prof"):
+            if key not in ("wind_u_prof", "wind_v_prof") and val is not None:
                 params[key] = val
         # Wind profiles always come from the freshly built profile, not p
         params["wind_u_prof"] = u_prof

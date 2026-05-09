@@ -35,6 +35,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, Q
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow, GLOBAL_QSS
 from ui_qt.workers import SimulationWorker
+from core.monte_carlo  import compute_cep_ellipse
 from utils.data_loader import RocketConfigError, load_rocket_config
 
 DEFAULT_CONFIG: dict = {
@@ -76,6 +77,13 @@ class SimController(QObject):
         self._nominal_payload: dict | None    = None
 
         self._rewire_buttons()
+
+        # ── Parameter readiness interlock ──────────────────────────────────────
+        # RUN buttons start disabled; they unlock only after all 15 critical
+        # geometry parameters become non-None (i.e. after Rocket.json is loaded).
+        # sig_ready_state_changed fires True/False whenever readiness flips.
+        self._set_run_buttons_enabled(state.is_ready_to_run)
+        state.sig_ready_state_changed.connect(self._set_run_buttons_enabled)
 
         # ── Cross-state signal bridge ──────────────────────────────────────────
         # When a simulation result lands in the shared AppState, automatically
@@ -248,6 +256,20 @@ class SimController(QObject):
             )
             return
 
+        # ── Launch site entry check ────────────────────────────────────────────
+        _BLANK = -9999.0
+        _unset = []
+        if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
+        if self._window.lon_input.value()  == _BLANK: _unset.append("Longitude")
+        if self._window.azim_input.value() == _BLANK: _unset.append("Rail Azimuth")
+        if _unset:
+            QMessageBox.warning(
+                self._window,
+                "Launch Settings Incomplete",
+                "Please enter a value for:\n  • " + "\n  • ".join(_unset),
+            )
+            return
+
         self._state.mc_running = True
         self._state.simulation_started.emit()
         self._state.is_calculating = True
@@ -271,6 +293,7 @@ class SimController(QObject):
         self._worker.finished.connect(self._on_mc_done)
         self._worker.error.connect(self._on_error)
         self._worker.sig_status_text.connect(self._on_worker_status)
+        self._worker.sig_early_warning.connect(self._on_early_warning)
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
@@ -330,6 +353,21 @@ class SimController(QObject):
         # nominal_needs_redraw; the latter triggers update_profile_plot.
         self._state.nominal_result = payload
         self._nominal_payload      = payload
+
+        # Early warning: update GO/NO-GO indicator immediately after nominal run,
+        # before the MC loop starts, so the operator never waits blindly.
+        _off_e    = float(payload.get("impact_x", 0.0))
+        _off_n    = float(payload.get("impact_y", 0.0))
+        _nom_dist = math.hypot(_off_e, _off_n)
+        _target_r = self._state.target_radius
+        if _nom_dist > _target_r:
+            self._window.update_status_indicator(
+                f"⚠️  NO-GO — Nominal {_nom_dist:.0f} m > Target {_target_r:.0f} m  |  MC running…"
+            )
+        else:
+            self._window.update_status_indicator(
+                f"⏳  CALCULATING — Nominal {_nom_dist:.0f} m / {_target_r:.0f} m  |  MC running…"
+            )
 
         # Populate all 5 altitude wind-history deques with the nominal snapshot
         # and immediately refresh the Current Wind Speed table with the
@@ -400,6 +438,10 @@ class SimController(QObject):
         self._state.has_sim_result = True
         self._state.mc_scatter     = _scatter
         self._state.mc_ellipse     = result.get("ellipse")
+        # Cache scatter as ndarray so _on_partial_redraw can recompute the
+        # ellipse instantly when the CEP slider moves — no re-simulation needed.
+        if _scatter:
+            self._state.cached_mc_scatter = np.array(_scatter, dtype=float)
         self._state.kde_contours   = result.get("kde_contours", [])
 
         # ── Refresh AppWindow coordinate labels ────────────────────────────────
@@ -437,9 +479,13 @@ class SimController(QObject):
             mu_v = surf_spd * math.cos(math.radians(surf_dir))
             self._state.set_wind_lock(mu_u, mu_v, wind_unc)
             self._state.phase2_active = True
-            self._window.set_go_nogo(True)
+            self._window.update_status_indicator(
+                f"🟢  GO  (CEP {cep50:.0f} m ≤ {target_r:.0f} m)"
+            )
         else:
-            self._window.set_go_nogo(False)
+            self._window.update_status_indicator(
+                f"🔴  NO-GO  (CEP {cep50:.0f} m > {target_r:.0f} m)"
+            )
 
         r90    = self._state.r90_radius
         apogee = result.get("apogee_m",  0.0)
@@ -495,6 +541,15 @@ class SimController(QObject):
         self._window.set_progress(self._state.progress_percentage, msg)
 
     # ── Phase 2 tolerance slots ────────────────────────────────────────────────
+
+    @Slot(str)
+    def _on_early_warning(self, msg: str) -> None:
+        """Fires once if the nominal landing point is outside target_radius.
+
+        Displayed in red so the operator immediately sees the NO-GO state.
+        The MC loop continues regardless — the slot does NOT stop the worker.
+        """
+        self._window.set_status(msg, "#f38ba8")
 
     @Slot(str)
     def _on_tolerance_exceeded(self, msg: str) -> None:
@@ -579,10 +634,11 @@ class SimController(QObject):
             # main-window cep_prob_input widget and the Advanced Settings dialog.
             # Reading the widget directly would silently ignore Advanced Settings.
             "cep_prob":   int(s.landing_prob),
-            "launch_lat": w.lat_input.value(),
-            "launch_lon": w.lon_input.value(),
-            "elev":       w.elev_input.value(),
-            "azim":       w.azim_input.value(),
+            "launch_lat": w.lat_input.value()  if w.lat_input.value()  != -9999.0 else 35.6828,
+            "launch_lon": w.lon_input.value()  if w.lon_input.value()  != -9999.0 else 139.7590,
+            "elev":       s.launch_angle,   # degrees — AppState, default 85.0
+            "rail":       s.launch_rail,    # m       — AppState, default 1.0
+            "azim":       w.azim_input.value() if w.azim_input.value() != -9999.0 else 0.0,
             "surf_spd":   w.surf_spd_input.value(),
             "surf_dir":   w.surf_dir_input.value(),
             "up_spd":     w.up_spd_input.value(),
@@ -592,8 +648,9 @@ class SimController(QObject):
             "wind_unc":   w.wind_unc_input.value(),
             "thrust_unc": w.thrust_unc_input.value(),
             # ── Mode and gust — sourced from AppState ──────────────────────────
-            "flight_mode": s.flight_mode,
-            "gust_speed":  s.gust_speed,
+            "flight_mode":  s.flight_mode,
+            "is_free_mode": ("free" in str(s.flight_mode).lower() or "自由" in str(s.flight_mode)),
+            "gust_speed":   s.gust_speed,
             # ── Turbulence (auto-computed from 60s wind history) ───────────────
             "turb_mu":        _turb_mu,
             "turb_sigma":     _turb_sigma,
@@ -616,12 +673,13 @@ class SimController(QObject):
             "fin_pos":        s.fin_position,          # m from nose
             "motor_pos":      s.motor_cg,              # m from nose
             "motor_dry_mass": s.motor_dry_mass,        # kg
-            "body_cd":        getattr(s, "drag_coeff", 0.45),  # rocket airframe Cd
+            "body_cd":        s.drag_coeff or 0.45,          # rocket airframe Cd (None→default)
             "para_cd":        s.parachute_cd,              # parachute Cd (for CdS product)
             "para_area":      s.parachute_area,            # m²
             "para_lag":       s.parachute_lag,         # s
             "backfire_delay": s.backfire_delay,        # s
             # ── Motor thrust curve — persisted by AppWindow._on_load_motor() ──
+            "target_radius":  s.target_radius,              # m  (rmax_input spinbox)
             **({
                 "thrust_data":     w._motor_thrust_data,
                 "motor_burn_time": w._motor_burn_time,
@@ -662,8 +720,10 @@ class SimController(QObject):
             sb = getattr(w, sb_name, None)
             if sb is None:
                 return
+            # Sentinel -9999.0 means the field is blank; do not push to AppState.
             sb.valueChanged.connect(
-                lambda v, _p=prop, _f=to_si: setattr(s, _p, _f(v))
+                lambda v, _p=prop, _f=to_si:
+                    None if v == -9999.0 else setattr(s, _p, _f(v))
             )
             sig = getattr(s, f"{prop}_changed", None)
             if sig is not None:
@@ -682,6 +742,12 @@ class SimController(QObject):
         _bind("af_motorpos_input", "motor_cg",        lambda v: float(v),      lambda v: float(v))
         _bind("af_motormass_input","motor_dry_mass",  lambda v: float(v),      lambda v: float(v))
         _bind("af_backfire_input", "backfire_delay",  lambda v: float(v),      lambda v: float(v))
+        _bind("para_cd_input",     "parachute_cd",    lambda v: float(v),      lambda v: float(v))
+        _bind("para_area_input",   "parachute_area",  lambda v: float(v),      lambda v: float(v))
+        _bind("para_lag_input",    "parachute_lag",   lambda v: float(v),      lambda v: float(v))
+        # Launch geometry — pre-filled defaults (85° / 1.0 m); never use -9999.0 sentinel
+        _bind("elev_input",        "launch_angle",    lambda v: float(v),      lambda v: float(v))
+        _bind("rail_len_input",    "launch_rail",     lambda v: float(v),      lambda v: float(v))
 
     # ── Airframe JSON loader ───────────────────────────────────────────────────
 
@@ -790,15 +856,25 @@ class SimController(QObject):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return   # Cancel — snapshot already restored by dialog itself
 
-        # ── Push accepted values back to AppState ──────────────────────────────
-        s.surf_wind_speed      = dlg.surf_spd_input.value()
-        s.surf_wind_dir        = dlg.surf_dir_input.value()
-        s.upper_wind_speed     = dlg.up_spd_input.value()
-        s.upper_wind_dir       = dlg.up_dir_input.value()
-        s.landing_prob         = dlg.cep_prob_input.value()
-        s.mc_n_runs            = dlg.mc_runs_input.value()
-        s.wind_uncertainty   = dlg.wind_unc_input.value()
-        s.thrust_uncertainty = dlg.thrust_unc_input.value()
+        self._on_settings_confirmed(dlg)
+
+    def _on_settings_confirmed(self, dlg) -> None:
+        """Push accepted dialog values to AppState and trigger smart redraw.
+
+        Called after the Advanced Settings dialog is accepted.  No worker is
+        started — `_on_partial_redraw` only recomputes the CEP ellipse from the
+        already-cached MC scatter and repaints the overlay artists.
+        """
+        s = self._state
+        s.surf_wind_speed    = float(dlg.surf_spd_input.value())
+        s.surf_wind_dir      = float(dlg.surf_dir_input.value())
+        s.upper_wind_speed   = float(dlg.up_spd_input.value())
+        s.upper_wind_dir     = float(dlg.up_dir_input.value())
+        s.landing_prob       = int(dlg.cep_prob_input.value())
+        s.mc_n_runs          = int(dlg.mc_runs_input.value())
+        s.wind_uncertainty   = float(dlg.wind_unc_input.value())
+        s.thrust_uncertainty = float(dlg.thrust_unc_input.value())
+        s.cep_probability    = float(dlg.cep_prob_input.value())  # drives smart redraw
 
         self._window.set_status(
             f"Settings updated  ·  "
@@ -807,6 +883,8 @@ class SimController(QObject):
             f"Wind unc {s.wind_uncertainty:.2f}",
             "#a6adc8",
         )
+
+        self._on_partial_redraw()  # recompute ellipse + repaint, no simulation
 
     @Slot()
     def _on_wind_tick(self) -> None:
@@ -896,8 +974,31 @@ class SimController(QObject):
 
     @Slot()
     def _on_partial_redraw(self) -> None:
-        """Recompute overlays at the new cep_probability without re-simulating."""
-        self._window.update_visual_overlays(self._state)
+        """Recompute the error ellipse from cached scatter at the new probability.
+
+        Called whenever cep_probability changes (slider move).  Runs entirely
+        from cached_mc_scatter — no simulation, no Monte Carlo loop.
+
+        Only the ellipse is recalculated (numpy eigendecomposition, ~1 ms on
+        the GUI thread — safe).  KDE contours are expensive and intentionally
+        left unchanged.  The SimulationWorker is NOT started.
+        """
+        pts = self._state.cached_mc_scatter
+        ellipse_data: dict | None = None
+        if pts is not None and len(pts) >= 4:
+            prob         = self._state.cep_probability / 100.0   # 90.0 → 0.90
+            ellipse_data = compute_cep_ellipse(pts, prob)
+            self._state.mc_ellipse = ellipse_data
+            # Overwrite the ellipse in BOTH cached result dicts.  Without this,
+            # any full repaint (wind-tick → update_map_plot, or refresh_visuals)
+            # reads the stale worker-written ellipse and reverts the overlay.
+            sr = self._state.simulation_result
+            if isinstance(sr, dict):
+                sr["ellipse"] = ellipse_data
+            wsr = self._window.state.simulation_result
+            if isinstance(wsr, dict):
+                wsr["ellipse"] = ellipse_data
+        self._window.update_ellipse_layer(ellipse_data)
 
     @Slot(float)
     def _on_cep_prob_changed(self, value: float) -> None:

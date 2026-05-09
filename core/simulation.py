@@ -288,7 +288,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         motor_pos      = params['motor_pos']
         motor_dry_mass = params['motor_dry_mass']
         backfire_delay = params['backfire_delay']
-        body_cd        = params.get('body_cd', 0.45)   # rocket airframe Cd during flight
+        body_cd        = params.get('body_cd') or 0.45  # rocket airframe Cd during flight
         para_cd        = params['para_cd']             # parachute Cd (used only for CdS product)
         para_area      = params['para_area']
         para_lag       = params['para_lag']

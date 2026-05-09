@@ -21,9 +21,14 @@ run_mc_scatter(params, n_runs, wind_uncertainty, thrust_uncertainty,
     perturbed at every altitude level for each trial.
 
 compute_error_ellipse(scatter, prob_pct=90) -> dict | None
-    Fit a 2-D covariance error ellipse to the scatter.
-    Returns {'cx', 'cy', 'a', 'b', 'angle_rad'} in metres/radians,
-    or None if fewer than 4 points are available.
+    Fit a 2-D covariance error ellipse to the scatter (list-of-tuples input,
+    integer percentile).  Returns math + UI keys, or None if < 4 points.
+
+compute_cep_ellipse(points, probability=0.90) -> dict | None
+    Standalone ellipse calculator for UI-driven updates (list-of-tuples or
+    numpy input, float probability in (0, 1)).  Explicit descending eigen-sort;
+    analytic chi²(2) scale factor.  Returns safe default dict (not None) on
+    degenerate input; None only when probability is outside (0, 1).
 
 compute_cep(scatter) -> float
     Return the CEP: 50th-percentile distance from the scatter centroid.
@@ -301,6 +306,108 @@ def compute_error_ellipse(
         'width':     2.0 * a,
         'height':    2.0 * b,
         'angle_deg': math.degrees(angle_rad),
+    }
+
+
+def compute_cep_ellipse(
+    points,
+    probability: float = 0.90,
+) -> "dict[str, float] | None":
+    """Fit a covariance error ellipse to landing scatter for a given probability.
+
+    Standalone utility designed for UI-driven updates: when the operator moves
+    the CEP-probability slider, the controller calls this directly on the cached
+    scatter without re-running the physics simulation.
+
+    Accepts both a plain list of (x, y) tuples and an (N, 2) numpy array.
+
+    Scale factor
+    ------------
+    The 2-D bivariate normal containment probability ``p`` maps to axis scale
+    ``k`` via the inverse chi-squared CDF with 2 degrees of freedom:
+
+        k = sqrt(-2 × ln(1 − p))
+
+    This is the analytic formula — no lookup table, so any probability in (0, 1)
+    is supported continuously, not just discrete table values.
+
+    Args:
+        points:      Landing positions — list of (x, y) tuples or an (N, 2)
+                     float array.  Column 0 is East (m), column 1 is North (m),
+                     measured from the launch point.
+        probability: Containment probability in the open interval (0, 1).
+                     Pass 0.90 for a 90 % ellipse, 0.50 for CEP50, etc.
+                     Defaults to 0.90.
+
+    Returns:
+        dict with keys:
+            Math keys (consumed by _render_overlays):
+                cx, cy     — centroid in metres East/North from launch origin
+                a          — semi-major axis (metres)
+                b          — semi-minor axis (metres)
+                angle_rad  — major-axis angle from East axis (radians)
+            UI-ready keys (full extents, degrees):
+                x, y       — centroid (same as cx, cy)
+                width      — 2 × a  (metres)
+                height     — 2 × b  (metres)
+                angle_deg  — degrees (alias: angle)
+            Metadata:
+                probability — echo of the input probability
+        Safe default dict (all numeric fields 0) when fewer than 2 points.
+        None when probability is outside (0, 1) — caller error, not data error.
+    """
+    _zero = {
+        'cx': 0.0, 'cy': 0.0, 'a': 0.0, 'b': 0.0, 'angle_rad': 0.0,
+        'x':  0.0, 'y':  0.0,
+        'width': 0.0, 'height': 0.0,
+        'angle_deg': 0.0, 'angle': 0.0,
+        'probability': float(probability),
+    }
+
+    if probability <= 0.0 or probability >= 1.0:
+        return None
+
+    arr = np.asarray(points, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < 2:
+        return _zero
+
+    cx = float(arr[:, 0].mean())
+    cy = float(arr[:, 1].mean())
+
+    # Need at least 2 distinct rows for np.cov to return a 2×2 matrix.
+    if arr.shape[0] < 3:
+        return dict(_zero, cx=cx, cy=cy, x=cx, y=cy)
+
+    cov = np.cov(arr[:, 0], arr[:, 1])
+    # Tiny regularisation: prevents singular matrix for perfectly collinear
+    # scatter (e.g. zero crosswind in a pure-headwind simulation).
+    cov = cov + np.eye(2) * 1e-9
+
+    eigvals, eigvecs = np.linalg.eigh(cov)   # returns ascending eigenvalue order
+
+    # Explicit descending sort so major axis is always index 0.
+    order   = eigvals.argsort()[::-1]
+    eigvals = eigvals[order]
+    eigvecs = eigvecs[:, order]
+
+    # Analytic chi²(2, p) inverse CDF — scale factor for each axis.
+    k = float(np.sqrt(-2.0 * np.log(1.0 - probability)))
+
+    a         = k * float(np.sqrt(max(float(eigvals[0]), 0.0)))   # semi-major
+    b         = k * float(np.sqrt(max(float(eigvals[1]), 0.0)))   # semi-minor
+    angle_rad = float(np.arctan2(float(eigvecs[1, 0]), float(eigvecs[0, 0])))
+    angle_deg = float(np.degrees(angle_rad))
+
+    return {
+        # Math keys — consumed by _render_overlays
+        'cx': cx, 'cy': cy, 'a': a, 'b': b, 'angle_rad': angle_rad,
+        # UI-ready keys — full extents, degrees
+        'x': cx, 'y': cy,
+        'width':       2.0 * a,
+        'height':      2.0 * b,
+        'angle_deg':   angle_deg,
+        'angle':       angle_deg,   # alias for Folium/external consumers
+        'probability': probability,
     }
 
 

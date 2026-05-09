@@ -309,20 +309,24 @@ class AdvancedSettingsDialog(QDialog):
         self.surf_spd_input = QDoubleSpinBox()
         self.surf_spd_input.setRange(0, 50); self.surf_spd_input.setDecimals(1)
         self.surf_spd_input.setValue(4.0);   self.surf_spd_input.setSuffix(" m/s")
+        self.surf_spd_input.wheelEvent = lambda event: event.ignore()
 
         self.surf_dir_input = QDoubleSpinBox()
         self.surf_dir_input.setRange(0, 360); self.surf_dir_input.setDecimals(1)
         self.surf_dir_input.setValue(100.0);  self.surf_dir_input.setSuffix("°")
         self.surf_dir_input.setWrapping(True)
+        self.surf_dir_input.wheelEvent = lambda event: event.ignore()
 
         self.up_spd_input = QDoubleSpinBox()
         self.up_spd_input.setRange(0, 100); self.up_spd_input.setDecimals(1)
         self.up_spd_input.setValue(8.0);    self.up_spd_input.setSuffix(" m/s")
+        self.up_spd_input.wheelEvent = lambda event: event.ignore()
 
         self.up_dir_input = QDoubleSpinBox()
         self.up_dir_input.setRange(0, 360); self.up_dir_input.setDecimals(1)
         self.up_dir_input.setValue(90.0);   self.up_dir_input.setSuffix("°")
         self.up_dir_input.setWrapping(True)
+        self.up_dir_input.wheelEvent = lambda event: event.ignore()
 
         frm.addRow("Surface Wind Speed (0 m):",   self.surf_spd_input)
         frm.addRow("Surface Wind From  (0 m):",   self.surf_dir_input)
@@ -338,20 +342,24 @@ class AdvancedSettingsDialog(QDialog):
         self.cep_prob_input = QSpinBox()
         self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
         self.cep_prob_input.setSuffix(" %")
+        self.cep_prob_input.wheelEvent = lambda event: event.ignore()
 
         self.mc_runs_input = QSpinBox()
         self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
         self.mc_runs_input.setSingleStep(50)
+        self.mc_runs_input.wheelEvent = lambda event: event.ignore()
 
         self.wind_unc_input = QDoubleSpinBox()
         self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
         self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
         self.wind_unc_input.setSuffix("  (±ratio)")
+        self.wind_unc_input.wheelEvent = lambda event: event.ignore()
 
         self.thrust_unc_input = QDoubleSpinBox()
         self.thrust_unc_input.setRange(0, 1);  self.thrust_unc_input.setDecimals(2)
         self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
         self.thrust_unc_input.setSuffix("  (±ratio)")
+        self.thrust_unc_input.wheelEvent = lambda event: event.ignore()
 
         frm2.addRow("CEP Probability:",    self.cep_prob_input)
         frm2.addRow("MC Runs:",            self.mc_runs_input)
@@ -612,6 +620,9 @@ class AppWindow(QMainWindow):
         # _render_overlays() so partial redraws can remove exactly these
         # artists without touching the base scatter or trajectory layers.
         self._overlay_artists: list = []
+        # KDE ContourSets + error ellipse patch tracked separately so
+        # update_ellipse_layer() can remove and redraw them without ax.cla().
+        self._ellipse_layer_artists: list = []
         # Wind history buffer: populated by update_wind_history() from the
         # global AppState wind_history_updated signal.  Keyed by altitude (m);
         # each value is a list of (relative_time_s, speed_ms) pairs.
@@ -860,6 +871,7 @@ class AppWindow(QMainWindow):
         self.rmax_input.setValue(50.0);    self.rmax_input.setSuffix(" m")
         self.rmax_input.setToolTip(
             "Target landing radius for GO/NO-GO assessment and map display")
+        self.rmax_input.wheelEvent = lambda event: event.ignore()
 
         mode_lay.addRow("飛行モード:",    self.mode_combo)
         mode_lay.addRow("Target Radius:", self.rmax_input)
@@ -938,10 +950,13 @@ class AppWindow(QMainWindow):
         frm.setSpacing(5)
         frm.setContentsMargins(10, 10, 10, 8)
 
-        def _dsb(lo, hi, val, dec, step, suffix):
+        def _dsb(_lo, hi, _val, dec, step, suffix):
             sb = QDoubleSpinBox(grp_af)
-            sb.setRange(lo, hi); sb.setDecimals(dec)
-            sb.setValue(val);    sb.setSingleStep(step); sb.setSuffix(suffix)
+            sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
+            sb.setRange(-9999.0, hi)
+            sb.setSpecialValueText("")  # blank until the operator enters a value
+            sb.setValue(-9999.0)
+            sb.wheelEvent = lambda event: event.ignore()
             return sb
 
         # Ranges cover typical small model rockets (0.05–5 kg, 0.1–3 m)
@@ -977,10 +992,13 @@ class AppWindow(QMainWindow):
         frm_para.setSpacing(5)
         frm_para.setContentsMargins(10, 10, 10, 8)
 
-        def _psb(lo, hi, val, dec, step, suffix):
+        def _psb(_lo, hi, _val, dec, step, suffix):
             sb = QDoubleSpinBox(grp_para)
-            sb.setRange(lo, hi); sb.setDecimals(dec)
-            sb.setValue(val);    sb.setSingleStep(step); sb.setSuffix(suffix)
+            sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
+            sb.setRange(-9999.0, hi)
+            sb.setSpecialValueText("")  # blank until the operator enters a value
+            sb.setValue(-9999.0)
+            sb.wheelEvent = lambda event: event.ignore()
             return sb
 
         self.para_cd_input   = _psb(0.10,  2.00,  0.80, 2, 0.01,  "")
@@ -1014,35 +1032,56 @@ class AppWindow(QMainWindow):
         frm.setContentsMargins(8, 8, 8, 8)
 
         self.lat_input = QDoubleSpinBox(w)
-        self.lat_input.setRange(-90, 90); self.lat_input.setDecimals(6)
-        self.lat_input.setValue(35.682800); self.lat_input.setSuffix("°")
+        self.lat_input.setDecimals(6); self.lat_input.setSuffix("°")
+        self.lat_input.setRange(-9999.0, 90)
+        self.lat_input.setSpecialValueText("")
+        self.lat_input.setValue(35.42215789)
+        self.lat_input.wheelEvent = lambda event: event.ignore()
         self.lat_input.valueChanged.connect(
-            lambda v: self.map_widget.update_launch(v, self.lon_input.value()))
+            lambda v: self.map_widget.update_launch(v, self.lon_input.value())
+            if v != -9999.0 else None)
 
         self.lon_input = QDoubleSpinBox(w)
-        self.lon_input.setRange(-180, 180); self.lon_input.setDecimals(6)
-        self.lon_input.setValue(139.759000); self.lon_input.setSuffix("°")
+        self.lon_input.setDecimals(6); self.lon_input.setSuffix("°")
+        self.lon_input.setRange(-9999.0, 180)
+        self.lon_input.setSpecialValueText("")
+        self.lon_input.setValue(139.42268826)
+        self.lon_input.wheelEvent = lambda event: event.ignore()
         self.lon_input.valueChanged.connect(
-            lambda v: self.map_widget.update_launch(self.lat_input.value(), v))
+            lambda v: self.map_widget.update_launch(self.lat_input.value(), v)
+            if v != -9999.0 else None)
 
         self.elev_input = QDoubleSpinBox(w)
-        self.elev_input.setRange(0, 90); self.elev_input.setDecimals(1)
-        self.elev_input.setValue(85.0);   self.elev_input.setSuffix("°")
+        self.elev_input.setRange(0.0, 90.0)
+        self.elev_input.setDecimals(1); self.elev_input.setSuffix("°")
+        self.elev_input.setValue(85.0)
+        self.elev_input.wheelEvent = lambda event: event.ignore()
+
+        self.rail_len_input = QDoubleSpinBox(w)
+        self.rail_len_input.setRange(0.1, 20.0)
+        self.rail_len_input.setDecimals(2); self.rail_len_input.setSuffix(" m")
+        self.rail_len_input.setSingleStep(0.1)
+        self.rail_len_input.setValue(1.0)
+        self.rail_len_input.wheelEvent = lambda event: event.ignore()
 
         self.azim_input = QDoubleSpinBox(w)
-        self.azim_input.setRange(0, 360); self.azim_input.setDecimals(1)
-        self.azim_input.setValue(0.0);    self.azim_input.setSuffix("°")
+        self.azim_input.setDecimals(1); self.azim_input.setSuffix("°")
+        self.azim_input.setRange(-9999.0, 360)
+        self.azim_input.setSpecialValueText("")
+        self.azim_input.setValue(0.0)
+        self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
         btn_gps = QPushButton("📍  Get Current Location", w)
         btn_gps.clicked.connect(self._on_get_location)
 
-        frm.addRow("Latitude:",       self.lat_input)
-        frm.addRow("Longitude:",      self.lon_input)
-        frm.addRow("",                btn_gps)
+        frm.addRow("Latitude:",         self.lat_input)
+        frm.addRow("Longitude:",        self.lon_input)
+        frm.addRow("",                  btn_gps)
         frm.addRow(QLabel(""))
-        frm.addRow("Rail Elevation:", self.elev_input)
-        frm.addRow("Rail Azimuth:",   self.azim_input)
+        frm.addRow("Rail Elevation:",   self.elev_input)
+        frm.addRow("Rail Length [m]:",  self.rail_len_input)
+        frm.addRow("Rail Azimuth:",     self.azim_input)
         return w
 
     # ── Map dock content ───────────────────────────────────────────────────────
@@ -1346,9 +1385,10 @@ class AppWindow(QMainWindow):
         ax  = self.map_ax
         fig = self.map_fig
         ax.cla()
-        # cla() removes every artist from the axis; reset overlay tracking so
-        # the next partial redraw doesn't try to remove already-gone artists.
+        # cla() removes every artist from the axis; reset both tracking lists
+        # so partial redraws don't try to remove already-gone artists.
         self._overlay_artists.clear()
+        self._ellipse_layer_artists.clear()
         _style_2d(ax, fig, bg="#0d0d1a")
 
         theta = np.linspace(0.0, 2.0 * np.pi, 200)
@@ -1400,10 +1440,11 @@ class AppWindow(QMainWindow):
                     # Start levels at 5 % of peak so near-zero padding outside
                     # the scatter cloud is transparent — prevents purple square.
                     _lev = np.linspace(0.05, 1.0, 9)
-                    ax.contourf(_X, _Y, _Z, levels=_lev, cmap="plasma",
-                                alpha=0.40, zorder=1)
-                    ax.contour( _X, _Y, _Z, levels=_lev[::2], cmap="plasma",
-                                alpha=0.75, linewidths=0.8, zorder=2)
+                    _cf  = ax.contourf(_X, _Y, _Z, levels=_lev, cmap="plasma",
+                                       alpha=0.40, zorder=1)
+                    _ct  = ax.contour( _X, _Y, _Z, levels=_lev[::2], cmap="plasma",
+                                       alpha=0.75, linewidths=0.8, zorder=2)
+                    self._ellipse_layer_artists.extend([_cf, _ct])
                 except Exception as e:
                     print(f"Drawing Error (KDE grid map): {e}")
 
@@ -1426,6 +1467,7 @@ class AppWindow(QMainWindow):
                             label=f"Error ellipse  ({prob} %)",
                         )
                         ax.add_patch(patch)
+                        self._ellipse_layer_artists.append(patch)
                 except Exception as e:
                     print(f"Drawing Error (error ellipse): {e}")
 
@@ -1743,12 +1785,13 @@ class AppWindow(QMainWindow):
     # ── Smart partial redraw ──────────────────────────────────────────────────
 
     def update_visual_overlays(self, state) -> None:
-        """Recompute CEP circle immediately from cached scatter at new probability.
+        """Partial redraw: update ellipse + KDE + CEP circle without ax.cla().
 
-        No re-simulation needed: percentile of point distances gives the new
-        CEP radius.  Replaces only the CEP circle/annotation artists; all
-        other map artists (launch marker, target ring, nominal landing) are
-        untouched — no ax.cla() is called.
+        Draw order (so artists stack correctly on a fixed axes background):
+          1. _render_overlays  — clears stale artists, draws KDE contours + ellipse
+          2. CEP circle        — drawn last so it sits on top of the ellipse
+
+        No re-simulation; no full axes clear.  The SimulationWorker is not involved.
         """
         scatter = getattr(state, 'cached_mc_scatter', None)
         if scatter is None:
@@ -1766,25 +1809,24 @@ class AppWindow(QMainWindow):
 
         prob = int(getattr(state, 'cep_probability', 90))
 
-        # CEP centre: mean of scatter (close to nominal landing)
-        cx = float(pts[:, 0].mean())
-        cy = float(pts[:, 1].mean())
+        # ── Step 1: redraw ellipse + KDE contours from updated state ─────────────
+        # _render_overlays clears _overlay_artists then redraws ellipse + KDE lines.
+        # mc_ellipse was just updated by the controller before this call.
+        self._render_overlays(
+            getattr(state, 'mc_ellipse',    None),
+            getattr(state, 'kde_contours',  None) or [],
+            prob,
+        )
 
-        # Use nominal landing as centre if available
+        # ── Step 2: compute CEP radius and draw circle on top ────────────────────
         res = self.state.simulation_result
-        lx = float(res.get("land_x", cx)) if res else cx
-        ly = float(res.get("land_y", cy)) if res else cy
+        _cx = float(pts[:, 0].mean())
+        _cy = float(pts[:, 1].mean())
+        lx  = float(res.get("land_x", _cx)) if res else _cx
+        ly  = float(res.get("land_y", _cy)) if res else _cy
 
         dists = np.hypot(pts[:, 0] - lx, pts[:, 1] - ly)
         cep_r = float(np.percentile(dists, prob))
-
-        # Remove old overlay artists
-        for artist in self._overlay_artists:
-            try:
-                artist.remove()
-            except ValueError:
-                pass
-        self._overlay_artists.clear()
 
         ax = self.map_ax
         if cep_r > 0:
@@ -1854,6 +1896,132 @@ class AppWindow(QMainWindow):
             )
             self._overlay_artists.append(line)
 
+    # ── Partial redraw: swap KDE + ellipse layer in-place ─────────────────────
+
+    def update_ellipse_layer(self, ellipse_data: dict | None) -> None:
+        """Replace KDE contours, error ellipse, and CEP circle without ax.cla().
+
+        Map: removes only the artists in _ellipse_layer_artists and
+        _overlay_artists, then redraws them at the current cep_prob.
+        Trajectory lines, launch/landing markers, MC scatter, and the
+        target ring are never touched — the operation is instantaneous.
+
+        Profile: updates the CEP% title text only (no 3-D ellipse exists).
+        """
+        # ── 2-D map ───────────────────────────────────────────────────────────
+        for _a in self._ellipse_layer_artists:
+            try:
+                _a.remove()
+            except (ValueError, AttributeError, TypeError):
+                pass
+        self._ellipse_layer_artists.clear()
+
+        for _a in self._overlay_artists:
+            try:
+                _a.remove()
+            except ValueError:
+                pass
+        self._overlay_artists.clear()
+
+        res = self.state.simulation_result
+        if res is None:
+            self.map_canvas.draw_idle()
+            return
+
+        ax   = self.map_ax
+        lx   = float(res.get("land_x", 0.0))
+        ly   = float(res.get("land_y", 0.0))
+        prob = int(self.state.cep_prob)
+
+        # KDE gradient contours
+        kde_grid = res.get("kde")
+        if kde_grid:
+            try:
+                _X   = np.asarray(kde_grid["X_m"], dtype=float)
+                _Y   = np.asarray(kde_grid["Y_m"], dtype=float)
+                _Z   = np.asarray(kde_grid["Z"],   dtype=float)
+                _lev = np.linspace(0.05, 1.0, 9)
+                _cf  = ax.contourf(_X, _Y, _Z, levels=_lev, cmap="plasma",
+                                   alpha=0.40, zorder=1)
+                _ct  = ax.contour( _X, _Y, _Z, levels=_lev[::2], cmap="plasma",
+                                   alpha=0.75, linewidths=0.8, zorder=2)
+                self._ellipse_layer_artists.extend([_cf, _ct])
+            except Exception as e:
+                print(f"Drawing Error (KDE partial redraw): {e}")
+
+        # Error ellipse patch
+        ell = ellipse_data
+        if ell and isinstance(ell, dict):
+            try:
+                ea = float(ell.get("a", 0.0))
+                eb = float(ell.get("b", 0.0))
+                if ea > 0 and eb > 0:
+                    ecx     = float(ell.get("cx", lx))
+                    ecy     = float(ell.get("cy", ly))
+                    ang_deg = float(np.degrees(float(ell.get("angle_rad", 0.0))))
+                    patch   = MplEllipse(
+                        (ecx, ecy), width=2.0 * ea, height=2.0 * eb,
+                        angle=ang_deg,
+                        fill=False, edgecolor="#cba6f7", linewidth=2.0,
+                        linestyle="--", alpha=0.85, zorder=6,
+                        label=f"Error ellipse  ({prob} %)",
+                    )
+                    ax.add_patch(patch)
+                    self._ellipse_layer_artists.append(patch)
+            except Exception as e:
+                print(f"Drawing Error (ellipse partial redraw): {e}")
+
+        # CEP circle — recomputed at the new probability from cached scatter
+        sc_x = res.get("mc_scatter_x", [])
+        sc_y = res.get("mc_scatter_y", [])
+        if sc_x and sc_y:
+            try:
+                _pts  = np.column_stack([np.asarray(sc_x, dtype=float),
+                                         np.asarray(sc_y, dtype=float)])
+                dists = np.hypot(_pts[:, 0] - lx, _pts[:, 1] - ly)
+                cep_r = float(np.percentile(dists, prob))
+                if cep_r > 0:
+                    theta_c = np.linspace(0.0, 2.0 * np.pi, 200)
+                    (cep_line,) = ax.plot(
+                        lx + cep_r * np.cos(theta_c),
+                        ly + cep_r * np.sin(theta_c),
+                        color="#cba6f7", lw=2.0, alpha=0.90, zorder=5,
+                        label=f"CEP {prob} %  ({cep_r:.1f} m)",
+                    )
+                    cep_ann = ax.text(
+                        lx, ly + cep_r * 1.08,
+                        f"CEP Radius: {cep_r:.1f} m",
+                        color="#cba6f7", fontsize=7.5, ha="center", zorder=7,
+                    )
+                    self._overlay_artists.extend([cep_line, cep_ann])
+            except Exception as e:
+                print(f"Drawing Error (CEP partial redraw): {e}")
+
+        self.map_canvas.draw_idle()
+
+        # ── 3-D profile title (CEP % label only) ─────────────────────────────
+        profile_res = self.state.simulation_result
+        if profile_res is not None:
+            s = self.state
+            self.profile_ax.set_title(
+                f"Mode: {s.sim_mode}   ·   "
+                f"Wind: {s.wind_speed:.1f} m/s @ {s.wind_dir:.0f}°   ·   "
+                f"CEP: {prob} %",
+                color="#a6adc8", fontsize=9, pad=8,
+            )
+            self.profile_canvas.draw_idle()
+
+    def refresh_visuals(self) -> None:
+        """Refresh KDE contours, error ellipse, and CEP circle from cached data.
+
+        Called externally (e.g. after Advanced Settings OK) to update all
+        statistical overlays without re-running the physics engine.
+        No-op when no simulation result is cached.
+        """
+        res = self.state.simulation_result
+        ellipse_data = res.get("ellipse") if isinstance(res, dict) else None
+        self.update_ellipse_layer(ellipse_data)
+
     # ── Action handlers ────────────────────────────────────────────────────────
 
     def _on_azim_changed(self, value: int) -> None:
@@ -1910,7 +2078,7 @@ class AppWindow(QMainWindow):
                         continue
 
             if len(thrust_data) >= 2:
-                burn_time = thrust_data[-1][0] - thrust_data[0][0]
+                burn_time = thrust_data[-1][0]  # absolute end time (s); t=0 is ignition
                 max_thrust = max(F for _, F in thrust_data)
                 # Trapezoidal total impulse
                 total_impulse = sum(
@@ -1943,6 +2111,12 @@ class AppWindow(QMainWindow):
             self.set_status(f"Motor load error: {exc}", "#f38ba8")
 
     def _on_mode_changed(self, mode: str) -> None:
+        is_free = "free" in mode.lower() or "自由" in mode
+        self.rmax_input.setEnabled(not is_free)
+        if is_free:
+            self.update_status_indicator("🟢 GO (FREE FLIGHT MODE)")
+        else:
+            self.update_status_indicator("⬤  STANDBY")
         if mode == "定点滞空":
             self.rmax_input.setValue(50.0)
         elif mode in ("高度", "有翼"):
@@ -1974,17 +2148,54 @@ class AppWindow(QMainWindow):
             f"   |   Upper: {up_spd:.1f} m/s @ {up_dir:.0f}°"
         )
 
-    def set_go_nogo(self, go: bool) -> None:
-        if go:
-            self._go_nogo_label.setText("🟢  GO  (LAUNCH CLEAR)")
-            self._go_nogo_label.setStyleSheet(
-                "font-size: 13pt; font-weight: bold; color: #a8e6a1; padding: 8px;"
-                "background: #0d1f0d; border-radius: 8px; border: 2px solid #a8e6a1;")
-        else:
-            self._go_nogo_label.setText("🔴  NO-GO  (WIND LIMIT EXCEEDED)")
-            self._go_nogo_label.setStyleSheet(
+    def update_status_indicator(self, status_text: str) -> None:
+        """Update the GO/NO-GO label to an arbitrary string, styled by keyword.
+
+        No-op if called before the label is constructed (early __init__ calls).
+
+        Color rules (case-insensitive keyword match):
+            'NO-GO' or 'UNSAFE'    → bold red    (danger — do not launch)
+            'WARNING' or 'CAUTION' → bold amber  (early warning while MC runs)
+            'GO' (not 'NO-GO')     → bold green  (clear to proceed)
+            anything else          → neutral grey (standby / calculating)
+
+        Safe to call at any point in the simulation cycle, including while the
+        MC progress bar is still advancing.  Qt label setText() is a synchronous
+        property write that bypasses the canvas render queue, so the operator
+        sees the update immediately on the next event-loop tick.
+        """
+        if not hasattr(self, "_go_nogo_label"):
+            return
+        t = status_text.upper()
+        if "NO-GO" in t or "UNSAFE" in t:
+            style = (
                 "font-size: 12pt; font-weight: bold; color: #f38ba8; padding: 8px;"
-                "background: #1f0d0d; border-radius: 8px; border: 2px solid #f38ba8;")
+                "background: #1f0d0d; border-radius: 8px; border: 2px solid #f38ba8;"
+            )
+        elif "WARNING" in t or "CAUTION" in t:
+            style = (
+                "font-size: 11pt; font-weight: bold; color: #f9e2af; padding: 8px;"
+                "background: #1f1a0d; border-radius: 8px; border: 2px solid #f9e2af;"
+            )
+        elif "GO" in t:
+            style = (
+                "font-size: 13pt; font-weight: bold; color: #a8e6a1; padding: 8px;"
+                "background: #0d1f0d; border-radius: 8px; border: 2px solid #a8e6a1;"
+            )
+        else:
+            style = (
+                "font-size: 11pt; font-weight: bold; color: #a6adc8; padding: 8px;"
+                "background: #1e1e2e; border-radius: 8px; border: 2px solid #45475a;"
+            )
+        self._go_nogo_label.setText(status_text)
+        self._go_nogo_label.setStyleSheet(style)
+
+    def set_go_nogo(self, go: bool) -> None:
+        """Binary GO/NO-GO update — delegates to update_status_indicator."""
+        if go:
+            self.update_status_indicator("🟢  GO  (LAUNCH CLEAR)")
+        else:
+            self.update_status_indicator("🔴  NO-GO  (WIND LIMIT EXCEEDED)")
 
     def set_progress(self, value: int, label: str = "") -> None:
         self._progress.setValue(max(0, min(100, value)))
