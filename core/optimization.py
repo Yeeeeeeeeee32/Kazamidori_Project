@@ -174,21 +174,36 @@ def build_perturbed_wind_prof(
 
 # ── Objective helpers ─────────────────────────────────────────────────────────
 
-def p1_objective_score(res: dict, mode: str) -> float:
+def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> float:
     """Return the scalar objective for a simulation result in the given mode.
 
     Higher is always better (even for Precision Landing where we return
     the negative landing radius).
+
+    Implements hard constraint:
+    If mode is not 'Free' (自由) and r_horiz > r_max, return -inf.
     """
-    if mode == 'Altitude Competition':
+    if not res.get('ok', False):
+        return float('-inf')
+
+    # Hard constraint: disqualify if r > r_max and not Free mode
+    # Assuming "Free" mode string might be English or Japanese or just matched against "Free".
+    # Since the UI translates "自由" to "Free" (or we can just check if "Free" in mode/ "自由" in mode),
+    # let's be robust:
+    is_free = "free" in mode.lower() or "自由" in mode
+    if not is_free and res['r_horiz'] > r_max:
+        return float('-inf')
+
+    # Task 2 Mode Objective Scores
+    if mode == 'Precision Landing' or '定点滞空' in mode:
+        return (r_max - res['r_horiz']) + res['hang_time']
+    elif mode == 'Altitude Competition' or '高度' in mode:
         return res['apogee_m']
-    elif mode == 'Precision Landing':
-        return -res['r_horiz']           # lower radius → higher score
-    elif mode == 'Winged Hover':
+    elif mode == 'Winged Hover' or '有翼' in mode:
         return res['hang_time']
     else:
+        # Fallback to Free or default
         return res['apogee_m']
-
 
 # ── Optimiser (from _optimize_worker) ────────────────────────────────────────
 
@@ -207,64 +222,36 @@ def optimize_launch_angle(
     Phase 1: grid search over (elev, azi) to find feasible candidates.
     Phase 2: MC r90 check on the top-5 candidates.
     Phase 3: Final MC analysis on the winner.
-
-    Args:
-        mode:               One of 'Precision Landing', 'Altitude Competition',
-                            'Winged Hover'.
-        base_params:        Params dict as produced by _gather_sim_params.
-        r_max:              Maximum landing radius constraint (metres).
-        landing_prob:       Confidence percentile (e.g. 90).
-        wind_uncertainty:   Fractional wind speed uncertainty.
-        thrust_uncertainty: Fractional thrust uncertainty.
-        stop_flag:          threading.Event; set to request cancellation.
-        progress_cb:        Callback(message: str, fraction: float).
-
-    Returns:
-        dict with keys: mode, r_max, elev, azi, score, result (sim dict),
-        mc_r, mc_success, mc_trials.
-
-    Raises:
-        ValueError: if mode is unknown or no valid candidate is found.
-        RuntimeError: on cancellation.
     """
-    if mode == "Precision Landing":
+    is_free = "free" in mode.lower() or "自由" in mode
+
+    if mode == "Precision Landing" or '定点滞空' in mode:
         elev_grid = [60, 66, 72, 78, 84, 90]
         azi_grid  = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
-
-        def objective(res, mc_r=None):
-            if not res['ok']:
-                return float('-inf')
-            r = res['r_horiz']
-            if mc_r is None:
-                return float('-inf') if r > r_max else (r_max - r) + res['hang_time']
-            return float('-inf') if r + mc_r > r_max else (r_max - r) + res['hang_time']
-
-    elif mode == "Altitude Competition":
+    elif mode == "Altitude Competition" or '高度' in mode:
         elev_grid = [60, 66, 72, 78, 84, 90]
         azi_grid  = [0, 45, 90, 135, 180, 225, 270, 315]
-
-        def objective(res, mc_r=None):
-            if not res['ok']:
-                return float('-inf')
-            r = res['r_horiz']
-            if mc_r is None:
-                return float('-inf') if r > r_max else res['apogee_m']
-            return float('-inf') if r + mc_r > r_max else res['apogee_m']
-
-    elif mode == "Winged Hover":
+    elif mode == "Winged Hover" or '有翼' in mode:
         elev_grid = [60, 66, 72, 78, 84, 90]
         azi_grid  = [0, 45, 90, 135, 180, 225, 270, 315]
-
-        def objective(res, mc_r=None):
-            if not res['ok']:
-                return float('-inf')
-            r = res['r_horiz']
-            if mc_r is None:
-                return float('-inf') if r > r_max else res['hang_time']
-            return float('-inf') if r + mc_r > r_max else res['hang_time']
-
     else:
-        raise ValueError(f'Unknown mode: {mode}')
+        # Free mode fallback
+        elev_grid = [60, 66, 72, 78, 84, 90]
+        azi_grid  = [0, 45, 90, 135, 180, 225, 270, 315]
+
+    def objective(res, mc_r=None):
+        if not res.get('ok', False):
+            return float('-inf')
+        r = res['r_horiz']
+
+        # Hard constraint check incorporating MC radius if available
+        # Phase 2 passes mc_r to verify the 90% ellipse stays within target.
+        if not is_free:
+            check_r = r if mc_r is None else r + mc_r
+            if check_r > r_max:
+                return float('-inf')
+
+        return p1_objective_score(res, mode, r_max)
 
     candidates = []
     total       = len(elev_grid) * len(azi_grid)
