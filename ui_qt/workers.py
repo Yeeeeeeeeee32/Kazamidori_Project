@@ -844,3 +844,152 @@ class SimulationWorker(QThread):
             "apogee":            nom_pkg["apogee_m"],
             "impact_distance":   nom_pkg["r_horiz"],
         }
+
+
+
+class OptimizationWorker(QThread):
+    """
+    Executes the Phase 1 Coarse Search optimization + full Monte Carlo scatter
+    seamlessly on a background thread.
+    """
+
+    progress             = Signal(int)
+    finished             = Signal(dict)
+    error                = Signal(str)
+    sig_nominal_done     = Signal(dict)
+    sig_progress_updated = Signal(int, int)
+    sig_mc_done          = Signal(dict)
+    sig_status_text      = Signal(str)
+    sig_early_warning    = Signal(str)
+    sig_optimization_done = Signal(float, float) # elev, azi
+
+    def __init__(self, params: dict[str, Any], parent=None) -> None:
+        super().__init__(parent)
+        self._params     = dict(params)
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        try:
+            p = self._params
+
+            # --- 1. Optimization phase ---
+            self.progress.emit(2)
+            self.sig_status_text.emit("Optimising launch angle...")
+            u_prof, v_prof = SimulationWorker._build_wind_profiles(p)
+            wind_nodes = sample_wind_nodes(u_prof, v_prof)
+            sim_params = SimulationWorker._build_sim_params(p, u_prof, v_prof)
+
+            # Important parameter routing
+            target_r = p.get("target_radius", 50.0)
+            mode = p.get("flight_mode", "Altitude Competition")
+
+            from core.optimization import optimize_launch_angle
+            from core.simulation import simulate_once
+
+            def prog_cb(msg: str, frac: float):
+                self.sig_status_text.emit(msg)
+                # Keep progress between 2% and 20% during optimization
+                self.progress.emit(2 + int(frac * 18))
+
+            opt_res = optimize_launch_angle(
+                mode=mode,
+                base_params=sim_params,
+                r_max=target_r,
+                landing_prob=int(p.get("cep_prob", 90)),
+                wind_uncertainty=float(p.get("wind_unc", 0.20)),
+                thrust_uncertainty=float(p.get("thrust_unc", 0.05)),
+                stop_flag=self._stop_event,
+                progress_cb=prog_cb
+            )
+
+            if self._stop_event.is_set():
+                self.finished.emit({"cancelled": True})
+                return
+
+            best_e = opt_res["elev"]
+            best_a = opt_res["azi"]
+
+            # Update params with optimized values so MC phase uses them
+            self.sig_optimization_done.emit(best_e, best_a)
+            sim_params["elev"] = best_e
+            sim_params["azi"] = best_a
+            p["elev"] = best_e
+            p["azim"] = best_a
+
+            self.progress.emit(20)
+
+            # --- 2. Full simulation pipeline (mimic SimulationWorker) ---
+            self.sig_status_text.emit("Simulating nominal trajectory with optimized angles...")
+            nominal = simulate_once(best_e, best_a, sim_params)
+            if not nominal["ok"]:
+                raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
+
+            self.progress.emit(25)
+
+            nom_pkg = SimulationWorker._package_nominal(nominal, wind_nodes)
+            nom_pkg.update({
+                "turb_mu":        float(p.get("turb_mu",        0.0)),
+                "turb_sigma":     float(p.get("turb_sigma",     0.0)),
+                "turb_intensity": float(p.get("turb_intensity", 0.0)),
+            })
+            self.sig_nominal_done.emit(nom_pkg)
+            QThread.msleep(0)
+
+            _is_free  = bool(p.get("is_free_mode", False))
+            _target_r = p.get("target_radius")
+            if not _is_free and _target_r is not None:
+                _nom_dist = math.hypot(
+                    float(nom_pkg["impact_x"]),
+                    float(nom_pkg["impact_y"]),
+                )
+                if _nom_dist > float(_target_r):
+                    self.sig_early_warning.emit(
+                        f"NO-GO (OUT OF TARGET)  —  nominal impact "
+                        f"{_nom_dist:.0f} m  >  {float(_target_r):.0f} m radius"
+                    )
+
+            if self._stop_event.is_set():
+                self.finished.emit({"cancelled": True})
+                return
+
+            self.sig_status_text.emit("Running Monte Carlo...")
+
+            # Since SimulationWorker._run_mc_loop is an instance method, we can create a dummy
+            # instance or just use a helper. But it's easier to create a dummy worker here:
+            dummy_worker = SimulationWorker(p)
+            dummy_worker._stop_event = self._stop_event
+            dummy_worker.progress.connect(self.progress.emit)
+            dummy_worker.sig_progress_updated.connect(self.sig_progress_updated.emit)
+
+            scatter = dummy_worker._run_mc_loop(sim_params, p)
+
+            if self._stop_event.is_set():
+                self.finished.emit({"cancelled": True})
+                return
+
+            prob_pct = int(p.get("cep_prob", 90))
+            n_pts    = len(scatter)
+
+            self.progress.emit(92)
+            self.sig_status_text.emit("Computing landing statistics...")
+
+            stats = SimulationWorker._compute_stats(scatter, prob_pct)
+
+            self.progress.emit(98)
+            self.sig_status_text.emit("Packaging results...")
+
+            self.sig_mc_done.emit(SimulationWorker._package_mc(scatter, stats, prob_pct))
+
+            result = SimulationWorker._package_result(nom_pkg, scatter, stats, prob_pct, cancelled=False)
+            result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
+            result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
+
+            self.progress.emit(100)
+            self.finished.emit(result)
+
+        except Exception:
+            import traceback
+            self.error.emit(traceback.format_exc())
