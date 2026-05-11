@@ -1273,11 +1273,7 @@ class AppWindow(QMainWindow):
         ilay.addStretch()
         ilay.addWidget(self._map_landing_lbl)
 
-        nav = NavigationToolbar2QT(self.map_canvas, container)
-        nav.setIconSize(QSize(14, 14))
-
         lay.addWidget(info)
-        lay.addWidget(nav)
         lay.addWidget(self.map_canvas, stretch=1)
 
         self.map_widget = _MapCoordProxy(self._map_launch_lbl, self._map_landing_lbl)
@@ -1895,18 +1891,16 @@ class AppWindow(QMainWindow):
             fig.legends.clear()
             fig.legend(
                 by_label.values(), by_label.keys(),
-                loc="upper center", bbox_to_anchor=(0.5, 0.05),
+                loc="center left", bbox_to_anchor=(0.01, 0.5),
                 borderaxespad=0,
                 fontsize=7,
                 facecolor="#1a1a2e", edgecolor="#3a3a52",
                 labelcolor="#cdd6f4", framealpha=0.88,
-                ncol=min(len(by_label), 5)
+                ncol=1
             )
 
-        # subplots_adjust reserves right margin for the outside legend;
-        # tight_layout is intentionally omitted here because it ignores
-        # bbox_to_anchor and would clip the legend.
-        fig.subplots_adjust(left=0.05, right=0.95, top=0.90, bottom=0.25, wspace=0.3)
+        # subplots_adjust reserves left margin for the legend
+        fig.subplots_adjust(left=0.25, right=0.95, top=0.90, bottom=0.15, wspace=0.3)
         self.wind_canvas.draw_idle()
         self._update_wind_table(nodes)
 
