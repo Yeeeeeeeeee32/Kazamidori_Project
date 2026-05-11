@@ -1260,6 +1260,12 @@ class AppState(QObject):
             self.flight_mode_changed.emit(value)
             self._check_readiness()
 
+    @property
+    def is_free_mode(self) -> bool:
+        """True when the current flight_mode is the free/unconstrained profile."""
+        fm = str(self._flight_mode)
+        return "free" in fm.lower() or "自由" in fm
+
     # ── Two-stage rendering ────────────────────────────────────────────────────
 
     @Property(object, notify=nominal_result_changed)
