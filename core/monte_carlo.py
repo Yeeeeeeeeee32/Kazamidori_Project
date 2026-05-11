@@ -434,44 +434,7 @@ def compute_cep(scatter: list[tuple[float, float]]) -> float:
     return dists[lo] + (mid - lo) * (dists[hi] - dists[lo])
 
 
-def compute_cep_circle(
-    scatter: list[tuple[float, float]],
-    n: int = 36,
-) -> dict[str, object] | None:
-    """Compute the CEP circle as a metric polygon.
 
-    The circle is centred on the scatter centroid (mean landing position),
-    not the launch origin.  All output is in the metric East-North frame.
-
-    Args:
-        scatter: list of (x_east_m, y_north_m) landing positions.
-        n:       Number of polygon vertices (default 36).
-
-    Returns:
-        dict with keys:
-            cx_m, cy_m — circle centre (metres East/North from origin)
-            radius_m   — CEP radius (metres)
-            points_m   — list of (x_east_m, y_north_m) polygon vertices
-        or None if scatter is empty.
-    """
-    if not scatter:
-        return None
-    arr    = np.array(scatter, dtype=float)
-    cx_m   = float(arr[:, 0].mean())
-    cy_m   = float(arr[:, 1].mean())
-    dists  = sorted(math.hypot(x - cx_m, y - cy_m) for x, y in scatter)
-    mid    = (len(dists) - 1) / 2.0
-    lo     = int(mid)
-    hi     = min(lo + 1, len(dists) - 1)
-    radius = dists[lo] + (mid - lo) * (dists[hi] - dists[lo])
-    radius = max(radius, 1.0)   # prevent degenerate zero-radius circle
-
-    return {
-        'cx_m':     cx_m,
-        'cy_m':     cy_m,
-        'radius_m': radius,
-        'points_m': _circle_points_m(cx_m, cy_m, radius, n),
-    }
 
 
 # ── KDE contours ──────────────────────────────────────────────────────────────
