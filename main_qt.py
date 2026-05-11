@@ -406,7 +406,7 @@ class SimController(QObject):
 
     @Slot(int)
     def _on_progress(self, value: int) -> None:
-        self._window.set_progress(value, f"Simulating...  {value}%")
+        self._window.set_progress(value)
 
     @Slot(dict)
     def _on_nominal_done(self, payload: dict) -> None:
