@@ -447,7 +447,7 @@ class ManualSetupDialog(QDialog):
         grp = QGroupBox("Airframe  (m · kg · s  from nose tip)")
         frm = QFormLayout(grp)
         frm.setSpacing(5)
-        frm.setContentsMargins(10, 10, 10, 8)
+        frm.setContentsMargins(2, 4, 2, 2)
 
         def _dsb(hi, dec, step, suffix):
             sb = QDoubleSpinBox()
@@ -469,7 +469,6 @@ class ManualSetupDialog(QDialog):
         self.af_finpos_input    = _dsb( 5.0, 3, 0.001, " m")
         self.af_motorpos_input  = _dsb( 5.0, 3, 0.001, " m")
         self.af_motormass_input = _dsb( 5.0, 4, 0.001, " kg")
-        self.af_backfire_input  = _dsb(10.0, 2, 0.1,   " s")
 
         frm.addRow("Mass [kg]:",           self.af_mass_input)
         frm.addRow("CG from Nose [m]:",    self.af_cg_input)
@@ -482,9 +481,11 @@ class ManualSetupDialog(QDialog):
         frm.addRow("Fin LE Position [m]:", self.af_finpos_input)
         frm.addRow("Motor CG Pos. [m]:",   self.af_motorpos_input)
         frm.addRow("Motor Dry Mass [kg]:", self.af_motormass_input)
-        frm.addRow("Backfire Delay [s]:",  self.af_backfire_input)
+
 
         inner_lay.addWidget(grp)
+
+
 
         sa = QScrollArea()
         sa.setWidgetResizable(True)
@@ -703,9 +704,27 @@ class AppWindow(QMainWindow):
         self.af_finpos_input    = self._manual_dialog.af_finpos_input
         self.af_motorpos_input  = self._manual_dialog.af_motorpos_input
         self.af_motormass_input = self._manual_dialog.af_motormass_input
-        self.af_backfire_input  = self._manual_dialog.af_backfire_input
-
+        # Create backfire delay input directly on the main window
+        self.af_backfire_input  = QDoubleSpinBox(self)
+        self.af_backfire_input.setDecimals(2); self.af_backfire_input.setSingleStep(0.1)
+        self.af_backfire_input.setSuffix(" s"); self.af_backfire_input.setRange(-9999.0, 10.0)
+        self.af_backfire_input.setSpecialValueText(""); self.af_backfire_input.setValue(-9999.0)
+        self.af_backfire_input.wheelEvent = lambda event: event.ignore()
         self._setup_splitter()
+
+        self.af_backfire_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_mass_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_cg_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_len_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_radius_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_nose_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_finroot_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_fintip_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_finspan_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_finpos_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_motorpos_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_motormass_input.valueChanged.connect(lambda v: self._mark_modified())
+
         self._bind_state()
 
         # Motor data persisted here after _on_load_motor(); read by SimController._collect_params()
@@ -893,9 +912,7 @@ class AppWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        nav3d = NavigationToolbar2QT(self.profile_canvas, container)
-        nav3d.setIconSize(QSize(14, 14))
-        lay.addWidget(nav3d)
+
         lay.addWidget(self.profile_canvas, stretch=1)
 
         # ── Azimuth control row ───────────────────────────────────────────────
@@ -984,7 +1001,7 @@ class AppWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         mode_lay     = QFormLayout(mode_grp)
         mode_lay.setSpacing(5)
-        mode_lay.setContentsMargins(10, 10, 10, 8)
+        mode_lay.setContentsMargins(2, 4, 2, 2)
 
         self.mode_combo = QComboBox(mode_grp)
         self.mode_combo.addItems(self.OPERATION_MODES)
@@ -1013,6 +1030,36 @@ class AppWindow(QMainWindow):
             "background: #1a1a2e; border-radius: 8px; border: 2px solid #3a3a52;")
         lay.addWidget(self._go_nogo_label)
 
+
+        # ── Results Panel (Hidden by Default) ─────────────────────────────────
+        self._results_grp = QGroupBox("Optimization Results", container)
+        self._results_grp.setVisible(False)
+        self._results_grp.setStyleSheet("QGroupBox { border: 1px solid #7eb3ff; margin-top: 1ex; font-weight: bold; } QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #7eb3ff; }")
+
+        res_lay = QFormLayout(self._results_grp)
+        res_lay.setSpacing(4)
+        res_lay.setContentsMargins(10, 10, 10, 8)
+
+        _res_tag = "QLabel { font-weight: bold; color: #a6e3a1; font-family: 'Consolas', monospace; }"
+        self.lbl_res_angle = QLabel("—")
+        self.lbl_res_best  = QLabel("—")
+        self.lbl_res_avg   = QLabel("—")
+        self.lbl_res_min   = QLabel("—")
+        self.lbl_res_alt   = QLabel("—")
+        self.lbl_res_hang  = QLabel("—")
+
+        for _lbl in (self.lbl_res_angle, self.lbl_res_best, self.lbl_res_avg, self.lbl_res_min, self.lbl_res_alt, self.lbl_res_hang):
+            _lbl.setStyleSheet(_res_tag)
+
+        res_lay.addRow("Optimal Angle:", self.lbl_res_angle)
+        res_lay.addRow("Best Score:", self.lbl_res_best)
+        res_lay.addRow("MC Avg Score:", self.lbl_res_avg)
+        res_lay.addRow("MC Min Score:", self.lbl_res_min)
+        res_lay.addRow("MC Avg Alt:", self.lbl_res_alt)
+        res_lay.addRow("MC Avg Hang:", self.lbl_res_hang)
+
+        lay.addWidget(self._results_grp)
+
         # ── Run button ────────────────────────────────────────────────────────
         btn_run = QPushButton("🚀   RUN PHASE 1 SIMULATION", container)
         btn_run.setObjectName("btn_phase1_run")
@@ -1026,10 +1073,15 @@ class AppWindow(QMainWindow):
     # Contains: Load-JSON button, motor load + specs, 12 CGS airframe params.
     # Units: CGMS — lengths in cm from nose tip, mass in g, delay in s.
 
+    def _mark_modified(self) -> None:
+        if 'loaded' not in self.rkt_label.text() and '(Modified)' not in self.rkt_label.text():
+            self.rkt_label.setText(f"{self.rkt_label.text()} (Modified)")
+            self.rkt_label.setStyleSheet("color: #f38ba8; font-style: italic; font-size: 8pt; padding: 2px 4px;")
+
     def _build_airframe_page(self) -> QScrollArea:
         w   = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setContentsMargins(2, 2, 2, 2)
         lay.setSpacing(6)
 
         # ── Model loading buttons ─────────────────────────────────────────────
@@ -1060,7 +1112,7 @@ class AppWindow(QMainWindow):
         grp_motor     = QGroupBox("Motor Specifications", w)
         grp_motor_lay = QFormLayout(grp_motor)
         grp_motor_lay.setSpacing(5)
-        grp_motor_lay.setContentsMargins(10, 10, 10, 8)
+        grp_motor_lay.setContentsMargins(2, 4, 2, 2)
 
         _tag = (
             "QLabel { color: #eef0f8; background: #12121e; font-weight: bold; "
@@ -1078,12 +1130,13 @@ class AppWindow(QMainWindow):
         grp_motor_lay.addRow("Max Thrust:",    self.lbl_max_thrust)
         grp_motor_lay.addRow("Burn Time:",     self.lbl_burn_time)
         grp_motor_lay.addRow("Total Impulse:", self.lbl_total_impulse)
+        grp_motor_lay.addRow("Backfire Delay [s]:", self.af_backfire_input)
 
         # ── Recovery / Parachute parameters ──────────────────────────────────
         grp_para     = QGroupBox("Recovery / Parachute", w)
         frm_para     = QFormLayout(grp_para)
         frm_para.setSpacing(5)
-        frm_para.setContentsMargins(10, 10, 10, 8)
+        frm_para.setContentsMargins(2, 4, 2, 2)
 
         def _psb(hi, dec, step, suffix):
             sb = QDoubleSpinBox(grp_para)
@@ -1187,6 +1240,7 @@ class AppWindow(QMainWindow):
 
     def _build_map_dock_widget(self) -> QWidget:
         container = QWidget()
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay = QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -1247,10 +1301,7 @@ class AppWindow(QMainWindow):
             "  Wind  ·  Speed History  &  Compass  ·  5 Altitude Nodes",
             canvas_wrap)
         hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
-        nav_w = NavigationToolbar2QT(self.wind_canvas, canvas_wrap)
-        nav_w.setIconSize(QSize(14, 14))
-        cwl.addWidget(hdr)
-        cwl.addWidget(nav_w)
+
         cwl.addWidget(self.wind_canvas, stretch=1)
         lay.addWidget(canvas_wrap, stretch=1)
 
@@ -1318,6 +1369,15 @@ class AppWindow(QMainWindow):
         ax.view_init(elev=22, azim=azim.value() if azim is not None else 45)
         if res is not None:
             _equalise_3d_axes(ax)
+
+        # Draw Compass Rose in 3D
+        cx, cy, cz = 0, 0, 0
+        span = max(10, ax.get_xlim3d()[1] * 0.1)
+        ax.quiver(cx, cy, cz, 0, span, 0, color="#a6e3a1", arrow_length_ratio=0.1, alpha=0.8) # North
+        ax.quiver(cx, cy, cz, span, 0, 0, color="#f38ba8", arrow_length_ratio=0.1, alpha=0.8) # East
+        ax.text(cx, cy + span*1.1, cz, "N", color="#a6e3a1", fontsize=8, fontweight="bold", ha="center")
+        ax.text(cx + span*1.1, cy, cz, "E", color="#f38ba8", fontsize=8, fontweight="bold", ha="center")
+
         self.profile_fig.tight_layout(pad=0.5)
         self.profile_canvas.draw_idle()
 
@@ -1337,10 +1397,11 @@ class AppWindow(QMainWindow):
         ax.text2D(0.5, 0.40, "Run a simulation\nto display the 3D trajectory",
                   transform=ax.transAxes, ha="center", va="center",
                   color="#45475a", fontsize=10, linespacing=1.8)
-        ax.legend(loc="upper left", fontsize=7,
+        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.05), fontsize=7,
                   facecolor="#1e1e2e", edgecolor="#45475a",
-                  labelcolor="#cdd6f4", framealpha=0.85)
-        ax.set_title("3D Flight Profile", color="#a6adc8", fontsize=9, pad=6)
+                  labelcolor="#cdd6f4", framealpha=0.85, markerscale=1.5)
+        mode_str = getattr(self.state, "flight_mode", "Free")
+        ax.set_title(f"3D Flight Profile  |  Mode: {mode_str}", color="#a6adc8", fontsize=9, pad=6)
 
     def _draw_real_result(self, ax, res: dict, s: AppState) -> None:
         tx = np.asarray(res.get("trajectory_x", [0.0]), dtype=float)
@@ -1374,6 +1435,28 @@ class AppWindow(QMainWindow):
         # Ground-track projection (always shown)
         ax.plot(tx, ty, np.zeros_like(tz),
                 color="#45475a", lw=0.8, linestyle=":", alpha=0.35)
+
+        # Draw Solid Error Ellipse on Z=0
+        ellipse = res.get("ellipse")
+        if ellipse:
+            try:
+                # Plot outline of ellipse
+                theta = np.linspace(0, 2*np.pi, 100)
+                a = ellipse["width"] / 2
+                b = ellipse["height"] / 2
+                cx = ellipse["cx"]
+                cy = ellipse["cy"]
+                angle = ellipse["angle_rad"]
+
+                # Parametric ellipse equations
+                x_ell = cx + a * np.cos(theta) * np.cos(angle) - b * np.sin(theta) * np.sin(angle)
+                y_ell = cy + a * np.cos(theta) * np.sin(angle) + b * np.sin(theta) * np.cos(angle)
+                z_ell = np.zeros_like(x_ell)
+
+                ax.plot(x_ell, y_ell, z_ell, color="#f9e2af", lw=2.2, linestyle="-", alpha=0.9, zorder=6, label=f"CEP {self.state.cep_prob}%")
+            except Exception as e:
+                print(f"Drawing Error (3D Ellipse): {e}")
+
 
         if phases:
             # ── Phase-coloured trajectory: Thrust / Coast / Parachute ─────────
@@ -1692,7 +1775,15 @@ class AppWindow(QMainWindow):
                        if i < len(self._NODE_COLORS) else "#cdd6f4")
                 lbl = (self._NODE_LABELS[i]
                        if i < len(self._NODE_LABELS) else f"{alt:.0f} m")
-                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85, label=lbl)
+                # Only the latest data point has a marker, prior points only line
+                ax_p.plot(xs[:-1], ys[:-1], color=col, lw=1.4, alpha=0.85)
+                # Link the last line segment
+                if len(xs) > 1:
+                    ax_p.plot(xs[-2:], ys[-2:], color=col, lw=1.4, alpha=0.85)
+                # Add proxy artist for legend
+                ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
+
+                # Draw marker only on the latest point
                 ax_p.scatter([xs[-1]], [ys[-1]], color=col, s=28, zorder=5)
                 # 10-second rolling average horizontal dotted line
                 recent = [p[1] for p in pts if p[0] >= -10.0]
@@ -1708,11 +1799,7 @@ class AppWindow(QMainWindow):
                            color="#aaaaaa", fontsize=8, pad=6)
             ax_p.set_xlim(-60.0, 2.0)
             ax_p.set_ylim(bottom=0.0)
-            ax_p.legend(
-                loc="upper left", fontsize=5,
-                facecolor="#1a1a2e", edgecolor="#3a3a52",
-                labelcolor="#cdd6f4", framealpha=0.80,
-            )
+
         else:
             # ── Static profile fallback (no history received yet) ─────────────
             if len(speeds) > 1:
@@ -1756,7 +1843,7 @@ class AppWindow(QMainWindow):
         ax_c.set_rlabel_position(135)
         ax_c.set_thetagrids(
             [0, 45, 90, 135, 180, 225, 270, 315],
-            labels=["N", "NE", "E", "SE", "S", "SW", "W", "NW"],
+            labels=["0°", "45°", "90°", "135°", "180°", "225°", "270°", "315°"],
             fontsize=6, color="#888888",
         )
 
@@ -1798,22 +1885,28 @@ class AppWindow(QMainWindow):
                       label=f"{lbl}  {spd:.1f} m/s @ {d_from:.0f}°")
 
         ax_c.set_title("Wind Compass", color="#aaaaaa", fontsize=8, pad=12)
-        # Legend placed OUTSIDE the polar axes so it never overlaps the arrows.
-        ax_c.legend(
-            loc="upper left",
-            bbox_to_anchor=(1.10, 1.05),
-            borderaxespad=0,
-            fontsize=6,
-            facecolor="#2b2b2b", edgecolor="#555555",
-            labelcolor="#ffffff", framealpha=0.88,
-            ncol=1,
-        )
+        # Combined legend for both plots attached to the figure, not individual axes
+        handles_p, labels_p = ax_p.get_legend_handles_labels()
+        handles_c, labels_c = ax_c.get_legend_handles_labels()
+
+        # Avoid duplicate labels (from ax_p history lines and ax_c proxies)
+        by_label = dict(zip(labels_p + labels_c, handles_p + handles_c))
+        if by_label:
+            fig.legends.clear()
+            fig.legend(
+                by_label.values(), by_label.keys(),
+                loc="upper center", bbox_to_anchor=(0.5, 0.05),
+                borderaxespad=0,
+                fontsize=7,
+                facecolor="#1a1a2e", edgecolor="#3a3a52",
+                labelcolor="#cdd6f4", framealpha=0.88,
+                ncol=min(len(by_label), 5)
+            )
 
         # subplots_adjust reserves right margin for the outside legend;
         # tight_layout is intentionally omitted here because it ignores
         # bbox_to_anchor and would clip the legend.
-        fig.subplots_adjust(left=0.07, right=0.71, top=0.90,
-                            bottom=0.15, wspace=0.44)
+        fig.subplots_adjust(left=0.05, right=0.95, top=0.90, bottom=0.25, wspace=0.3)
         self.wind_canvas.draw_idle()
         self._update_wind_table(nodes)
 
@@ -1884,11 +1977,10 @@ class AppWindow(QMainWindow):
     # ── Smart partial redraw ──────────────────────────────────────────────────
 
     def update_visual_overlays(self, state) -> None:
-        """Partial redraw: update ellipse + KDE + CEP circle without ax.cla().
+        """Partial redraw: update ellipse + KDE contours without ax.cla().
 
         Draw order (so artists stack correctly on a fixed axes background):
           1. _render_overlays  — clears stale artists, draws KDE contours + ellipse
-          2. CEP circle        — drawn last so it sits on top of the ellipse
 
         No re-simulation; no full axes clear.  The SimulationWorker is not involved.
         """
@@ -1998,7 +2090,7 @@ class AppWindow(QMainWindow):
     # ── Partial redraw: swap KDE + ellipse layer in-place ─────────────────────
 
     def update_ellipse_layer(self, ellipse_data: dict | None) -> None:
-        """Replace KDE contours, error ellipse, and CEP circle without ax.cla().
+        """Replace KDE contours and error ellipse without ax.cla().
 
         Map: removes only the artists in _ellipse_layer_artists and
         _overlay_artists, then redraws them at the current cep_prob.

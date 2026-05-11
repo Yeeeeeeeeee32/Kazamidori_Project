@@ -528,6 +528,19 @@ class SimController(QObject):
             self._state.cached_mc_scatter = np.array(_scatter, dtype=float)
         self._state.kde_contours   = result.get("kde_contours", [])
 
+        # Update Results Panel if not Free mode
+        if not self._state.is_free_mode and "score" in result:
+            w = self._window
+            w.lbl_res_angle.setText(f"{result.get('elev', 0.0):.1f}° / {result.get('azi', 0.0):.1f}°")
+            w.lbl_res_best.setText(f"{result.get('score', 0.0):.2f}")
+            w.lbl_res_avg.setText(f"{result.get('mc_avg_score', 0.0):.2f}")
+            w.lbl_res_min.setText(f"{result.get('mc_min_score', 0.0):.2f}")
+            w.lbl_res_alt.setText(f"{result.get('mc_avg_alt', 0.0):.1f} m")
+            w.lbl_res_hang.setText(f"{result.get('mc_avg_hang_time', 0.0):.1f} s")
+            w._results_grp.setVisible(True)
+        else:
+            self._window._results_grp.setVisible(False)
+
         # ── Refresh AppWindow coordinate labels ────────────────────────────────
         self._window.map_widget.update_landing(land_lat, land_lon)
 
@@ -879,7 +892,14 @@ class SimController(QObject):
         s.rocket_dry_mass = af["mass"]                # kg
         s.rocket_cg       = af["cg"]                  # m from nose
         s.rocket_length   = af["length"]              # m
-        s.rocket_diameter = af["radius"] * 2.0        # m radius → m diameter
+        s.rocket_diameter = af["radius"] * 2.0
+
+        # Task 1.3: Information dynamic label
+        import os as _os
+        name = _os.path.basename(path)
+        lbl_text = f"Name: {name}\nCG: {af['cg']:.2f} m  |  L: {af['length']:.2f} m"
+        self._window.rkt_label.setText(lbl_text)
+        self._window.rkt_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 8pt; padding: 2px 4px;")        # m radius → m diameter
         s.nose_length     = af["nose_length"]         # m
         s.fin_root_chord  = af["fin_root"]            # m
         s.fin_tip_chord   = af["fin_tip"]             # m
@@ -958,6 +978,13 @@ class SimController(QObject):
         s.rocket_cg       = af["cg"]
         s.rocket_length   = af["length"]
         s.rocket_diameter = af["radius"] * 2.0
+
+        # Task 1.3: Information dynamic label
+        import os as _os
+        name = _os.path.basename(path)
+        lbl_text = f"Name: {name}\nCG: {af['cg']:.2f} m  |  L: {af['length']:.2f} m"
+        self._window.rkt_label.setText(lbl_text)
+        self._window.rkt_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 8pt; padding: 2px 4px;")
         s.nose_length     = af["nose_length"]
         s.fin_root_chord  = af["fin_root"]
         s.fin_tip_chord   = af["fin_tip"]
