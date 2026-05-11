@@ -301,7 +301,7 @@ class SimulationWorker(QThread):
             QThread.yieldCurrentThread()
             self.progress.emit(93)
             self.sig_status_text.emit("Fitting error ellipse...")
-            ellipse    = compute_error_ellipse(pts, prob_pct=prob_pct)
+            ellipse    = compute_error_ellipse(pts_tuples, prob_pct=prob_pct)
 
 
             # ── KDE contours — scipy + matplotlib (HEAVY) ────────────────────
@@ -311,13 +311,13 @@ class SimulationWorker(QThread):
             QThread.yieldCurrentThread()
             self.progress.emit(95)
             self.sig_status_text.emit("Computing KDE contours...")
-            kde_contours = compute_kde_contours(pts, conf_pct=prob_pct)
+            kde_contours = compute_kde_contours(pts_tuples, conf_pct=prob_pct)
 
             # ── KDE density grid — scipy (HEAVY) ─────────────────────────────
             QThread.yieldCurrentThread()
             self.progress.emit(97)
             self.sig_status_text.emit("Computing KDE density grid...")
-            kde_grid = compute_kde_grid(pts)
+            kde_grid = compute_kde_grid(pts_tuples)
 
             # ── Assemble stats dict (all pre-computed above) ──────────────────
             stats = {
