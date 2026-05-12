@@ -7,14 +7,13 @@ test.rkt
 memo.txt
 Roadmap.txt
 Concept.txt
-技術メモ.txt
 Koinobori/Roadmap.txt
 
 Estes_B4.csv
 Estes_B6.csv
 Estes_G40.csv
-.claude/
-.vscode/
+
+技術メモ/
 core/__pycache__/
 monitor/__pycache__/
 utils/__pycache__/
