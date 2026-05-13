@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
 )
 from PySide6.QtGui import QAction, QColor
+from ui_qt.map_view import MapView
 
 
 # ── Window-local reactive state ───────────────────────────────────────────────
@@ -517,21 +518,75 @@ class ManualSetupDialog(QDialog):
 
 class _MplCanvas(FigureCanvasQTAgg):
     def __init__(self, fig: Figure, parent: Optional[QWidget] = None) -> None:
-        super().__init__(fig)
-        self.setParent(parent)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.updateGeometry()
+        FigureCanvasQTAgg.__init__(self, fig)
+        if parent is not None:
+            self.setParent(parent)
 
 
-class _AzimCanvas(_MplCanvas):
-    """3-D profile canvas: mouse-wheel adjusts the linked azimuth QSlider (±3° per notch)."""
+class _AzimCanvas(FigureCanvasQTAgg):
+    """3-D profile canvas: mouse-wheel adjusts the linked azimuth QSlider (±3° per notch) or scrubs animation."""
+
+    def __init__(self, fig: Figure, parent: Optional[QWidget] = None) -> None:
+        FigureCanvasQTAgg.__init__(self, fig)
+        if parent is not None:
+            self.setParent(parent)
+        self._current_time_idx = 0
+        self._marker_artist = None
+        self._traj_x = None
+        self._traj_y = None
+        self._traj_z = None
+        self._traj_t = None
+        self._time_label = None
 
     def wheelEvent(self, event) -> None:
+        from PySide6.QtCore import Qt
+        if event.modifiers() & Qt.ShiftModifier:
+            if self._traj_t is not None and len(self._traj_t) > 0:
+                delta = event.angleDelta().y()
+                step = 5 if delta > 0 else -5
+                self._current_time_idx = max(0, min(len(self._traj_t) - 1, self._current_time_idx + step))
+                self._update_marker()
+                event.accept()
+                return
+
         sl = getattr(self, '_azim_slider', None)
         if sl is not None:
-            step = 3 if event.angleDelta().y() > 0 else -3
+            delta = event.angleDelta().y()
+            step = 3 if delta > 0 else -3
             sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
         event.accept()
+
+    def set_trajectory(self, x, y, z, t, ax):
+        self._traj_x = x
+        self._traj_y = y
+        self._traj_z = z
+        self._traj_t = t
+        self._current_time_idx = 0
+
+        if self._marker_artist:
+            try:
+                self._marker_artist.remove()
+            except:
+                pass
+        if self._time_label:
+            try:
+                self._time_label.remove()
+            except:
+                pass
+
+        # Draw the marker point
+        self._marker_artist = ax.scatter([x[0]], [y[0]], [z[0]], color='red', s=50, zorder=10)
+        # Use text2D on the axis to place it at the top-left
+        self._time_label = ax.text2D(0.05, 0.95, f"T+ {t[0]:.1f}s | Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
+        self.draw_idle()
+
+    def _update_marker(self):
+        if self._marker_artist and self._traj_x is not None:
+            idx = self._current_time_idx
+            self._marker_artist._offsets3d = ([self._traj_x[idx]], [self._traj_y[idx]], [self._traj_z[idx]])
+            if self._time_label:
+                self._time_label.set_text(f"T+ {self._traj_t[idx]:.1f}s | Alt: {self._traj_z[idx]:.1f}m")
+            self.draw_idle()
 
 
 # ── Axis styling ──────────────────────────────────────────────────────────────
@@ -749,9 +804,7 @@ class AppWindow(QMainWindow):
         except AttributeError:
             pass
 
-        self.map_fig    = Figure(figsize=(6, 6), facecolor="#0d0d1a")
-        self.map_ax     = self.map_fig.add_subplot(111)
-        self.map_canvas = _MplCanvas(self.map_fig)
+        self.map_view = MapView(self.state, self)
 
         # Dual wind panel: left = Cartesian speed profile, right = polar compass.
         self.wind_fig        = Figure(figsize=(9, 3.5), facecolor="#1e1e1e")
@@ -787,6 +840,17 @@ class AppWindow(QMainWindow):
         sm.addAction(QAction("⏹  Stop",           self, triggered=self._on_stop))
 
         self._view_menu = mb.addMenu("&View")
+
+        # Checkbox actions for map toggles
+        self.action_show_map_cep = QAction("Show CEP Ellipse", self, checkable=True)
+        self.action_show_map_cep.setChecked(True)
+        self.action_show_map_cep.toggled.connect(self.refresh_visuals)
+        self._view_menu.addAction(self.action_show_map_cep)
+
+        self.action_show_map_kde = QAction("Show KDE Contours", self, checkable=True)
+        self.action_show_map_kde.setChecked(True)
+        self.action_show_map_kde.toggled.connect(self.refresh_visuals)
+        self._view_menu.addAction(self.action_show_map_kde)
 
         hm = mb.addMenu("&Help")
         hm.addAction(QAction("About Kazamidori", self, triggered=self._on_about))
@@ -913,7 +977,8 @@ class AppWindow(QMainWindow):
         lay.setSpacing(0)
 
 
-        lay.addWidget(self.profile_canvas, stretch=1)
+        lay.addWidget(self.profile_canvas)
+        lay.setStretchFactor(self.profile_canvas, 1)
 
         # ── Azimuth control row ───────────────────────────────────────────────
         azim_row = QWidget(container)
@@ -1274,7 +1339,8 @@ class AppWindow(QMainWindow):
         ilay.addWidget(self._map_landing_lbl)
 
         lay.addWidget(info)
-        lay.addWidget(self.map_canvas, stretch=1)
+        lay.addWidget(self.map_view)
+        lay.setStretchFactor(self.map_view, 1)
 
         self.map_widget = _MapCoordProxy(self._map_launch_lbl, self._map_landing_lbl)
         return container
@@ -1332,6 +1398,7 @@ class AppWindow(QMainWindow):
         self.wind_speed_input.valueChanged.connect(lambda v: setattr(s, "wind_speed", v))
         self.wind_dir_input.valueChanged.connect(  lambda v: setattr(s, "wind_dir",   v))
         self.cep_prob_input.valueChanged.connect(  lambda v: setattr(s, "cep_prob",   v))
+        self.cep_prob_input.valueChanged.connect(lambda v: self.refresh_visuals())
         self.mode_combo.currentTextChanged.connect(
             lambda v: setattr(s, "sim_mode", v))
 
@@ -1431,6 +1498,10 @@ class AppWindow(QMainWindow):
         # Ground-track projection (always shown)
         ax.plot(tx, ty, np.zeros_like(tz),
                 color="#45475a", lw=0.8, linestyle=":", alpha=0.35)
+
+        # Send raw arrays to canvas for Shift+Scroll animation
+        if "t_hist" in res:
+            self.profile_canvas.set_trajectory(tx, ty, tz, res["t_hist"], ax)
 
         # Draw Solid Error Ellipse on Z=0
         ellipse = res.get("ellipse")
@@ -1560,139 +1631,7 @@ class AppWindow(QMainWindow):
     # ══ Plot: 2-D Landing Map ═════════════════════════════════════════════════
 
     def update_map_plot(self) -> None:
-        ax  = self.map_ax
-        fig = self.map_fig
-        ax.cla()
-        # cla() removes every artist from the axis; reset both tracking lists
-        # so partial redraws don't try to remove already-gone artists.
-        self._overlay_artists.clear()
-        self._ellipse_layer_artists.clear()
-        _style_2d(ax, fig, bg="#0d0d1a")
-
-        theta = np.linspace(0.0, 2.0 * np.pi, 200)
-        _rmax = getattr(self, 'rmax_input', None)
-        target_r = float(_rmax.value()) if _rmax is not None else (
-            50.0 if self.state.sim_mode == "定点滞空" else 250.0)
-        _is_hover = self.state.sim_mode == "定点滞空"
-        ax.plot(target_r * np.cos(theta), target_r * np.sin(theta),
-                color="#f38ba8" if _is_hover else "#45475a",
-                lw=1.2 if _is_hover else 1.0,
-                linestyle="--", alpha=0.60 if _is_hover else 0.45,
-                label=f"Target r = {target_r:.0f} m")
-        ax.scatter([0], [0], c="#a6e3a1", s=130, marker="^", zorder=5,
-                   label="Launch (0, 0)")
-
-        res  = self.state.simulation_result
-        # Default view when no result exists (launch at origin, ±300 m square).
-        x_lo, x_hi, y_lo, y_hi = -300.0, 300.0, -300.0, 300.0
-
-        if res is not None:
-            lx = float(res.get("land_x", 0.0))
-            ly = float(res.get("land_y", 0.0))
-
-            cep_r = float(res.get("cep", 0.0))
-            if cep_r > 0:
-                theta_c = np.linspace(0.0, 2.0 * np.pi, 200)
-                (cep_line,) = ax.plot(
-                    lx + cep_r * np.cos(theta_c),
-                    ly + cep_r * np.sin(theta_c),
-                    color="#cba6f7", lw=2.0, alpha=0.90, zorder=5,
-                    label=f"CEP {self.state.cep_prob} %  ({cep_r:.1f} m)",
-                )
-                cep_ann = ax.text(
-                    lx, ly + cep_r * 1.08,
-                    f"CEP Radius: {cep_r:.1f} m",
-                    color="#cba6f7", fontsize=7.5, ha="center", zorder=7,
-                )
-                self._overlay_artists.extend([cep_line, cep_ann])
-
-            # ── KDE density grid — gradient filled contours ───────────────────
-            # payload["kde"] carries X_m/Y_m/Z (100×100 nested lists, Z in [0,1])
-            # computed in the worker.  No math here — pure consume-and-render.
-            kde_grid = res.get("kde")
-            if kde_grid:
-                try:
-                    _X = np.asarray(kde_grid["X_m"], dtype=float)
-                    _Y = np.asarray(kde_grid["Y_m"], dtype=float)
-                    _Z = np.asarray(kde_grid["Z"],   dtype=float)
-                    # Start levels at 5 % of peak so near-zero padding outside
-                    # the scatter cloud is transparent — prevents purple square.
-                    _lev = np.linspace(0.05, 1.0, 9)
-                    _cf  = ax.contourf(_X, _Y, _Z, levels=_lev, cmap="plasma",
-                                       alpha=0.40, zorder=1)
-                    _ct  = ax.contour( _X, _Y, _Z, levels=_lev[::2], cmap="plasma",
-                                       alpha=0.75, linewidths=0.8, zorder=2)
-                    self._ellipse_layer_artists.extend([_cf, _ct])
-                except Exception as e:
-                    print(f"Drawing Error (KDE grid map): {e}")
-
-            # ── Error ellipse (chi² covariance at landing_prob %) ─────────────
-            ell = res.get("ellipse")
-            if ell and isinstance(ell, dict):
-                try:
-                    ecx     = float(ell.get("cx", lx))
-                    ecy     = float(ell.get("cy", ly))
-                    ea      = float(ell.get("a",  0.0))
-                    eb      = float(ell.get("b",  0.0))
-                    ang_deg = float(np.degrees(float(ell.get("angle_rad", 0.0))))
-                    if ea > 0 and eb > 0:
-                        prob = res.get("landing_prob", 90)
-                        patch = MplEllipse(
-                            (ecx, ecy), width=2.0 * ea, height=2.0 * eb,
-                            angle=ang_deg,
-                            fill=False, edgecolor="#cba6f7", linewidth=2.0,
-                            linestyle="--", alpha=0.85, zorder=6,
-                            label=f"Error ellipse  ({prob} %)",
-                        )
-                        ax.add_patch(patch)
-                        self._ellipse_layer_artists.append(patch)
-                except Exception as e:
-                    print(f"Drawing Error (error ellipse): {e}")
-
-            ax.scatter([lx], [ly], c="#f38ba8", s=130, marker="v",
-                       zorder=6, label="Nominal landing")
-
-            # MC scatter — safe extraction, single ax.scatter call (max 1000 pts)
-            _sc_x = np.empty(0, dtype=float)
-            _sc_y = np.empty(0, dtype=float)
-            if "mc_scatter_x" in res and res["mc_scatter_x"]:
-                try:
-                    _sc_x = np.asarray(res["mc_scatter_x"][:1000], dtype=float)
-                    _sc_y = np.asarray(res["mc_scatter_y"][:1000], dtype=float)
-                    ax.scatter(_sc_x, _sc_y, s=2, c="#f38ba8",
-                               alpha=0.35, zorder=3, linewidths=0,
-                               label=f"MC scatter  ({len(res['mc_scatter_x'])} runs)")
-                except Exception as e:
-                    print(f"Drawing Error (MC scatter map): {e}")
-
-            # ── Dynamic bounding box ──────────────────────────────────────────
-            # Seed from launch (origin), nominal landing, CEP radius, and scatter.
-            _pts_x = np.array([0.0, lx - cep_r, lx + cep_r])
-            _pts_y = np.array([0.0, ly - cep_r, ly + cep_r])
-            if len(_sc_x) > 0:
-                _pts_x = np.concatenate([_pts_x, _sc_x])
-                _pts_y = np.concatenate([_pts_y, _sc_y])
-
-            _xmin, _xmax = float(_pts_x.min()), float(_pts_x.max())
-            _ymin, _ymax = float(_pts_y.min()), float(_pts_y.max())
-            # Square view centred on the data cloud (preserves equal-aspect).
-            _cx  = (_xmin + _xmax) / 2.0
-            _cy  = (_ymin + _ymax) / 2.0
-            _h   = max(_xmax - _xmin, _ymax - _ymin) / 2.0 * 1.22 + 40.0
-            x_lo, x_hi = _cx - _h, _cx + _h
-            y_lo, y_hi = _cy - _h, _cy + _h
-
-        ax.set_xlim(x_lo, x_hi); ax.set_ylim(y_lo, y_hi)
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xlabel("East  (m)",  color="#6c7086", fontsize=8, labelpad=4)
-        ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
-        ax.set_title("Landing Zone Map  (ENU frame, launch at origin)",
-                     color="#a6adc8", fontsize=9, pad=6)
-        ax.legend(loc="upper right", fontsize=7,
-                  facecolor="#1e1e2e", edgecolor="#45475a",
-                  labelcolor="#cdd6f4", framealpha=0.88)
-        fig.tight_layout(pad=0.6)
-        self.map_canvas.draw_idle()
+        pass # Migrated to MapView
 
     # ── Wind-node colour / label constants ───────────────────────────────────
     # One entry per WIND_SAMPLE_ALTS level: [3, 10, 150, 300, 600] m
@@ -2084,114 +2023,12 @@ class AppWindow(QMainWindow):
     # ── Partial redraw: swap KDE + ellipse layer in-place ─────────────────────
 
     def update_ellipse_layer(self, ellipse_data: dict | None) -> None:
-        """Replace KDE contours and error ellipse without ax.cla().
-
-        Map: removes only the artists in _ellipse_layer_artists and
-        _overlay_artists, then redraws them at the current cep_prob.
-        Trajectory lines, launch/landing markers, MC scatter, and the
-        target ring are never touched — the operation is instantaneous.
-
-        Profile: updates the CEP% title text only (no 3-D ellipse exists).
-        """
-        # ── 2-D map ───────────────────────────────────────────────────────────
-        for _a in self._ellipse_layer_artists:
-            try:
-                _a.remove()
-            except (ValueError, AttributeError, TypeError):
-                pass
-        self._ellipse_layer_artists.clear()
-
-        for _a in self._overlay_artists:
-            try:
-                _a.remove()
-            except ValueError:
-                pass
-        self._overlay_artists.clear()
-
-        res = self.state.simulation_result
-        if res is None:
-            self.map_canvas.draw_idle()
-            return
-
-        ax   = self.map_ax
-        lx   = float(res.get("land_x", 0.0))
-        ly   = float(res.get("land_y", 0.0))
-        prob = int(self.state.cep_prob)
-
-        # KDE gradient contours
-        kde_grid = res.get("kde")
-        if kde_grid:
-            try:
-                _X   = np.asarray(kde_grid["X_m"], dtype=float)
-                _Y   = np.asarray(kde_grid["Y_m"], dtype=float)
-                _Z   = np.asarray(kde_grid["Z"],   dtype=float)
-                _lev = np.linspace(0.05, 1.0, 9)
-                _cf  = ax.contourf(_X, _Y, _Z, levels=_lev, cmap="plasma",
-                                   alpha=0.40, zorder=1)
-                _ct  = ax.contour( _X, _Y, _Z, levels=_lev[::2], cmap="plasma",
-                                   alpha=0.75, linewidths=0.8, zorder=2)
-                self._ellipse_layer_artists.extend([_cf, _ct])
-            except Exception as e:
-                print(f"Drawing Error (KDE partial redraw): {e}")
-
-        # Error ellipse patch
-        ell = ellipse_data
-        if ell and isinstance(ell, dict):
-            try:
-                ea = float(ell.get("a", 0.0))
-                eb = float(ell.get("b", 0.0))
-                if ea > 0 and eb > 0:
-                    ecx     = float(ell.get("cx", lx))
-                    ecy     = float(ell.get("cy", ly))
-                    ang_deg = float(np.degrees(float(ell.get("angle_rad", 0.0))))
-                    patch   = MplEllipse(
-                        (ecx, ecy), width=2.0 * ea, height=2.0 * eb,
-                        angle=ang_deg,
-                        fill=False, edgecolor="#cba6f7", linewidth=2.0,
-                        linestyle="--", alpha=0.85, zorder=6,
-                        label=f"Error ellipse  ({prob} %)",
-                    )
-                    ax.add_patch(patch)
-                    self._ellipse_layer_artists.append(patch)
-            except Exception as e:
-                print(f"Drawing Error (ellipse partial redraw): {e}")
-
-        # CEP circle — recomputed at the new probability from cached scatter
-        sc_x = res.get("mc_scatter_x", [])
-        sc_y = res.get("mc_scatter_y", [])
-        if sc_x and sc_y:
-            try:
-                _pts  = np.column_stack([np.asarray(sc_x, dtype=float),
-                                         np.asarray(sc_y, dtype=float)])
-                dists = np.hypot(_pts[:, 0] - lx, _pts[:, 1] - ly)
-                cep_r = float(np.percentile(dists, prob))
-                if cep_r > 0:
-                    theta_c = np.linspace(0.0, 2.0 * np.pi, 200)
-                    (cep_line,) = ax.plot(
-                        lx + cep_r * np.cos(theta_c),
-                        ly + cep_r * np.sin(theta_c),
-                        color="#cba6f7", lw=2.0, alpha=0.90, zorder=5,
-                        label=f"CEP {prob} %  ({cep_r:.1f} m)",
-                    )
-                    cep_ann = ax.text(
-                        lx, ly + cep_r * 1.08,
-                        f"CEP Radius: {cep_r:.1f} m",
-                        color="#cba6f7", fontsize=7.5, ha="center", zorder=7,
-                    )
-                    self._overlay_artists.extend([cep_line, cep_ann])
-            except Exception as e:
-                print(f"Drawing Error (CEP partial redraw): {e}")
-
-        self.map_canvas.draw_idle()
-
-        # ── 3-D profile title (CEP % label only) ─────────────────────────────
-        profile_res = self.state.simulation_result
-        if profile_res is not None:
+        if self.state.simulation_result is not None:
             s = self.state
             self.profile_ax.set_title(
                 f"Mode: {s.sim_mode}   ·   "
                 f"Wind: {s.wind_speed:.1f} m/s @ {s.wind_dir:.0f}°   ·   "
-                f"CEP: {prob} %",
+                f"CEP: {s.cep_prob} %",
                 color="#a6adc8", fontsize=9, pad=8,
             )
             self.profile_canvas.draw_idle()
