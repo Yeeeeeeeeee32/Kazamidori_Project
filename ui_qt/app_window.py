@@ -67,6 +67,53 @@ class AppState(QObject):
         self._simulation_result: Optional[dict] = None
         self._wind_profile:      list           = []
         self._wind_history:      list           = []
+        self._show_kde = True
+        self._show_cep = True
+        self._show_scatter = True
+        self._show_burnout = True
+        self._show_apogee = True
+
+
+    # ── View Toggles ───────────────────────────────────────────────────────────
+    @property
+    def show_kde(self) -> bool: return self._show_kde
+    @show_kde.setter
+    def show_kde(self, v: bool) -> None:
+        if self._show_kde != v:
+            self._show_kde = v
+            self.needs_redraw.emit()
+
+    @property
+    def show_cep(self) -> bool: return self._show_cep
+    @show_cep.setter
+    def show_cep(self, v: bool) -> None:
+        if self._show_cep != v:
+            self._show_cep = v
+            self.needs_redraw.emit()
+
+    @property
+    def show_scatter(self) -> bool: return self._show_scatter
+    @show_scatter.setter
+    def show_scatter(self, v: bool) -> None:
+        if self._show_scatter != v:
+            self._show_scatter = v
+            self.needs_redraw.emit()
+
+    @property
+    def show_burnout(self) -> bool: return self._show_burnout
+    @show_burnout.setter
+    def show_burnout(self, v: bool) -> None:
+        if self._show_burnout != v:
+            self._show_burnout = v
+            self.needs_redraw.emit()
+
+    @property
+    def show_apogee(self) -> bool: return self._show_apogee
+    @show_apogee.setter
+    def show_apogee(self, v: bool) -> None:
+        if self._show_apogee != v:
+            self._show_apogee = v
+            self.needs_redraw.emit()
 
     @property
     def wind_speed(self) -> float: return self._wind_speed
@@ -841,16 +888,31 @@ class AppWindow(QMainWindow):
 
         self._view_menu = mb.addMenu("&View")
 
-        # Checkbox actions for map toggles
-        self.action_show_map_cep = QAction("Show CEP Ellipse", self, checkable=True)
-        self.action_show_map_cep.setChecked(True)
-        self.action_show_map_cep.toggled.connect(self.refresh_visuals)
-        self._view_menu.addAction(self.action_show_map_cep)
+        # Checkbox actions for plot toggles
+        self.action_show_kde = QAction("KDE Contour", self, checkable=True)
+        self.action_show_kde.setChecked(self.state.show_kde)
+        self.action_show_kde.toggled.connect(lambda c: setattr(self.state, "show_kde", c))
+        self._view_menu.addAction(self.action_show_kde)
 
-        self.action_show_map_kde = QAction("Show KDE Contours", self, checkable=True)
-        self.action_show_map_kde.setChecked(True)
-        self.action_show_map_kde.toggled.connect(self.refresh_visuals)
-        self._view_menu.addAction(self.action_show_map_kde)
+        self.action_show_cep = QAction("CEP 90% Ellipse", self, checkable=True)
+        self.action_show_cep.setChecked(self.state.show_cep)
+        self.action_show_cep.toggled.connect(lambda c: setattr(self.state, "show_cep", c))
+        self._view_menu.addAction(self.action_show_cep)
+
+        self.action_show_scatter = QAction("Monte Carlo Scatter", self, checkable=True)
+        self.action_show_scatter.setChecked(self.state.show_scatter)
+        self.action_show_scatter.toggled.connect(lambda c: setattr(self.state, "show_scatter", c))
+        self._view_menu.addAction(self.action_show_scatter)
+
+        self.action_show_burnout = QAction("Motor Burnout Point", self, checkable=True)
+        self.action_show_burnout.setChecked(self.state.show_burnout)
+        self.action_show_burnout.toggled.connect(lambda c: setattr(self.state, "show_burnout", c))
+        self._view_menu.addAction(self.action_show_burnout)
+
+        self.action_show_apogee = QAction("Apogee", self, checkable=True)
+        self.action_show_apogee.setChecked(self.state.show_apogee)
+        self.action_show_apogee.toggled.connect(lambda c: setattr(self.state, "show_apogee", c))
+        self._view_menu.addAction(self.action_show_apogee)
 
         hm = mb.addMenu("&Help")
         hm.addAction(QAction("About Kazamidori", self, triggered=self._on_about))
@@ -1421,7 +1483,7 @@ class AppWindow(QMainWindow):
         res = s.simulation_result
 
         if res is not None:
-            self._draw_real_result(ax, res, s)
+            self._draw_real_result(ax, res)
         else:
             self._draw_empty_profile(ax)
 
@@ -1466,7 +1528,8 @@ class AppWindow(QMainWindow):
         mode_str = getattr(self.state, "flight_mode", "Free")
         ax.set_title(f"3D Flight Profile  |  Mode: {mode_str}", color="#a6adc8", fontsize=9, pad=6)
 
-    def _draw_real_result(self, ax, res: dict, s: AppState) -> None:
+    def _draw_real_result(self, ax, res: dict) -> None:
+        s = self.state
         tx = np.asarray(res.get("trajectory_x", [0.0]), dtype=float)
         ty = np.asarray(res.get("trajectory_y", [0.0]), dtype=float)
         tz = np.clip(np.asarray(res.get("trajectory_z", [0.0]), dtype=float), 0.0, None)
