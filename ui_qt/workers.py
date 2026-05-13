@@ -51,7 +51,10 @@ import threading
 from typing import Any
 
 import numpy as np
+import os
+import random as _random
 import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
 from core.simulation   import simulate_once
@@ -60,6 +63,7 @@ from core.monte_carlo  import (
     _perturb_wind_profile,
     compute_error_ellipse,
     compute_cep,
+    compute_cep_circle,
     compute_kde_contours,
     compute_kde_grid,
 )
@@ -97,6 +101,67 @@ _DEFAULT_AIRFRAME: dict[str, Any] = {
 # Number of MC runs per progress tick.  Smaller → finer progress granularity
 # but slightly more overhead per RocketPy call.
 _MC_BATCH_SIZE: int = 10
+
+
+def _mc_worker_task(
+    sim_params: dict,
+    wind_unc: float,
+    gust_sigma: float,
+    tu: float,
+    raw_thrust: list,
+    elev: float,
+    azi: float,
+    base_u: list,
+    base_v: list,
+    flight_mode: str,
+    target_radius: float,
+    seed: int,
+) -> dict | None:
+    """
+    Top-level, picklable worker function for ProcessPoolExecutor.
+    Runs a single perturbed Monte Carlo simulation and returns purely scalar values.
+    The Flight array data is aggressively discarded to keep memory O(1).
+    """
+    rng = _random.Random(seed)
+
+    # ── Wind perturbation
+    u_prof, v_prof, _ = _perturb_wind_profile(
+        base_u, base_v, rng,
+        wind_unc, gust_intensity=gust_sigma,
+    )
+
+    # ── Thrust perturbation
+    thrust_scale = max(0.1, 1.0 + rng.gauss(0.0, tu))
+    perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
+
+    trial_p = {
+        **sim_params,
+        "wind_u_prof": u_prof,
+        "wind_v_prof": v_prof,
+        "thrust_data": perturbed_thrust,
+    }
+
+    r = simulate_once(elev, azi, trial_p)
+
+    if r["ok"]:
+        from core.optimization import p1_objective_score
+        score = p1_objective_score(r, flight_mode, target_radius)
+
+        # Only return the scalars
+        res = {
+            "x": float(r["impact_x"]),
+            "y": float(r["impact_y"]),
+            "apogee": float(r["apogee_m"]),
+            "hang_time": float(r["hang_time"]),
+            "score": score
+        }
+    else:
+        res = None
+
+    # Memory optimization: forcefully garbage collect / remove refs
+    del r, trial_p, u_prof, v_prof, perturbed_thrust
+
+    return res
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -278,7 +343,19 @@ class SimulationWorker(QThread):
 
             if n_pts > 0:
                 # Handle list of dicts or list of tuples
-                pts_tuples = [(pt["x"], pt["y"]) for pt in scatter] if scatter and isinstance(scatter[0], dict) else scatter
+                if scatter and isinstance(scatter[0], dict):
+                    pts_tuples = [(pt["x"], pt["y"]) for pt in scatter]
+                    scores = [pt["score"] for pt in scatter if pt["score"] != float('-inf')]
+                    avg_score = sum(scores) / len(scores) if scores else float('-inf')
+                    min_score = min(scores) if scores else float('-inf')
+                    avg_alt = sum(pt["apogee"] for pt in scatter) / n_pts
+                    avg_hang = sum(pt["hang_time"] for pt in scatter) / n_pts
+                else:
+                    pts_tuples = scatter
+                    avg_score = float('-inf')
+                    min_score = float('-inf')
+                    avg_alt = 0.0
+                    avg_hang = 0.0
 
                 _cx = sum(x for x, _ in pts_tuples) / n_pts
                 _cy = sum(y for _, y in pts_tuples) / n_pts
@@ -294,6 +371,11 @@ class SimulationWorker(QThread):
                 r_N = 0.0
                 cep_val    = 0.0
                 cov_matrix = None
+                pts_tuples = []
+                avg_score = float('-inf')
+                min_score = float('-inf')
+                avg_alt = 0.0
+                avg_hang = 0.0
 
             # ── Error ellipse — numpy eigendecomposition ─────────────────────
             # Yield before so the GUI can paint the 92% bar before we enter
@@ -324,14 +406,14 @@ class SimulationWorker(QThread):
                 "r_N_radius":   r_N,
                 "cep":          cep_val,
                 "ellipse":      ellipse,
-                "cep_circle":   cep_circle,
+                "cep_circle":   compute_cep_circle(pts_tuples),
                 "kde_contours": kde_contours,
                 "kde":          kde_grid,
                 "cov_matrix":   cov_matrix,
-            "mc_avg_score": avg_score,
-            "mc_min_score": min_score,
-            "mc_avg_alt":   avg_alt,
-            "mc_avg_hang_time": avg_hang,
+                "mc_avg_score": avg_score,
+                "mc_min_score": min_score,
+                "mc_avg_alt":   avg_alt,
+                "mc_avg_hang_time": avg_hang,
             }
 
             self.progress.emit(98)
@@ -601,78 +683,75 @@ class SimulationWorker(QThread):
         gust_sigma   = auto_gust if auto_gust > 0.0 else manual_gust
 
         # Extract sim_params invariants once — avoids repeated dict lookup
-        rng        = _random.Random()
         tu         = max(thrust_unc, 0.0)
         raw_thrust = sim_params["thrust_data"]
         elev       = sim_params["elev"]
         azi        = sim_params["azi"]
         base_u: list = sim_params.get("wind_u_prof", [])
         base_v: list = sim_params.get("wind_v_prof", [])
+        flight_mode = p.get("flight_mode", "Altitude Competition")
+        target_radius = p.get("target_radius", float('inf'))
 
         scatter: list[tuple[float, float]] = []
 
         # Throttle progress signal emissions to at most _MAX_PROG_SIGNALS
-        # cross-thread events regardless of n_total.  Emitting a signal on
-        # every single iteration (e.g. 200 signals for a 200-run batch) fills
-        # the GUI event queue and wastes GUI wakeup cycles on near-identical
-        # bar updates.  yieldCurrentThread() is still called every iteration
-        # so the OS scheduler keeps the GUI thread alive throughout the loop.
+        # cross-thread events regardless of n_total.
         _MAX_PROG_SIGNALS = 20
         _emit_every = max(1, n_total // _MAX_PROG_SIGNALS)
 
-        for i in range(n_total):
-            if self._stop_event.is_set():
-                break
+        # ── ProcessPoolExecutor for CPU-bound Monte Carlo ─────────────────────
+        # max_workers=os.cpu_count() fully utilizes available CPU cores,
+        # completely bypassing the Python GIL for heavy RocketPy math.
+        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+            futures = []
+            # Start random seed block to avoid generating exactly the same stream
+            # of random numbers in each process if we were not passing seeds.
+            base_seed = _random.randint(0, 2**31 - 1)
 
-            # ── Wind perturbation (O(n_altitudes), discarded each iteration) ──
-            u_prof, v_prof, _ = _perturb_wind_profile(
-                base_u, base_v, rng,
-                wind_unc, gust_intensity=gust_sigma,
-            )
+            for i in range(n_total):
+                if self._stop_event.is_set():
+                    break
 
-            # ── Thrust perturbation ───────────────────────────────────────────
-            thrust_scale     = max(0.1, 1.0 + rng.gauss(0.0, tu))
-            perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
+                # Submit task
+                fut = executor.submit(
+                    _mc_worker_task,
+                    sim_params,
+                    wind_unc,
+                    gust_sigma,
+                    tu,
+                    raw_thrust,
+                    elev,
+                    azi,
+                    base_u,
+                    base_v,
+                    flight_mode,
+                    target_radius,
+                    base_seed + i,
+                )
+                futures.append(fut)
 
-            # ── Single perturbed simulation ───────────────────────────────────
-            # Spread sim_params and override only the three dynamic keys.
-            # The large static arrays (base profiles, motor metadata) are
-            # shared by reference — not copied — so memory is O(overrides).
-            trial_p = {**sim_params,
-                       "wind_u_prof": u_prof,
-                       "wind_v_prof": v_prof,
-                       "thrust_data": perturbed_thrust}
+            # Gather results as they complete
+            for _done, fut in enumerate(as_completed(futures), start=1):
+                if self._stop_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
 
-            r = simulate_once(elev, azi, trial_p)
+                res = fut.result()
+                if res is not None:
+                    scatter.append(res)
 
-            # Extract ONLY the two scalar coords.  Everything else in r
-            # (trajectory arrays, event dicts, …) is freed immediately
-            # when del r drops the reference count to zero.
-            if r["ok"]:
-                from core.optimization import p1_objective_score
-                score = p1_objective_score(r, p.get("flight_mode", "Altitude Competition"), p.get("target_radius", float('inf')))
-                scatter.append({
-                    "x": float(r["impact_x"]),
-                    "y": float(r["impact_y"]),
-                    "apogee": float(r["apogee_m"]),
-                    "hang_time": float(r["hang_time"]),
-                    "score": score
-                })
-            del r, trial_p, u_prof, v_prof, perturbed_thrust
+                # ── Yield every iteration — scheduler fairness ────────────────────
+                # yieldCurrentThread() lets the OS give the GUI thread a timeslice
+                # to process any already-queued signals (e.g. repaint the progress
+                # bar from the PREVIOUS emission) without flooding the queue with
+                # a new signal on this iteration.
+                QThread.yieldCurrentThread()
 
-            # ── Yield every iteration — scheduler fairness ────────────────────
-            # yieldCurrentThread() lets the OS give the GUI thread a timeslice
-            # to process any already-queued signals (e.g. repaint the progress
-            # bar from the PREVIOUS emission) without flooding the queue with
-            # a new signal on this iteration.
-            QThread.yieldCurrentThread()
-
-            # Emit progress signals at most _MAX_PROG_SIGNALS times total.
-            # Always emit on the final iteration so the bar reaches 90%.
-            _done = i + 1
-            if _done % _emit_every == 0 or _done == n_total:
-                self.sig_progress_updated.emit(_done, n_total)
-                self.progress.emit(min(25 + int(_done / n_total * 65), 90))
+                # Emit progress signals at most _MAX_PROG_SIGNALS times total.
+                # Always emit on the final iteration so the bar reaches 90%.
+                if _done % _emit_every == 0 or _done == n_total:
+                    self.sig_progress_updated.emit(_done, n_total)
+                    self.progress.emit(min(25 + int(_done / n_total * 65), 90))
 
         return scatter
 

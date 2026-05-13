@@ -434,7 +434,29 @@ def compute_cep(scatter: list[tuple[float, float]]) -> float:
     return dists[lo] + (mid - lo) * (dists[hi] - dists[lo])
 
 
+def compute_cep_circle(scatter: list[tuple[float, float]], n: int = 36) -> "dict | None":
+    """Compute the CEP circle and return it as a metric polygon."""
+    if not scatter:
+        return None
+    r = compute_cep(scatter)
+    if r <= 0:
+        return None
 
+    arr   = np.array(scatter, dtype=float)
+    cx    = float(arr[:, 0].mean())
+    cy    = float(arr[:, 1].mean())
+
+    pts = []
+    for i in range(n):
+        ang = 2 * math.pi * i / n
+        pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+
+    return {
+        "cx_m": cx,
+        "cy_m": cy,
+        "radius_m": r,
+        "points_m": pts
+    }
 
 
 # ── KDE contours ──────────────────────────────────────────────────────────────
