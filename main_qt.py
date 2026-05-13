@@ -101,6 +101,10 @@ class SimController(QObject):
         # repaints without the controller knowing anything about the canvas.
         state.needs_redraw.connect(window.state.needs_redraw)
 
+        # ── Bi-directional Map Sync ────────────────────────────────────────────
+        if hasattr(self._window, 'map_widget') and hasattr(self._window.map_widget, 'coordinates_picked'):
+            self._window.map_widget.coordinates_picked.connect(self._on_map_coordinates_picked)
+
         # ── Phase 2 tolerance monitoring ───────────────────────────────────────
         # tolerance_exceeded fires every tick the bound is breached; update the
         # status bar with current numbers each time so the operator sees the
@@ -1242,6 +1246,38 @@ class SimController(QObject):
             "cep_ellipses": [],
         })
         return adapted
+
+    @Slot(float, float)
+    def _on_map_coordinates_picked(self, lat: float, lon: float) -> None:
+        """Handle 'Ctrl + Click' on the 2D Folium Map View."""
+        import math
+
+        def get_distance(lat1, lon1, lat2, lon2):
+            R = 6371.0 # km
+            dlat = math.radians(lat2 - lat1)
+            dlon = math.radians(lon2 - lon1)
+            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+            return R * c
+
+        old_lat = self._state.launch_lat
+        old_lon = self._state.launch_lon
+
+        # Guard against None values
+        if old_lat is None: old_lat = 0.0
+        if old_lon is None: old_lon = 0.0
+
+        dist = get_distance(old_lat, old_lon, lat, lon)
+
+        # Update AppState correctly. AppState emits signal that UI input should react to,
+        # but to ensure strict sync, we update the inputs which inherently triggers AppState sync via their bindings
+        self._state.launch_lat = lat
+        self._state.launch_lon = lon
+
+        if dist > 5.0:
+            self._on_run_clicked()
+        else:
+            self._state.needs_redraw.emit()
 
     @Slot()
     def _on_partial_redraw(self) -> None:

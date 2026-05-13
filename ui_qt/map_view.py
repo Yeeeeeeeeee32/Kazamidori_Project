@@ -3,11 +3,22 @@ import io
 import folium
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QStackedLayout, QHBoxLayout
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import Qt, Slot, Signal, QObject
+from PySide6.QtWebChannel import QWebChannel
 from ui_qt.app_state import AppState
 from utils.geo_math import offset_to_latlon, ellipse_polygon, circle_polygon
 
+class MapBridge(QObject):
+    coordinates_picked = Signal(float, float)
+
+    @Slot(float, float)
+    def receive_coordinates(self, lat: float, lon: float):
+        self.coordinates_picked.emit(lat, lon)
+
+
 class MapView(QWidget):
+    coordinates_picked = Signal(float, float)
+
     def __init__(self, app_state: AppState, parent=None):
         super().__init__(parent)
         self._state = app_state
@@ -26,6 +37,13 @@ class MapView(QWidget):
 
         # Bottom Layer: Web View
         self.web_view = QWebEngineView(self)
+
+        self.channel = QWebChannel(self.web_view.page())
+        self.bridge = MapBridge(self)
+        self.channel.registerObject("bridge", self.bridge)
+        self.web_view.page().setWebChannel(self.channel)
+
+        self.bridge.coordinates_picked.connect(self.coordinates_picked)
 
         # Top Layer: Overlays
         top_widget = QWidget(self)
@@ -91,7 +109,7 @@ class MapView(QWidget):
 
         self._land_lat, self._land_lon = offset_to_latlon(lat0, lon0, impact_x, impact_y)
 
-        m = folium.Map(location=[lat0, lon0], zoom_start=15, control_scale=True)
+        m = folium.Map(location=[lat0, lon0], zoom_start=15, control_scale=True, scrollWheelZoom=True, dragging=True)
 
         # Launch dot
         folium.CircleMarker(
@@ -175,6 +193,21 @@ class MapView(QWidget):
         # Inject custom ID so we can access map object in JS
 
         html = html.replace('L.map(', 'window.mapObj = L.map(', 1)
+        html = html.replace('<head>', '<head>\n    <script src="qrc:///qtwebchannel/qwebchannel.js"></script>', 1)
+
+        js_injection = """
+        <script>
+        new QWebChannel(qt.webChannelTransport, function(channel) {
+            window.bridge = channel.objects.bridge;
+            window.mapObj.on('click', function(e) {
+                if (e.originalEvent.ctrlKey) {
+                    window.bridge.receive_coordinates(e.latlng.lat, e.latlng.lng);
+                }
+            });
+        });
+        </script>
+        """
+        html = html.replace('</body>', f'{js_injection}\n</body>', 1)
 
         self.web_view.setHtml(html)
 
