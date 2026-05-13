@@ -1,333 +1,184 @@
-"""
-ui_qt/map_view.py
-
-PySide6 QGraphicsView-based simulation overlay map.
-
-Coordinate system
------------------
-Scene origin (0, 0) = launch site.
-X increases East (metres), scene-Y increases South (Qt default), so all
-metric North values are stored as −north_m in the scene.  The helper
-_scene_pt() handles this negation uniformly.
-
-Ghosting prevention
--------------------
-Subscribes to AppState.is_calculating_changed.
-  True  → call scene.removeItem() on every item in _sim_items, then clear the
-           list.  Because scene.removeItem() keeps the C++ object alive until
-           the Python wrapper's refcount reaches zero, clearing the list
-           immediately after removeItem() ensures deterministic destruction
-           without dangling-pointer segfaults.
-  False → no-op; the imminent simulation_result_changed signal supplies the
-           fresh overlay payload.
-
-Thread safety
--------------
-is_calculating_changed is always emitted from the main thread (SimController).
-Qt direct connections therefore keep all scene operations on the main thread.
-"""
-
-from __future__ import annotations
-
 import math
-from typing import Optional
-
-from PySide6.QtCore import Qt, QPointF, QRectF, Slot
-from PySide6.QtGui import (
-    QBrush, QColor, QPainter, QPainterPath, QPen, QPolygonF,
-)
-from PySide6.QtWidgets import (
-    QGraphicsEllipseItem,
-    QGraphicsItem,
-    QGraphicsPolygonItem,
-    QGraphicsScene,
-    QGraphicsView,
-    QLabel,
-    QSizePolicy,
-    QVBoxLayout,
-    QWidget,
-)
-
+import io
+import folium
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QStackedLayout, QHBoxLayout
+from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtCore import Qt, Slot
 from ui_qt.app_state import AppState
-
-
-# ── Zoomable QGraphicsView subclass ──────────────────────────────────────────
-
-class _ZoomView(QGraphicsView):
-    """QGraphicsView with mouse-wheel zoom centred on the cursor."""
-
-    _ZOOM_FACTOR = 1.18
-
-    def wheelEvent(self, event) -> None:
-        factor = (self._ZOOM_FACTOR
-                  if event.angleDelta().y() > 0
-                  else 1.0 / self._ZOOM_FACTOR)
-        self.scale(factor, factor)
-
-
-# ── MapView ───────────────────────────────────────────────────────────────────
+from utils.geo_math import offset_to_latlon, ellipse_polygon, circle_polygon
 
 class MapView(QWidget):
-    """
-    Metric-coordinate overlay map.
-
-    Static items (launch cross-hair, target-radius ring) are added once and
-    never removed.  All simulation-specific items (landing dot, error circles,
-    ellipse, scatter) are tracked in self._sim_items and removed atomically
-    when is_calculating_changed(True) fires.
-    """
-
-    # Cosmetic sizes (scene units = metres)
-    _LAUNCH_CROSS = 10.0   # half-length of launch cross-hair arms
-    _SCATTER_R    = 2.0    # radius of each scatter dot
-    _LANDING_R    = 4.0    # radius of landing centre dot
-
-    def __init__(self, app_state: AppState, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, app_state: AppState, parent=None):
         super().__init__(parent)
-        self._state    = app_state
-        # Geographic coordinates of the last known landing position.
-        # Populated by update_landing(); used for logging/future tile-map support.
-        self._land_lat: float = app_state.launch_lat
-        self._land_lon: float = app_state.launch_lon
-
-        self._scene    = QGraphicsScene(self)
-        self._view     = _ZoomView(self._scene, self)
-
-        # Items that persist across runs (launch marker, target ring).
-        self._static_items: list[QGraphicsItem] = []
-        # Items that represent the *current* simulation result.
-        # Cleared atomically when is_calculating_changed(True) fires.
-        self._sim_items: list[QGraphicsItem] = []
+        self._state = app_state
+        self._land_lat = 0.0
+        self._land_lon = 0.0
 
         self._build_ui()
-        self._draw_static_items(app_state.target_radius)
+        self._draw_static_items(getattr(app_state, 'target_radius', 0.0))
 
-        app_state.is_calculating_changed.connect(self._on_calculating_changed)
-        app_state.simulation_result_changed.connect(self._on_simulation_result)
+        if hasattr(app_state, 'is_calculating_changed'): app_state.is_calculating_changed.connect(self._on_calculating_changed)
+        if hasattr(app_state, 'simulation_result_changed'): app_state.simulation_result_changed.connect(self._on_simulation_result)
 
-    # ── UI construction ───────────────────────────────────────────────────────
+    def _build_ui(self):
+        layout = QStackedLayout(self)
+        layout.setStackingMode(QStackedLayout.StackAll)
 
-    def _build_ui(self) -> None:
-        self._view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-        self._view.setTransformationAnchor(
-            QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self._view.setResizeAnchor(
-            QGraphicsView.ViewportAnchor.AnchorViewCenter)
-        self._view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._view.setBackgroundBrush(QBrush(QColor('#1e1e2e')))
-        self._view.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # Initial scene rect (±200 m around launch site)
-        self._view.setSceneRect(-200, -200, 400, 400)
+        # Bottom Layer: Web View
+        self.web_view = QWebEngineView(self)
+
+        # Top Layer: Overlays
+        top_widget = QWidget(self)
+        top_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(10, 10, 10, 10)
+
+        btn_layout = QHBoxLayout()
+        self.btn_reset = QPushButton("Reset View", top_widget)
+        self.btn_reset.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.btn_reset.clicked.connect(self._on_reset_view)
+        self.btn_reset.setStyleSheet("background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; padding: 4px; font-size: 10px; font-weight: bold; border-radius: 3px;")
+        btn_layout.addWidget(self.btn_reset)
+        btn_layout.addStretch()
 
         self._info = QLabel("No simulation result.")
+        self._info.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._info.setStyleSheet(
-            "QLabel { font-size: 11px; font-weight: bold; padding: 4px; }")
+        self._info.setStyleSheet("QLabel { font-size: 11px; font-weight: bold; padding: 4px; background: rgba(30, 30, 46, 0.85); color: #cdd6f4; border-radius: 3px; }")
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._view, 1)
-        layout.addWidget(self._info)
+        top_layout.addLayout(btn_layout)
+        top_layout.addStretch()
+        top_layout.addWidget(self._info)
 
-    def _draw_static_items(self, target_radius: float) -> None:
-        """Add the launch cross-hair and target-radius ring (never cleared)."""
-        h   = self._LAUNCH_CROSS
-        pen = QPen(QColor('#4488ff'), 2.0)
-        pen.setCosmetic(True)   # line width stays constant across zoom levels
-        cross_h = self._scene.addLine(-h, 0, h, 0, pen)
-        cross_v = self._scene.addLine(0, -h, 0, h, pen)
-        self._static_items.extend([cross_h, cross_v])
+        layout.addWidget(self.web_view)
+        layout.addWidget(top_widget)
 
-        # Launch dot
-        dot = QGraphicsEllipseItem(-4, -4, 8, 8)
-        dot_pen = QPen(QColor('#4488ff'), 1.5)
-        dot_pen.setCosmetic(True)
-        dot.setPen(dot_pen)
-        dot.setBrush(QBrush(QColor('#2255cc')))
-        self._scene.addItem(dot)
-        self._static_items.append(dot)
+    def _draw_static_items(self, target_radius):
+        self._render_result({})
 
-        # Target-radius ring (dashed blue)
-        if target_radius > 0:
-            r = float(target_radius)
-            ring = QGraphicsEllipseItem(-r, -r, 2 * r, 2 * r)
-            ring_pen = QPen(QColor('#0055ff'), 1.5, Qt.PenStyle.DashLine)
-            ring.setPen(ring_pen)
-            ring.setBrush(Qt.BrushStyle.NoBrush)
-            self._scene.addItem(ring)
-            self._static_items.append(ring)
-
-    # ── Public API called by SimController ────────────────────────────────────
-
-    def update_landing(self, lat: float, lon: float) -> None:
-        """Store the geographic landing position (called before full render)."""
+    def update_landing(self, lat, lon):
         self._land_lat = float(lat)
         self._land_lon = float(lon)
 
-    # ── Ghosting prevention ───────────────────────────────────────────────────
-
     @Slot(bool)
-    def _on_calculating_changed(self, calculating: bool) -> None:
-        """
-        Called synchronously on the main thread via Qt direct connection.
-
-        True  → remove every item in _sim_items from the scene, then drop all
-                Python references.  The C++ QGraphicsItem objects are destroyed
-                when their refcount reaches zero (immediately after list.clear()).
-        False → no-op; _on_simulation_result handles the incoming payload.
-        """
-        if not calculating:
-            return
-
-        for item in self._sim_items:
-            self._scene.removeItem(item)
-        # Drop all Python references → C++ objects destroyed deterministically.
-        self._sim_items.clear()
-
-        self._info.setText("Calculating…")
-
-    # ── Simulation result rendering ───────────────────────────────────────────
+    def _on_calculating_changed(self, calculating: bool):
+        if calculating:
+            self._info.setText("Calculating...")
 
     @Slot(object)
-    def _on_simulation_result(self, result: Optional[dict]) -> None:
-        if result is None or result.get('cancelled'):
+    def _on_simulation_result(self, result):
+        if not result or result.get('cancelled'):
             self._info.setText("Simulation cancelled or no result.")
             return
         self._render_result(result)
 
-    def _render_result(self, result: dict) -> None:
-        """
-        Draw one complete simulation result onto the scene.
+    def _render_result(self, result):
+        lat0 = getattr(self._state, 'launch_lat', 0.0)
+        lon0 = getattr(self._state, 'launch_lon', 0.0)
 
-        All created items are appended to _sim_items so they are cleared
-        atomically on the next _on_calculating_changed(True) call.
-        """
-        # Defensive clear (handles the rare case where is_calculating_changed
-        # was not received before this signal).
-        for item in self._sim_items:
-            self._scene.removeItem(item)
-        self._sim_items.clear()
+        impact_x = float(result.get('land_x', 0.0))
+        impact_y = float(result.get('land_y', 0.0))
+        r90 = float(result.get('r_N_radius', 0.0))
+        cep = float(result.get('cep', 0.0))
+        scatter_x = result.get('mc_scatter_x', [])
+        scatter_y = result.get('mc_scatter_y', [])
+        ellipse = result.get('ellipse')
+        contours = result.get('kde_contours', [])
+        prob = int(result.get('landing_prob', 90))
+        apogee = float(result.get('apogee_m', 0.0))
+        tof = float(result.get('hang_time', 0.0))
+        target_radius = getattr(self._state, 'target_radius', 0.0)
 
-        impact_x = float(result.get('impact_x',  0.0))
-        impact_y = float(result.get('impact_y',  0.0))
-        r90      = float(result.get('r_N_radius', 0.0))
-        cep      = float(result.get('cep',        0.0))
-        scatter  = result.get('scatter',  [])
-        ellipse  = result.get('ellipse')
-        prob     = int(result.get('landing_prob', 90))
-        apogee   = float(result.get('apogee_m',   0.0))
-        tof      = float(result.get('hang_time',  0.0))
+        self._land_lat, self._land_lon = offset_to_latlon(lat0, lon0, impact_x, impact_y)
 
-        # Landing dot
-        self._add_circle(impact_x, impact_y, self._LANDING_R,
-                         fill='#ff4444', outline='#cc0000', lw=1.5)
+        m = folium.Map(location=[lat0, lon0], zoom_start=15, control_scale=True)
 
-        # R-N% landing radius circle
-        if r90 > 0:
-            self._add_circle(impact_x, impact_y, r90,
-                             fill=None, outline='#cc0000', lw=2.0)
+        # Launch dot
+        folium.CircleMarker(
+            location=[lat0, lon0],
+            radius=5, color='#4488ff', fill=True, fill_opacity=1
+        ).add_to(m)
 
-        # CEP 50% circle (dashed purple)
-        if cep > 0:
-            self._add_circle(impact_x, impact_y, cep,
-                             fill=None, outline='#9933cc', lw=1.8,
-                             style=Qt.PenStyle.DashLine)
+        if target_radius > 0:
+            folium.Circle(
+                location=[lat0, lon0],
+                radius=target_radius,
+                color='#0055ff',
+                dash_array='5, 5',
+                fill=False,
+            ).add_to(m)
 
-        # Error ellipse (filled green polygon)
-        if ellipse:
-            pts = _ellipse_points(
-                impact_x, impact_y,
-                ellipse['a'], ellipse['b'], ellipse['angle_rad'])
-            self._add_polygon(pts, fill='#00bb0030', outline='#00bb00', lw=2.0)
+        if result:
+            self._info.setText(
+                f"R{prob}: {r90:.1f} m  |  CEP50: {cep:.1f} m  |  "
+                f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s"
+            )
 
-        # MC scatter — all points batched into one QPainterPath (one scene item).
-        # Individual QGraphicsEllipseItem per point freezes Qt at 1000+ pts.
-        if scatter:
-            try:
-                path = QPainterPath()
-                r = self._SCATTER_R
-                for px, py in scatter[:500]:
-                    path.addEllipse(QPointF(float(px), -float(py)), r, r)
-                sc_item = self._scene.addPath(
-                    path,
-                    QPen(Qt.PenStyle.NoPen),
-                    QBrush(QColor('#ff6633')),
-                )
-                sc_item.setOpacity(0.45)
-                self._sim_items.append(sc_item)
-            except Exception as e:
-                print(f"Drawing Error (QGraphicsScene scatter): {e}")
+            # Landing dot
+            folium.CircleMarker(
+                location=[self._land_lat, self._land_lon],
+                radius=4, color='#cc0000', fill=True, fill_color='#ff4444', fill_opacity=1
+            ).add_to(m)
 
-        # Info label
-        self._info.setText(
-            f"R{prob}: {r90:.1f} m  |  CEP50: {cep:.1f} m  |  "
-            f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s")
+            if r90 > 0:
+                folium.Circle(
+                    location=[self._land_lat, self._land_lon],
+                    radius=r90,
+                    color='#cc0000',
+                    weight=2,
+                    fill=False,
+                ).add_to(m)
 
-        # Auto-fit view to show the landing area with generous padding
-        pad  = max(r90, cep, 30.0) * 0.35
-        half = max(r90, cep, 30.0) + pad
-        rect = QRectF(impact_x - half, -impact_y - half, 2 * half, 2 * half)
-        self._view.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+            if cep > 0 and show_cep:
+                folium.Circle(
+                    location=[self._land_lat, self._land_lon],
+                    radius=cep,
+                    color='#9933cc',
+                    weight=1.8,
+                    dash_array='5, 5',
+                    fill=False,
+                ).add_to(m)
 
-    # ── Scene helpers ─────────────────────────────────────────────────────────
+            if ellipse and show_cep:
+                poly = ellipse_polygon(lat0, lon0, impact_x, impact_y, ellipse['a'], ellipse['b'], ellipse['angle_rad'])
+                folium.Polygon(
+                    locations=poly,
+                    color='#00bb00',
+                    weight=2,
+                    fill=True,
+                    fill_color='#00bb00',
+                    fill_opacity=0.3
+                ).add_to(m)
 
-    @staticmethod
-    def _scene_pt(east_m: float, north_m: float) -> QPointF:
-        """Convert ENU metric offset to scene coordinates (Y-negated for North-up)."""
-        return QPointF(east_m, -north_m)
+            if contours and show_kde:
+                for contour in contours:
+                    poly = [offset_to_latlon(lat0, lon0, px, py) for px, py in contour['points_m']]
+                    folium.Polygon(
+                        locations=poly,
+                        color='#cc5500',
+                        weight=1.5,
+                        fill=False,
+                    ).add_to(m)
 
-    def _add_circle(
-        self,
-        east_m: float, north_m: float, r: float,
-        fill: Optional[str],
-        outline: Optional[str],
-        lw: float,
-        style: Qt.PenStyle = Qt.PenStyle.SolidLine,
-    ) -> None:
-        """Add a circle centred at (east_m, north_m) with radius r metres."""
-        # Bounding-rect top-left in scene coords (Y-negated)
-        item = QGraphicsEllipseItem(east_m - r, -north_m - r, 2 * r, 2 * r)
-        item.setBrush(QBrush(QColor(fill)) if fill else Qt.BrushStyle.NoBrush)
-        if outline:
-            pen = QPen(QColor(outline), lw)
-            pen.setStyle(style)
-            item.setPen(pen)
-        else:
-            item.setPen(Qt.PenStyle.NoPen)
-        self._scene.addItem(item)
-        self._sim_items.append(item)
+            if len(scatter_x) > 0 and len(scatter_y) > 0:
+                for px, py in zip(scatter_x[:500], scatter_y[:500]):
+                    plat, plon = offset_to_latlon(lat0, lon0, px, py)
+                    folium.CircleMarker(
+                        location=[plat, plon],
+                        radius=2, color='none', fill=True, fill_color='#ff6633', fill_opacity=0.45
+                    ).add_to(m)
 
-    def _add_polygon(
-        self,
-        points: list[tuple[float, float]],
-        fill: Optional[str],
-        outline: Optional[str],
-        lw: float,
-    ) -> None:
-        """Add a closed polygon from a list of (east_m, north_m) metric pairs."""
-        poly = QPolygonF([QPointF(px, -py) for px, py in points])
-        item = QGraphicsPolygonItem(poly)
-        item.setBrush(QBrush(QColor(fill)) if fill else Qt.BrushStyle.NoBrush)
-        item.setPen(QPen(QColor(outline), lw) if outline else Qt.PenStyle.NoPen)
-        self._scene.addItem(item)
-        self._sim_items.append(item)
+        data = io.BytesIO()
+        m.save(data, close_file=False)
+        html = data.getvalue().decode()
 
+        # Inject custom ID so we can access map object in JS
 
-# ── Geometry helpers ──────────────────────────────────────────────────────────
+        html = html.replace('L.map(', 'window.mapObj = L.map(', 1)
 
-def _ellipse_points(
-    cx: float, cy: float,
-    a: float, b: float,
-    angle_rad: float,
-    n: int = 64,
-) -> list[tuple[float, float]]:
-    """Sample n points on an ellipse in the ENU metric plane."""
-    ca, sa = math.cos(angle_rad), math.sin(angle_rad)
-    pts = []
-    for i in range(n):
-        t  = 2.0 * math.pi * i / n
-        xe = a * math.cos(t) * ca - b * math.sin(t) * sa + cx
-        ye = a * math.cos(t) * sa + b * math.sin(t) * ca + cy
-        pts.append((xe, ye))
-    return pts
+        self.web_view.setHtml(html)
+
+    def _on_reset_view(self):
+        js = f"if (window.mapObj) {{ window.mapObj.setView([{getattr(self._state, 'launch_lat', 0.0)}, {getattr(self._state, 'launch_lon', 0.0)}], 15); }}"
+        self.web_view.page().runJavaScript(js)
+
