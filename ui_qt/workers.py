@@ -346,8 +346,11 @@ class SimulationWorker(QThread):
             result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
             self.finished.emit(result)
 
-        except Exception:
-            self.error.emit(traceback.format_exc())
+        except Exception as _exc:
+            if self._stop_event.is_set() or str(_exc) == 'cancelled':
+                self.finished.emit({"cancelled": True})
+            else:
+                self.error.emit(traceback.format_exc())
 
     # ── Step helpers ───────────────────────────────────────────────────────────
 
@@ -1040,6 +1043,9 @@ class OptimizationWorker(QThread):
             self.progress.emit(100)
             self.finished.emit(result)
 
-        except Exception:
+        except Exception as _exc:
             import traceback
-            self.error.emit(traceback.format_exc())
+            if self._stop_event.is_set() or str(_exc) == 'cancelled':
+                self.finished.emit({"cancelled": True})
+            else:
+                self.error.emit(traceback.format_exc())
