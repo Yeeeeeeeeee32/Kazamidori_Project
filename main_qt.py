@@ -30,7 +30,7 @@ import time as _time
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, QTimer, Slot
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton, QSystemTrayIcon, QStyle
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow, GLOBAL_QSS
@@ -80,6 +80,11 @@ class SimController(QObject):
         # Cache the sig_nominal_done payload so _on_mc_done can forward
         # phases/events (phase-coloured 3-D trajectory) into the final result.
         self._nominal_payload: dict | None    = None
+
+        # ── Setup System Tray Icon ─────────────────────────────────────────────
+        self._tray_icon = QSystemTrayIcon(self)
+        self._tray_icon.setIcon(self._window.style().standardIcon(QStyle.SP_ComputerIcon))
+        self._tray_icon.show()
 
         self._rewire_buttons()
 
@@ -620,6 +625,14 @@ class SimController(QObject):
         self._worker = None
         self._set_run_buttons_enabled(True)
 
+        # Trigger completion notification
+        self._tray_icon.showMessage(
+            "Kazamidori Simulation",
+            "Simulation Complete!",
+            QSystemTrayIcon.Information,
+            3000
+        )
+
     @Slot(str)
     def _on_error(self, msg: str) -> None:
         self._state.mc_running = False
@@ -628,6 +641,13 @@ class SimController(QObject):
         self._window.set_progress(0, "Error")
         self._worker = None
         self._set_run_buttons_enabled(True)
+
+        self._tray_icon.showMessage(
+            "Simulation Error",
+            msg,
+            QSystemTrayIcon.Warning,
+            5000
+        )
 
     @Slot(str)
     def _on_worker_status(self, msg: str) -> None:
