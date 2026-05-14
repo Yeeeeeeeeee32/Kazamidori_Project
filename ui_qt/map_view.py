@@ -91,8 +91,8 @@ class MapView(QWidget):
         self._render_result(result)
 
     def _render_result(self, result):
-        lat0 = getattr(self._state, 'launch_lat', 0.0)
-        lon0 = getattr(self._state, 'launch_lon', 0.0)
+        lat0 = getattr(self._state, 'launch_lat', 0.0) or 0.0
+        lon0 = getattr(self._state, 'launch_lon', 0.0) or 0.0
 
         impact_x = float(result.get('land_x', 0.0))
         impact_y = float(result.get('land_y', 0.0))
@@ -105,7 +105,7 @@ class MapView(QWidget):
         prob = int(result.get('landing_prob', 90))
         apogee = float(result.get('apogee_m', 0.0))
         tof = float(result.get('hang_time', 0.0))
-        target_radius = getattr(self._state, 'target_radius', 0.0)
+        target_radius = getattr(self._state, 'target_radius', 0.0) or 0.0
 
         self._land_lat, self._land_lon = offset_to_latlon(lat0, lon0, impact_x, impact_y)
 
@@ -147,7 +147,7 @@ class MapView(QWidget):
                     fill=False,
                 ).add_to(m)
 
-            if cep > 0 and show_cep:
+            if cep > 0 and getattr(self._state, 'show_cep', True):
                 folium.Circle(
                     location=[self._land_lat, self._land_lon],
                     radius=cep,
@@ -157,7 +157,7 @@ class MapView(QWidget):
                     fill=False,
                 ).add_to(m)
 
-            if ellipse and show_cep:
+            if ellipse and getattr(self._state, 'show_cep', True):
                 poly = ellipse_polygon(lat0, lon0, impact_x, impact_y, ellipse['a'], ellipse['b'], ellipse['angle_rad'])
                 folium.Polygon(
                     locations=poly,
@@ -168,7 +168,7 @@ class MapView(QWidget):
                     fill_opacity=0.3
                 ).add_to(m)
 
-            if contours and show_kde:
+            if contours and getattr(self._state, 'show_kde', True):
                 for contour in contours:
                     poly = [offset_to_latlon(lat0, lon0, px, py) for px, py in contour['points_m']]
                     folium.Polygon(
@@ -212,6 +212,6 @@ class MapView(QWidget):
         self.web_view.setHtml(html)
 
     def _on_reset_view(self):
-        js = f"if (window.mapObj) {{ window.mapObj.setView([{getattr(self._state, 'launch_lat', 0.0)}, {getattr(self._state, 'launch_lon', 0.0)}], 15); }}"
+        js = f"if (window.mapObj) {{ window.mapObj.setView([{getattr(self._state, 'launch_lat', 0.0) or 0.0}, {getattr(self._state, 'launch_lon', 0.0) or 0.0}], 15); }}"
         self.web_view.page().runJavaScript(js)
 

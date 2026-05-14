@@ -88,6 +88,16 @@ class SimController(QObject):
 
         self._rewire_buttons()
 
+        # Bind global state signals to UI labels
+        self._state.koinobori_status_changed.connect(
+            lambda v: self._window.lbl_koinobori_status.setText(f"Koinobori: {v}"))
+        self._state.gpv_last_fetch_time_changed.connect(
+            lambda v: self._window.lbl_gpv_status.setText(f"GPV Updated: {v}"))
+
+        # Initialize labels with current values
+        self._window.lbl_koinobori_status.setText(f"Koinobori: {self._state.koinobori_status}")
+        self._window.lbl_gpv_status.setText(f"GPV Updated: {self._state.gpv_last_fetch_time}")
+
         # ── Parameter readiness interlock ──────────────────────────────────────
         # RUN buttons start disabled; they unlock only after all 15 critical
         # geometry parameters become non-None (i.e. after Rocket.json is loaded).
@@ -280,7 +290,13 @@ class SimController(QObject):
             )
             return
 
+
+        if self._window.af_backfire_input.value() == -9999.0:
+            QMessageBox.critical(self._window, "Missing Parameter", "Please enter a value for the Backfire Delay.")
+            return
+
         # ── Launch site entry check ────────────────────────────────────────────
+
         _BLANK = -9999.0
         _unset = []
         if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
@@ -346,7 +362,13 @@ class SimController(QObject):
             )
             return
 
+
+        if self._window.af_backfire_input.value() == -9999.0:
+            QMessageBox.critical(self._window, "Missing Parameter", "Please enter a value for the Backfire Delay.")
+            return
+
         # ── Launch site entry check ────────────────────────────────────────────
+
         _BLANK = -9999.0
         _unset = []
         if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
@@ -372,16 +394,27 @@ class SimController(QObject):
         self._state.simulation_result = None
         self._window.update_map_plot()
 
-        from ui_qt.workers import OptimizationWorker
-        self._worker = OptimizationWorker(self._collect_params(), parent=self)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.sig_nominal_done.connect(self._on_nominal_done)
-        self._worker.sig_progress_updated.connect(self._on_progress_updated)
-        self._worker.finished.connect(self._on_mc_done)
-        self._worker.error.connect(self._on_error)
-        self._worker.sig_status_text.connect(self._on_worker_status)
-        self._worker.sig_early_warning.connect(self._on_early_warning)
-        self._worker.sig_optimization_done.connect(self._on_optimization_done)
+        if self._state.is_free_mode:
+            from ui_qt.workers import SimulationWorker
+            self._worker = SimulationWorker(self._collect_params(), parent=self)
+            self._worker.progress.connect(self._on_progress)
+            self._worker.sig_nominal_done.connect(self._on_nominal_done)
+            self._worker.sig_progress_updated.connect(self._on_progress_updated)
+            self._worker.finished.connect(self._on_mc_done)
+            self._worker.error.connect(self._on_error)
+            self._worker.sig_status_text.connect(self._on_worker_status)
+            self._worker.sig_early_warning.connect(self._on_early_warning)
+        else:
+            from ui_qt.workers import OptimizationWorker
+            self._worker = OptimizationWorker(self._collect_params(), parent=self)
+            self._worker.progress.connect(self._on_progress)
+            self._worker.sig_nominal_done.connect(self._on_nominal_done)
+            self._worker.sig_progress_updated.connect(self._on_progress_updated)
+            self._worker.finished.connect(self._on_mc_done)
+            self._worker.error.connect(self._on_error)
+            self._worker.sig_status_text.connect(self._on_worker_status)
+            self._worker.sig_early_warning.connect(self._on_early_warning)
+            self._worker.sig_optimization_done.connect(self._on_optimization_done)
 
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
