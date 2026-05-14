@@ -41,7 +41,7 @@ All wind components are in the RocketPy East-North convention:
 The returned (u_prof, v_prof) lists are ready for direct use::
 
     env.set_atmospheric_model(
-        type='custom_atmosphere', pressure=None, temperature=300,
+        type='custom_atmosphere', pressure=None, temperature=None,
         wind_u=u_prof, wind_v=v_prof,
     )
 

@@ -52,6 +52,24 @@ class AppState(QObject):
     target_radius_changed  = Signal(float)
     operation_mode_changed = Signal(str)
 
+    # ── Aerodynamics & Motor (advanced settings, exposed in Phase B) ──────────
+    # power_on_cd / power_off_cd split the previous single body_cd so the
+    # coast phase can carry a different drag coefficient from the boost phase.
+    # motor_isp / motor_propellant_density are surfaced so the operator can
+    # pick the correct propellant chemistry (defaults are Black Powder).
+    power_on_cd_changed              = Signal(float)
+    power_off_cd_changed             = Signal(float)
+    motor_isp_changed                = Signal(float)
+    motor_propellant_density_changed = Signal(float)
+
+    # ── Mach-dependent Cd curves (Phase C) ────────────────────────────────────
+    # Each carries either ``None`` (fall back to the scalar above) or a
+    # ``list[tuple[float, float]]`` of (Mach, Cd) pairs sorted by ascending
+    # Mach.  The list payload is object-typed since PySide6's primitive Signal
+    # types cannot express ``Optional[list[...]]`` directly.
+    cd_curve_power_on_changed  = Signal(object)
+    cd_curve_power_off_changed = Signal(object)
+
     # ── Simulation results ─────────────────────────────────────────────────────
     land_lat_changed       = Signal(float)
     land_lon_changed       = Signal(float)
@@ -303,6 +321,21 @@ class AppState(QObject):
         self._moi_pitch: float = 0.0   # Iyy — about lateral Y axis
         self._moi_yaw:   float = 0.0   # Izz — about lateral Z axis
 
+        # Aerodynamics & motor (advanced settings — see AdvancedSettingsDialog).
+        # Defaults assume a Black-Powder Estes-class motor; values are surfaced
+        # bidirectionally to the dialog so the operator can override per flight.
+        self._power_on_cd:              float = 0.45
+        self._power_off_cd:             float = 0.40
+        self._motor_isp:                float = 80.0    # s     (Black Powder)
+        self._motor_propellant_density: float = 1700.0  # kg/m³ (Black Powder)
+
+        # Mach-dependent drag curves (Phase C).  ``None`` means "use the scalar
+        # above"; once an operator loads a (Mach, Cd) CSV via the Advanced
+        # Settings dialog, the curve replaces the scalar at simulation time.
+        # Stored as ``list[tuple[float, float]]`` sorted by ascending Mach.
+        self._cd_curve_power_on:  Optional[list[tuple[float, float]]] = None
+        self._cd_curve_power_off: Optional[list[tuple[float, float]]] = None
+
         # Phase B wind baseline — locked after a successful Phase A run.
         # None until set_wind_lock() is called (CEP <= target_radius).
         self._locked_mu:    tuple[float, float] | None = None   # (u_E, v_N) m/s
@@ -541,6 +574,100 @@ class AppState(QObject):
         if self._drag_coeff != value:
             self._drag_coeff = value
             self.drag_coeff_changed.emit(value)
+
+    # ── Aerodynamics & Motor (advanced settings) ─────────────────────────────
+
+    @Property(float, notify=power_on_cd_changed)
+    def power_on_cd(self) -> float:
+        """Airframe drag coefficient during powered (boost) phase."""
+        return self._power_on_cd
+
+    @power_on_cd.setter
+    def power_on_cd(self, value: float) -> None:
+        value = float(value)
+        if self._power_on_cd != value:
+            self._power_on_cd = value
+            self.power_on_cd_changed.emit(value)
+
+    @Property(float, notify=power_off_cd_changed)
+    def power_off_cd(self) -> float:
+        """Airframe drag coefficient during coast (motor off) phase."""
+        return self._power_off_cd
+
+    @power_off_cd.setter
+    def power_off_cd(self, value: float) -> None:
+        value = float(value)
+        if self._power_off_cd != value:
+            self._power_off_cd = value
+            self.power_off_cd_changed.emit(value)
+
+    @Property(float, notify=motor_isp_changed)
+    def motor_isp(self) -> float:
+        """Motor specific impulse (s).  Default 80 s assumes Black Powder."""
+        return self._motor_isp
+
+    @motor_isp.setter
+    def motor_isp(self, value: float) -> None:
+        value = float(value)
+        if self._motor_isp != value:
+            self._motor_isp = value
+            self.motor_isp_changed.emit(value)
+
+    @Property(float, notify=motor_propellant_density_changed)
+    def motor_propellant_density(self) -> float:
+        """Motor propellant bulk density (kg/m³).  Default 1700 = Black Powder."""
+        return self._motor_propellant_density
+
+    @motor_propellant_density.setter
+    def motor_propellant_density(self, value: float) -> None:
+        value = float(value)
+        if self._motor_propellant_density != value:
+            self._motor_propellant_density = value
+            self.motor_propellant_density_changed.emit(value)
+
+    # ── Mach-dependent Cd curves (Phase C) ───────────────────────────────────
+
+    @Property(object, notify=cd_curve_power_on_changed)
+    def cd_curve_power_on(self) -> Optional[list[tuple[float, float]]]:
+        """Optional (Mach, Cd) curve used during the boost phase.
+
+        ``None`` → simulation falls back to the scalar :attr:`power_on_cd`.
+        Otherwise a list of ``(Mach, Cd)`` tuples sorted by ascending Mach,
+        consumed directly by RocketPy's ``Rocket(power_on_drag=...)``.
+        """
+        return self._cd_curve_power_on
+
+    @cd_curve_power_on.setter
+    def cd_curve_power_on(
+        self,
+        value: Optional[list[tuple[float, float]]],
+    ) -> None:
+        # Normalise: treat empty list as "no curve loaded" so downstream
+        # consumers only ever see None or a non-empty list.
+        if value is not None and len(value) == 0:
+            value = None
+        if self._cd_curve_power_on != value:
+            self._cd_curve_power_on = value
+            self.cd_curve_power_on_changed.emit(value)
+
+    @Property(object, notify=cd_curve_power_off_changed)
+    def cd_curve_power_off(self) -> Optional[list[tuple[float, float]]]:
+        """Optional (Mach, Cd) curve used during the coast phase.
+
+        ``None`` → simulation falls back to the scalar :attr:`power_off_cd`.
+        """
+        return self._cd_curve_power_off
+
+    @cd_curve_power_off.setter
+    def cd_curve_power_off(
+        self,
+        value: Optional[list[tuple[float, float]]],
+    ) -> None:
+        if value is not None and len(value) == 0:
+            value = None
+        if self._cd_curve_power_off != value:
+            self._cd_curve_power_off = value
+            self.cd_curve_power_off_changed.emit(value)
 
     @Property(float, notify=ref_area_changed)
     def ref_area(self) -> float:

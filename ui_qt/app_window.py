@@ -318,6 +318,84 @@ QTabBar::tab { min-height: 30px; padding: 5px 10px; }
 GLOBAL_QSS = _QSS
 
 
+# ── Cd curve preview dialog (Phase D) ─────────────────────────────────────────
+
+class CdCurvePreviewDialog(QDialog):
+    """
+    Modal preview window for a Mach-dependent Cd curve loaded into AppState.
+
+    Plots Mach (X) vs Cd (Y) on a Matplotlib canvas embedded in a small,
+    resizable Qt dialog.  The figure is owned by the dialog (NOT by pyplot)
+    so it never enters the global pyplot registry — closing the dialog
+    releases the figure deterministically.
+
+    Memory hygiene
+    --------------
+    Matplotlib figures can leak when:
+      *  Held by ``pyplot`` indefinitely (we avoid this by using
+         :class:`Figure` directly).
+      *  Their canvas keeps a back-reference after Qt has destroyed the
+         widget hierarchy.
+    ``closeEvent`` explicitly clears the figure and schedules the canvas
+    for deletion, guaranteeing both reference paths drop on close.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        curve: list[tuple[float, float]],
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(560, 420)
+        self.setModal(True)
+
+        from matplotlib.figure                import Figure
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+        # Use ``Figure`` directly (no pyplot) so the figure is never added to
+        # the global pyplot figure registry — releasing it here is sufficient
+        # to free its memory.
+        self._fig    = Figure(figsize=(5.4, 3.6), constrained_layout=True)
+        self._canvas = FigureCanvasQTAgg(self._fig)
+        ax           = self._fig.add_subplot(111)
+
+        machs = [pt[0] for pt in curve]
+        cds   = [pt[1] for pt in curve]
+        ax.plot(machs, cds, marker="o", linewidth=1.5, color="#89b4fa")
+        ax.set_xlabel("Mach")
+        ax.set_ylabel("Cd")
+        ax.set_title(f"{len(curve)} interpolation points")
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(left=0.0)
+        ax.set_ylim(bottom=0.0)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.addWidget(self._canvas, 1)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close, 0, Qt.AlignmentFlag.AlignRight)
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        # Explicitly tear down Matplotlib resources.  ``Figure.clear()``
+        # detaches all axes/artists; ``deleteLater`` schedules the Qt
+        # widget for destruction on the next event loop tick.  Together
+        # these drop the only two references to the Figure object, so
+        # garbage collection can reclaim its arrays immediately.
+        try:
+            self._fig.clear()
+        except Exception:
+            pass
+        try:
+            self._canvas.deleteLater()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
 # ── Advanced Settings Dialog ──────────────────────────────────────────────────
 
 class AdvancedSettingsDialog(QDialog):
@@ -339,6 +417,10 @@ class AdvancedSettingsDialog(QDialog):
         self.setMinimumWidth(440)
         self.setModal(True)
         self._snapshot: dict = {}
+        # Bi-directional binding to AppState — installed lazily via
+        # ``bind_app_state()`` so the dialog can be constructed before the
+        # global AppState exists.  None means "no binding active yet".
+        self._bound_state = None
         self._build()
 
     # ── Construction ──────────────────────────────────────────────────────────
@@ -414,6 +496,98 @@ class AdvancedSettingsDialog(QDialog):
         frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
         frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
 
+        # ── Aerodynamics & Motor group ────────────────────────────────────────
+        # These four parameters were previously hard-coded inside core/.
+        # Exposing them lets the operator pick the correct drag model for
+        # boost vs coast and the correct propellant chemistry (default = BP).
+        grp_aero = QGroupBox("Aerodynamics & Motor")
+        frm3 = QFormLayout(grp_aero)
+        frm3.setSpacing(6)
+        frm3.setContentsMargins(10, 12, 10, 8)
+
+        self.power_on_cd_input = QDoubleSpinBox()
+        self.power_on_cd_input.setRange(0.0, 2.0)
+        self.power_on_cd_input.setDecimals(3)
+        self.power_on_cd_input.setSingleStep(0.01)
+        self.power_on_cd_input.setValue(0.45)
+        self.power_on_cd_input.wheelEvent = lambda event: event.ignore()
+
+        self.power_off_cd_input = QDoubleSpinBox()
+        self.power_off_cd_input.setRange(0.0, 2.0)
+        self.power_off_cd_input.setDecimals(3)
+        self.power_off_cd_input.setSingleStep(0.01)
+        self.power_off_cd_input.setValue(0.40)
+        self.power_off_cd_input.wheelEvent = lambda event: event.ignore()
+
+        self.motor_isp_input = QDoubleSpinBox()
+        self.motor_isp_input.setRange(40.0, 300.0)
+        self.motor_isp_input.setDecimals(1)
+        self.motor_isp_input.setSingleStep(1.0)
+        self.motor_isp_input.setValue(80.0)
+        self.motor_isp_input.setSuffix(" s")
+        self.motor_isp_input.wheelEvent = lambda event: event.ignore()
+
+        self.motor_propellant_density_input = QDoubleSpinBox()
+        self.motor_propellant_density_input.setRange(500.0, 2500.0)
+        self.motor_propellant_density_input.setDecimals(0)
+        self.motor_propellant_density_input.setSingleStep(10.0)
+        self.motor_propellant_density_input.setValue(1700.0)
+        self.motor_propellant_density_input.setSuffix(" kg/m³")
+        self.motor_propellant_density_input.wheelEvent = lambda event: event.ignore()
+
+        # ── Mach-dependent Cd curve rows (Phase C) ────────────────────────────
+        # Each row groups: [Load CSV] [Clear] [status label].
+        # Status label shows ``Curve Loaded`` (with point count) or
+        # ``Using Static Value`` and is the canonical readout of whether
+        # the curve overrides the scalar Cd above.
+        def _build_curve_row() -> tuple[QPushButton, QPushButton, QPushButton, QLabel, QWidget]:
+            host  = QWidget()
+            row   = QHBoxLayout(host)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            btn_load    = QPushButton("Load Cd Curve…")
+            btn_preview = QPushButton("Preview")
+            btn_clear   = QPushButton("Clear")
+            lbl         = QLabel("Using Static Value")
+            lbl.setStyleSheet("color: #888888;")
+            row.addWidget(btn_load)
+            row.addWidget(btn_preview)
+            row.addWidget(btn_clear)
+            row.addWidget(lbl, 1)
+            return btn_load, btn_preview, btn_clear, lbl, host
+
+        (self.power_on_cd_curve_load_btn,
+         self.power_on_cd_curve_preview_btn,
+         self.power_on_cd_curve_clear_btn,
+         self.power_on_cd_curve_label,
+         _row_on)  = _build_curve_row()
+
+        (self.power_off_cd_curve_load_btn,
+         self.power_off_cd_curve_preview_btn,
+         self.power_off_cd_curve_clear_btn,
+         self.power_off_cd_curve_label,
+         _row_off) = _build_curve_row()
+
+        self.power_on_cd_curve_load_btn.clicked.connect(
+            lambda: self._on_load_cd_curve("power_on"))
+        self.power_on_cd_curve_preview_btn.clicked.connect(
+            lambda: self._on_preview_cd_curve("power_on"))
+        self.power_on_cd_curve_clear_btn.clicked.connect(
+            lambda: self._on_clear_cd_curve("power_on"))
+        self.power_off_cd_curve_load_btn.clicked.connect(
+            lambda: self._on_load_cd_curve("power_off"))
+        self.power_off_cd_curve_preview_btn.clicked.connect(
+            lambda: self._on_preview_cd_curve("power_off"))
+        self.power_off_cd_curve_clear_btn.clicked.connect(
+            lambda: self._on_clear_cd_curve("power_off"))
+
+        frm3.addRow("Power-On  Cd (boost):",  self.power_on_cd_input)
+        frm3.addRow("Power-On  Cd Curve:",    _row_on)
+        frm3.addRow("Power-Off Cd (coast):",  self.power_off_cd_input)
+        frm3.addRow("Power-Off Cd Curve:",    _row_off)
+        frm3.addRow("Motor Isp:",             self.motor_isp_input)
+        frm3.addRow("Propellant Density:",    self.motor_propellant_density_input)
+
         # ── OK / Cancel ───────────────────────────────────────────────────────
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -425,6 +599,7 @@ class AdvancedSettingsDialog(QDialog):
 
         root.addWidget(grp_wind)
         root.addWidget(grp_mc)
+        root.addWidget(grp_aero)
         root.addWidget(btns)
 
     # ── Cancel / snapshot helpers ─────────────────────────────────────────────
@@ -435,14 +610,18 @@ class AdvancedSettingsDialog(QDialog):
 
     def _take_snapshot(self) -> dict:
         return {
-            "surf_spd": self.surf_spd_input.value(),
-            "surf_dir": self.surf_dir_input.value(),
-            "up_spd":   self.up_spd_input.value(),
-            "up_dir":   self.up_dir_input.value(),
-            "cep_prob": self.cep_prob_input.value(),
-            "mc_runs":  self.mc_runs_input.value(),
-            "wind_unc": self.wind_unc_input.value(),
-            "thr_unc":  self.thrust_unc_input.value(),
+            "surf_spd":      self.surf_spd_input.value(),
+            "surf_dir":      self.surf_dir_input.value(),
+            "up_spd":        self.up_spd_input.value(),
+            "up_dir":        self.up_dir_input.value(),
+            "cep_prob":      self.cep_prob_input.value(),
+            "mc_runs":       self.mc_runs_input.value(),
+            "wind_unc":      self.wind_unc_input.value(),
+            "thr_unc":       self.thrust_unc_input.value(),
+            "power_on_cd":   self.power_on_cd_input.value(),
+            "power_off_cd":  self.power_off_cd_input.value(),
+            "motor_isp":     self.motor_isp_input.value(),
+            "prop_density":  self.motor_propellant_density_input.value(),
         }
 
     def _on_cancel(self) -> None:
@@ -455,7 +634,169 @@ class AdvancedSettingsDialog(QDialog):
         self.mc_runs_input.setValue(s["mc_runs"])
         self.wind_unc_input.setValue(s["wind_unc"])
         self.thrust_unc_input.setValue(s["thr_unc"])
+        self.power_on_cd_input.setValue(s["power_on_cd"])
+        self.power_off_cd_input.setValue(s["power_off_cd"])
+        self.motor_isp_input.setValue(s["motor_isp"])
+        self.motor_propellant_density_input.setValue(s["prop_density"])
         self.reject()
+
+    # ── AppState binding ─────────────────────────────────────────────────────
+
+    def bind_app_state(self, state) -> None:
+        """Establish bi-directional binding between the four advanced inputs
+        and the corresponding AppState properties.
+
+        Direction widget → state: the spinbox's ``valueChanged`` signal writes
+        through to the AppState property setter, which emits its own change
+        signal so other observers (workers, plot views) stay in sync.
+
+        Direction state → widget: the AppState change signal pushes the new
+        value back into the spinbox.  ``QSignalBlocker`` is used during the
+        push to avoid re-emitting ``valueChanged`` and creating a feedback loop.
+
+        Safe to call exactly once with a real ``AppState``; subsequent calls
+        are no-ops.  Idempotent re-binding is intentionally not supported in
+        Phase B (a single AppState lives for the whole session).
+        """
+        if state is None or self._bound_state is state:
+            return
+        self._bound_state = state
+
+        # Seed widgets with the current AppState values so the dialog opens
+        # showing the authoritative state, not the hard-coded spinbox defaults.
+        from PySide6.QtCore import QSignalBlocker
+        for widget, attr in (
+            (self.power_on_cd_input,              "power_on_cd"),
+            (self.power_off_cd_input,             "power_off_cd"),
+            (self.motor_isp_input,                "motor_isp"),
+            (self.motor_propellant_density_input, "motor_propellant_density"),
+        ):
+            with QSignalBlocker(widget):
+                widget.setValue(float(getattr(state, attr)))
+
+        # widget → state
+        self.power_on_cd_input.valueChanged.connect(
+            lambda v: setattr(state, "power_on_cd", float(v)))
+        self.power_off_cd_input.valueChanged.connect(
+            lambda v: setattr(state, "power_off_cd", float(v)))
+        self.motor_isp_input.valueChanged.connect(
+            lambda v: setattr(state, "motor_isp", float(v)))
+        self.motor_propellant_density_input.valueChanged.connect(
+            lambda v: setattr(state, "motor_propellant_density", float(v)))
+
+        # state → widget (guarded with QSignalBlocker to avoid loops)
+        def _push(widget, value):
+            if widget.value() != float(value):
+                with QSignalBlocker(widget):
+                    widget.setValue(float(value))
+
+        state.power_on_cd_changed.connect(
+            lambda v: _push(self.power_on_cd_input, v))
+        state.power_off_cd_changed.connect(
+            lambda v: _push(self.power_off_cd_input, v))
+        state.motor_isp_changed.connect(
+            lambda v: _push(self.motor_isp_input, v))
+        state.motor_propellant_density_changed.connect(
+            lambda v: _push(self.motor_propellant_density_input, v))
+
+        # ── Cd curve labels (Phase C) ────────────────────────────────────────
+        # The Load / Clear buttons mutate AppState directly; the labels are
+        # purely view-side reflections of the curve property.  Connecting
+        # here means the readout updates regardless of who triggered the
+        # change (UI button, programmatic load, deserialised session, …).
+        state.cd_curve_power_on_changed.connect(
+            lambda curve: self._refresh_curve_label(
+                self.power_on_cd_curve_label, curve))
+        state.cd_curve_power_off_changed.connect(
+            lambda curve: self._refresh_curve_label(
+                self.power_off_cd_curve_label, curve))
+        self._refresh_curve_label(
+            self.power_on_cd_curve_label,  state.cd_curve_power_on)
+        self._refresh_curve_label(
+            self.power_off_cd_curve_label, state.cd_curve_power_off)
+
+    # ── Cd curve handlers (Phase C) ──────────────────────────────────────────
+
+    @staticmethod
+    def _refresh_curve_label(label: QLabel, curve) -> None:
+        """Update *label* to reflect whether a Cd curve is currently loaded."""
+        if curve is not None and len(curve) >= 2:
+            label.setText(f"Curve Loaded ({len(curve)} pts)")
+            label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+        else:
+            label.setText("Using Static Value")
+            label.setStyleSheet("color: #888888;")
+
+    def _on_load_cd_curve(self, which: str) -> None:
+        """Open a file dialog, parse the chosen CSV, and write the result back
+        into AppState's ``cd_curve_power_on`` / ``cd_curve_power_off``.
+
+        ``which`` is ``"power_on"`` or ``"power_off"``.  Errors are surfaced
+        through :class:`QMessageBox` warnings without raising, so a bad file
+        leaves the existing curve (or static-value fallback) untouched.
+        """
+        if self._bound_state is None:
+            QMessageBox.warning(
+                self, "Cd Curve Loader",
+                "AppState is not yet wired to this dialog. "
+                "The Cd curve cannot be stored.")
+            return
+
+        title = ("Load Power-On Cd Curve" if which == "power_on"
+                 else "Load Coast (Power-Off) Cd Curve")
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, title, "", "CSV files (*.csv);;All files (*.*)")
+        if not filepath:
+            return
+
+        try:
+            from utils.data_loader import parse_cd_curve_csv
+            curve = parse_cd_curve_csv(filepath)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, "Cd Curve Parse Error",
+                f"Failed to load Cd curve from:\n{filepath}\n\n{exc}")
+            return
+
+        attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
+        setattr(self._bound_state, attr, curve)
+
+    def _on_clear_cd_curve(self, which: str) -> None:
+        """Reset the chosen Cd curve to ``None`` so the simulation falls back
+        to the corresponding scalar (``power_on_cd`` / ``power_off_cd``)."""
+        if self._bound_state is None:
+            return
+        attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
+        setattr(self._bound_state, attr, None)
+
+    def _on_preview_cd_curve(self, which: str) -> None:
+        """Pop a Matplotlib preview of the currently-loaded Cd curve.
+
+        Shows an informational message box (rather than an error) when no
+        curve has been loaded — the scalar fallback is the *intended* state,
+        not a misconfiguration.
+        """
+        if self._bound_state is None:
+            QMessageBox.warning(
+                self, "Cd Curve Preview",
+                "AppState is not yet wired to this dialog.")
+            return
+
+        attr  = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
+        curve = getattr(self._bound_state, attr, None)
+
+        if curve is None or len(curve) < 2:
+            QMessageBox.information(
+                self, "Cd Curve Preview",
+                "No curve loaded. Using static scalar value.")
+            return
+
+        title = ("Power-On Cd Curve" if which == "power_on"
+                 else "Coast (Power-Off) Cd Curve")
+        # ``self`` parents the preview dialog so Qt destroys it automatically
+        # if the Advanced Settings dialog is closed while it is still open.
+        preview = CdCurvePreviewDialog(title, list(curve), parent=self)
+        preview.exec()
 
 
 # ── Manual rocket geometry dialog ─────────────────────────────────────────────
@@ -880,6 +1221,12 @@ class AppWindow(QMainWindow):
         fm = mb.addMenu("&File")
         fm.addAction(QAction("Load Motor File…", self, triggered=self._on_load_motor))
         fm.addAction(QAction("Export Results…",  self))
+        fm.addSeparator()
+        # Phase E: persist the operator-facing AppState (Cd / motor settings,
+        # Cd curves) to JSON so a calibrated launch profile can be reloaded
+        # in a future session without re-entering every value.
+        fm.addAction(QAction("Save Session…", self, triggered=self._on_save_session))
+        fm.addAction(QAction("Load Session…", self, triggered=self._on_load_session))
         fm.addSeparator()
         fm.addAction(QAction("Quit", self, triggered=self.close))
 
@@ -2144,6 +2491,89 @@ class AppWindow(QMainWindow):
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
         self.profile_ax.view_init(elev=22, azim=value)
         self.profile_canvas.draw_idle()
+
+    def bind_app_state(self, state) -> None:
+        """Forward the global :class:`AppState` to nested dialogs that need it.
+
+        AppWindow itself is constructed before the global ``AppState`` exists
+        (see ``main_qt.py``), so widgets that require bi-directional binding
+        receive their state reference here, once both objects are alive.
+
+        Wires:
+          *  Advanced Settings dialog (Phase B aero/motor + Phase C Cd curves)
+          *  File menu Save / Load Session actions (Phase E session manager)
+        """
+        self._app_state = state            # cached for the session menu slots
+        self._adv_dialog.bind_app_state(state)
+
+    # ── Session persistence (Phase E) ────────────────────────────────────────
+
+    def _on_save_session(self) -> None:
+        """Prompt for a JSON path and serialise the global AppState there.
+
+        Strictly MVVM: this slot calls :mod:`utils.session_manager` which only
+        reads AppState properties — no UI state leaks into the JSON, and no
+        direct widget access happens here.
+        """
+        if getattr(self, "_app_state", None) is None:
+            QMessageBox.warning(
+                self, "Save Session",
+                "AppState is not yet wired to AppWindow; session save is "
+                "unavailable.")
+            return
+
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Save Session", "kazamidori_session.json",
+            "JSON files (*.json);;All files (*.*)")
+        if not filepath:
+            return
+
+        try:
+            from utils.session_manager import save_session
+            save_session(self._app_state, filepath)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Save Session",
+                f"Failed to write session file:\n{filepath}\n\n{exc}")
+            return
+
+        QMessageBox.information(
+            self, "Save Session",
+            f"Session saved successfully to:\n{filepath}")
+
+    def _on_load_session(self) -> None:
+        """Prompt for a JSON path and restore advanced settings from it.
+
+        After ``load_session`` writes the values through the AppState property
+        setters, every observer (the Advanced Settings dialog bindings, the
+        Cd curve preview button, downstream workers) updates automatically
+        via Qt signals — no manual UI refresh is needed.
+        """
+        if getattr(self, "_app_state", None) is None:
+            QMessageBox.warning(
+                self, "Load Session",
+                "AppState is not yet wired to AppWindow; session load is "
+                "unavailable.")
+            return
+
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Load Session", "",
+            "JSON files (*.json);;All files (*.*)")
+        if not filepath:
+            return
+
+        try:
+            from utils.session_manager import load_session, SessionError
+            load_session(self._app_state, filepath)
+        except (OSError, SessionError) as exc:
+            QMessageBox.warning(
+                self, "Load Session",
+                f"Failed to load session file:\n{filepath}\n\n{exc}")
+            return
+
+        QMessageBox.information(
+            self, "Load Session",
+            f"Session loaded successfully from:\n{filepath}")
 
     def _on_advanced_settings(self) -> None:
         """Open the Advanced Settings dialog modally."""

@@ -51,6 +51,7 @@ import numpy as np
 
 # Relative imports within the package
 from .simulation import simulate_once
+from .constants  import CHI2_90, OBS_ALT, BLEND_ALT
 
 
 # ── Wind profile builder (self-contained copy to avoid circular deps) ─────────
@@ -154,7 +155,7 @@ def build_perturbed_wind_prof(
 
     # Stage 2: rebuild smooth Hellmann profile from perturbed anchors
     u_prof, v_prof = build_wind_profile(
-        surf_spd, surf_dir, 3.0, up_spd, up_dir, 100.0)
+        surf_spd, surf_dir, OBS_ALT, up_spd, up_dir, BLEND_ALT)
 
     # Stage 3: per-level turbulence noise scaled to local wind speed
     if wu > 1e-9:
@@ -406,8 +407,8 @@ def p1_params_at_wind(base_params: dict, mu_surf: float) -> dict:
     ratio    = mu_surf / max(base_params['surf_spd'], 1e-6)
     mu_upper = base_params['up_spd'] * ratio
     u_prof, v_prof = build_wind_profile(
-        mu_surf, base_params['surf_dir'], 3.0,
-        mu_upper, base_params['up_dir'], 100.0,
+        mu_surf, base_params['surf_dir'], OBS_ALT,
+        mu_upper, base_params['up_dir'], BLEND_ALT,
     )
     p = dict(base_params)
     p['wind_u_prof'] = u_prof
@@ -442,8 +443,8 @@ def p1_mc_points(
         ratio    = surf_spd / mu_nominal
         up_spd   = max(0.0, rng.gauss(base_params['up_spd'] * ratio, sigma * 0.5))
         u_prof, v_prof = build_wind_profile(
-            surf_spd, base_params['surf_dir'], 3.0,
-            up_spd,   base_params['up_dir'],   100.0,
+            surf_spd, base_params['surf_dir'], OBS_ALT,
+            up_spd,   base_params['up_dir'],   BLEND_ALT,
         )
         p = dict(base_params)
         p['wind_u_prof'] = u_prof
@@ -484,7 +485,7 @@ def p1_ellipse_breaches_circle(
 ) -> bool:
     """Return True if the 90 % error ellipse extends beyond circle radius R.
 
-    Uses chi²(2, 90 %) = 4.605 for the ellipse scale factor.
+    Uses ``CHI2_90`` (chi²(2, 90 %)) for the ellipse scale factor.
     The check is done by sampling n_pts boundary points of the ellipse
     and testing whether any fall outside the circle.
 
@@ -495,7 +496,7 @@ def p1_ellipse_breaches_circle(
         R:        Target circle radius (metres).
         n_pts:    Number of boundary samples (default 180).
     """
-    K   = math.sqrt(4.605)   # chi²(2, 90 %)
+    K   = math.sqrt(CHI2_90)
     a   = K * math.sqrt(max(float(eigvals[1]), 0.0))   # major semi-axis
     b   = K * math.sqrt(max(float(eigvals[0]), 0.0))   # minor semi-axis
     ang = math.atan2(float(eigvecs[1, 1]), float(eigvecs[0, 1]))
@@ -619,7 +620,7 @@ def run_phase1(
             'Nominal MC: insufficient samples (< 6). Check parameters.')
 
     cx_nom, cy_nom, eig_v, eig_vc = p1_ellipse_params(pts_nom)
-    K              = math.sqrt(4.605)
+    K              = math.sqrt(CHI2_90)
     a_nom          = K * math.sqrt(max(float(eig_v[1]), 0.0))
     b_nom          = K * math.sqrt(max(float(eig_v[0]), 0.0))
     angle_rad      = math.atan2(float(eig_vc[1, 1]), float(eig_vc[0, 1]))

@@ -88,14 +88,17 @@ _DEFAULT_AIRFRAME: dict[str, Any] = {
     "motor_pos":        0.38,    # motor CG from nose (m)
     "motor_dry_mass":   0.015,   # motor dry mass (kg)
     "backfire_delay":   4.0,     # ejection charge fires this many s after burnout
-    "body_cd":          0.45,    # airframe drag coefficient (power on/off)
     "para_cd":          0.8,     # parachute drag coefficient
     "para_area":        0.126,   # parachute reference area (m²)
     "para_lag":         0.5,     # deployment lag (s)
-    "motor_isp":        90.0,    # assumed Isp (s) used by build_motor_from_curve
-                                 # black-powder Estes: ~80-100 s  ← default (Bug E)
-                                 # low-power APCP:     ~130-170 s
-                                 # mid/high-power APCP: ~180-230 s
+    # NOTE: body_cd / motor_isp / motor_propellant_density used to live here
+    # as Phase A fallback defaults.  They were superseded in Phase B by the
+    # split power_on_cd / power_off_cd plus the new motor_isp and
+    # motor_propellant_density properties on AppState (defaults: 0.45 / 0.40 /
+    # 80.0 s / 1700 kg/m³).  The physics core in core/simulation.py also
+    # provides its own ``params.get(..., default)`` fallbacks aligned with
+    # those AppState defaults, so listing stale duplicates here only risks
+    # silent drift if a future refactor reorders the merge.
 }
 
 # Number of MC runs per progress tick.  Smaller → finer progress granularity
@@ -122,6 +125,28 @@ def _mc_worker_task(
     Runs a single perturbed Monte Carlo simulation and returns purely scalar values.
     The Flight array data is aggressively discarded to keep memory O(1).
     """
+    # ── One-shot child-process diagnostic (Phase E) ──────────────────────────
+    # ProcessPoolExecutor spawns N child processes; each one imports this
+    # module fresh and gets its own copy of every module-level attribute.
+    # The function-attribute guard therefore prints exactly once *per child
+    # process*, regardless of how many MC trials that child eventually runs.
+    # We log here so a silent pickle-failure of ``cd_curve_power_*`` (which
+    # would land in the child as ``None`` or missing) is immediately visible
+    # in the console.
+    if not getattr(_mc_worker_task, "_logged", False):
+        import os as _os
+        _curve_on  = sim_params.get("cd_curve_power_on")  or []
+        _curve_off = sim_params.get("cd_curve_power_off") or []
+        print(
+            f"[MC Worker PID {_os.getpid()}] "
+            f"Cd curves received — power_on={len(_curve_on)} pts, "
+            f"power_off={len(_curve_off)} pts  |  "
+            f"I_z={sim_params.get('I_z', 'fallback')}, "
+            f"I_xy={sim_params.get('I_xy', 'fallback')}",
+            flush=True,
+        )
+        _mc_worker_task._logged = True   # type: ignore[attr-defined]
+
     rng = _random.Random(seed)
 
     # ── Wind perturbation
@@ -189,10 +214,21 @@ class SimulationWorker(QThread):
     sig_status_text      = Signal(str)        # Human-readable stage label for the status bar
     sig_early_warning    = Signal(str)        # Nominal pre-eval: emitted before MC if out of target
 
-    def __init__(self, params: dict[str, Any], parent=None) -> None:
+    def __init__(
+        self,
+        params: dict[str, Any],
+        parent=None,
+        *,
+        app_state: "object | None" = None,
+    ) -> None:
         super().__init__(parent)
         self._params     = dict(params)
         self._stop_event = threading.Event()
+        # Optional reference to the global AppState.  Used read-only from
+        # within ``run()`` to pull MoI / late-binding parameters into the
+        # simulation params dict.  ``None`` means "no AppState wired" — the
+        # physics core then falls back to its built-in approximations.
+        self._app_state = app_state
 
     # ── Public control ─────────────────────────────────────────────────────────
 
@@ -225,6 +261,32 @@ class SimulationWorker(QThread):
 
             self.progress.emit(5)
             sim_params = self._build_sim_params(p, u_prof, v_prof)
+
+            # ── Inject accurate Moment of Inertia from AppState ──────────────
+            # ``utils/geometry_math.py`` computes (Ixx, Iyy, Izz) when the
+            # operator loads an .rkt file and stores them in AppState via
+            # ``set_moi()``.  Forward those values to the physics core so it
+            # stops falling back to the solid-cylinder approximation.
+            # Map:
+            #   AppState.moi_roll  (Ixx, longitudinal)  → params['I_z']
+            #   AppState.moi_pitch (Iyy, lateral)       → params['I_xy']
+            # Skip injection when AppState is absent or MoI is still zero
+            # (no .rkt loaded yet) — the Phase A fallback then takes over.
+            if self._app_state is not None:
+                _ixx = float(getattr(self._app_state, "moi_roll",  0.0))
+                _iyy = float(getattr(self._app_state, "moi_pitch", 0.0))
+                if _ixx > 0.0 and _iyy > 0.0:
+                    sim_params["I_z"]  = _ixx
+                    sim_params["I_xy"] = _iyy
+
+                # ── Forward Mach-dependent Cd curves (Phase C) ───────────────
+                # ``None`` means "no curve loaded" → simulate_once falls back
+                # to the scalar power_on_cd / power_off_cd values.  A list of
+                # ``(Mach, Cd)`` tuples is consumed directly by RocketPy.
+                sim_params["cd_curve_power_on"]  = getattr(
+                    self._app_state, "cd_curve_power_on",  None)
+                sim_params["cd_curve_power_off"] = getattr(
+                    self._app_state, "cd_curve_power_off", None)
 
             self.progress.emit(10)
             self.sig_status_text.emit("Simulating...")
@@ -987,10 +1049,20 @@ class OptimizationWorker(QThread):
     sig_early_warning    = Signal(str)
     sig_optimization_done = Signal(float, float) # elev, azi
 
-    def __init__(self, params: dict[str, Any], parent=None) -> None:
+    def __init__(
+        self,
+        params: dict[str, Any],
+        parent=None,
+        *,
+        app_state: "object | None" = None,
+    ) -> None:
         super().__init__(parent)
         self._params     = dict(params)
         self._stop_event = threading.Event()
+        # Same read-only AppState reference contract as SimulationWorker.
+        # Used to forward MoI / Cd / motor parameters into the params dict
+        # that feeds optimize_launch_angle and the subsequent MC pipeline.
+        self._app_state = app_state
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -1005,6 +1077,36 @@ class OptimizationWorker(QThread):
             u_prof, v_prof = SimulationWorker._build_wind_profiles(p)
             wind_nodes = sample_wind_nodes(u_prof, v_prof)
             sim_params = SimulationWorker._build_sim_params(p, u_prof, v_prof)
+
+            # ── Phase D: forward advanced parameters from AppState ───────────
+            # ``optimize_launch_angle`` performs hundreds of ``simulate_once``
+            # evaluations; if we skip this step the optimiser silently uses
+            # static defaults and the chosen (elev, azi) drifts away from
+            # the operating point that the live UI thinks it is using.
+            # Inject everything Phase B/C exposed: precise MoI, split Cds,
+            # motor chemistry, and Mach-dependent drag curves.  All keys are
+            # preserved through ``dict(base_params)`` copies inside
+            # core/optimization.py (p1_params_at_wind, p1_mc_points, ...).
+            if self._app_state is not None:
+                _ixx = float(getattr(self._app_state, "moi_roll",  0.0))
+                _iyy = float(getattr(self._app_state, "moi_pitch", 0.0))
+                if _ixx > 0.0 and _iyy > 0.0:
+                    sim_params["I_z"]  = _ixx
+                    sim_params["I_xy"] = _iyy
+
+                sim_params["power_on_cd"]   = float(getattr(
+                    self._app_state, "power_on_cd",  0.45))
+                sim_params["power_off_cd"]  = float(getattr(
+                    self._app_state, "power_off_cd", 0.40))
+                sim_params["motor_isp"]     = float(getattr(
+                    self._app_state, "motor_isp", 80.0))
+                sim_params["motor_propellant_density"] = float(getattr(
+                    self._app_state, "motor_propellant_density", 1700.0))
+
+                sim_params["cd_curve_power_on"]  = getattr(
+                    self._app_state, "cd_curve_power_on",  None)
+                sim_params["cd_curve_power_off"] = getattr(
+                    self._app_state, "cd_curve_power_off", None)
 
             # Important parameter routing
             target_r = p.get("target_radius", 50.0)

@@ -69,6 +69,7 @@ import numpy as np
 
 from .simulation import simulate_once
 from .wind_model import apply_gust
+from .constants  import CHI2_90
 
 
 # ── Chi-squared 2-DOF quantile table ─────────────────────────────────────────
@@ -78,7 +79,7 @@ CHI2_2DOF: dict[int, float] = {
     68: 2.296,
     80: 3.219,
     85: 3.794,
-    90: 4.605,
+    90: CHI2_90,
     95: 5.991,
     99: 9.210,
 }
@@ -89,7 +90,7 @@ def chi2_scale(prob_pct: int) -> float:
 
     Falls back to the 90 % value for unknown percentages.
     """
-    return math.sqrt(CHI2_2DOF.get(int(prob_pct), 4.605))
+    return math.sqrt(CHI2_2DOF.get(int(prob_pct), CHI2_90))
 
 
 # ── Internal geometry helpers ─────────────────────────────────────────────────

@@ -750,3 +750,115 @@ def parse_parachute_json(filepath: str) -> dict:
         raise RocketConfigError(f"Parachute area must be > 0, got {area}")
 
     return {"cd": cd, "area": area, "lag": lag}
+
+
+# ── Mach-dependent Cd curve parser (Phase C) ──────────────────────────────────
+
+def parse_cd_curve_csv(filepath: str) -> list[tuple[float, float]]:
+    """Parse a 2-column ``(Mach, Cd)`` CSV file into a sorted list of tuples.
+
+    The returned list is consumed directly by RocketPy's ``Rocket(...)``
+    constructor through ``power_on_drag`` / ``power_off_drag``, which accept
+    a list of ``(Mach, Cd)`` pairs and interpolate linearly between them.
+
+    Format
+    ------
+    *   Two columns, comma-separated. Either column may contain a header
+        label as long as the first row is *purely textual* (i.e. neither
+        cell parses as a float).  All-numeric rows are taken as data.
+    *   Empty lines and whitespace-only lines are ignored at any position.
+    *   Cells are stripped of surrounding whitespace before parsing.
+    *   The UTF-8 BOM (``\\ufeff``), if present, is consumed automatically.
+
+    Example accepted layouts (any of these is fine)::
+
+        Mach, Cd                ← header (skipped)
+        0.0,  0.50
+        0.5,  0.48
+        1.0,  0.62
+
+        0.00, 0.50              ← no header
+        0.50, 0.48
+        1.00, 0.62
+
+    Validation
+    ----------
+    Raises :class:`ValueError` when:
+        *   The file contains no parsable ``(Mach, Cd)`` rows.
+        *   Any row has fewer than two cells.
+        *   A non-numeric row appears **after** valid data (= corrupt body).
+        *   Mach or Cd is negative.
+        *   The same Mach number appears twice (ambiguous Cd).
+
+    Raises :class:`OSError` (or subclasses) when the file cannot be opened.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the CSV file on disk.
+
+    Returns
+    -------
+    list[tuple[float, float]]
+        Non-empty, sorted by ascending Mach; ready for RocketPy.
+    """
+    import csv as _csv
+
+    rows: list[tuple[float, float]] = []
+
+    # ``utf-8-sig`` transparently strips the BOM that some spreadsheet apps
+    # (e.g. Excel) prepend when exporting CSV.  ``newline=""`` is the
+    # documented best practice for the ``csv`` module.
+    with open(filepath, "r", encoding="utf-8-sig", newline="") as fh:
+        reader = _csv.reader(fh)
+        for line_no, raw in enumerate(reader, start=1):
+            if not raw:
+                continue
+            stripped = [c.strip() for c in raw]
+            # Skip blank lines (all cells empty after stripping).
+            if all(c == "" for c in stripped):
+                continue
+            if len(stripped) < 2:
+                raise ValueError(
+                    f"{filepath}:{line_no}: expected 2 columns (Mach, Cd), "
+                    f"got {len(stripped)}"
+                )
+
+            try:
+                mach = float(stripped[0])
+                cd   = float(stripped[1])
+            except ValueError:
+                # A non-numeric row is acceptable ONLY as a header before any
+                # data has been collected — after that it indicates corruption.
+                if rows:
+                    raise ValueError(
+                        f"{filepath}:{line_no}: non-numeric data "
+                        f"{stripped[:2]!r} after valid rows"
+                    ) from None
+                continue
+
+            if mach < 0.0 or cd < 0.0:
+                raise ValueError(
+                    f"{filepath}:{line_no}: Mach and Cd must be non-negative "
+                    f"(got mach={mach}, cd={cd})"
+                )
+
+            rows.append((mach, cd))
+
+    if not rows:
+        raise ValueError(
+            f"{filepath}: no valid (Mach, Cd) data rows found"
+        )
+
+    rows.sort(key=lambda r: r[0])
+
+    # Strict-increase check: RocketPy interpolation would silently misbehave
+    # on duplicate Mach values.
+    for i in range(1, len(rows)):
+        if rows[i][0] == rows[i - 1][0]:
+            raise ValueError(
+                f"{filepath}: duplicate Mach value {rows[i][0]} — "
+                "Cd curve must have strictly increasing Mach numbers"
+            )
+
+    return rows

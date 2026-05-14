@@ -34,7 +34,17 @@ params dict keys expected by simulate_once
   motor_pos                float   metres from nose tip  (nozzle exit, positive toward tail)
   motor_dry_mass           float   kg
   backfire_delay           float   seconds after burn-out
-  body_cd                  float   rocket airframe drag coefficient, power on/off (default 0.45)
+  power_on_cd              float   airframe drag coefficient during boost (default 0.45)
+  power_off_cd             float   airframe drag coefficient during coast (default 0.40)
+  cd_curve_power_on        list|None  Optional [(Mach, Cd), ...] curve used during
+                                   boost; overrides power_on_cd when present and
+                                   contains ≥ 2 points.  None → use scalar.
+  cd_curve_power_off       list|None  Same as above for the coast phase.
+  motor_isp                float   motor specific impulse, s (default 80, Black Powder)
+  motor_propellant_density float   propellant bulk density, kg/m³ (default 1700, BP)
+  I_z                      float   roll/longitudinal MoI, kg·m² (optional; falls back
+                                   to a solid-cylinder approximation when omitted)
+  I_xy                     float   lateral pitch/yaw MoI, kg·m²  (optional; same fallback)
   para_cd                  float   parachute drag coefficient (used as Cd in CdS product)
   para_area                float   parachute reference area m²
   para_lag                 float   deployment lag seconds
@@ -61,6 +71,8 @@ from typing import Any
 import numpy as np
 from rocketpy import Environment, SolidMotor, Rocket, Flight
 
+from .constants import G0, RHO_0
+
 # ── Forensic diagnostic flag ──────────────────────────────────────────────────
 # Set True to dump physics state at every key milestone to stderr.
 # Flip to False (or delete the block) when the anomaly is resolved.
@@ -82,8 +94,8 @@ def build_motor_from_curve(
     dry_mass:      float,
     rocket_radius: float,
     *,
-    isp_s:         float = 90.0,
-    grain_density: float = 1815.0,
+    isp_s:         float = 80.0,
+    grain_density: float = 1700.0,
 ) -> SolidMotor:
     """Build a physically consistent SolidMotor from a thrust curve.
 
@@ -103,10 +115,12 @@ def build_motor_from_curve(
     dry_mass      : float  — motor dry mass after burnout (kg)
     rocket_radius : float  — rocket body radius (m); motor must fit inside
     isp_s         : float  — specific impulse (s)
-                    Black-powder Estes motors : ~80–100 s  ← default (90)
+                    Black-powder Estes motors : ~80–100 s  ← default (80)
                     Low-power APCP            : ~130–170 s
                     Mid/high-power APCP       : ~180–230 s
-    grain_density : float  — propellant bulk density (kg/m³); default 1815 (APCP)
+    grain_density : float  — propellant bulk density (kg/m³)
+                    Black Powder              : ~1700 kg/m³  ← default
+                    APCP                      : ~1815 kg/m³
 
     Raises
     ------
@@ -114,8 +128,6 @@ def build_motor_from_curve(
         If total impulse is non-positive, grain geometry would be non-physical,
         or the implied exhaust velocity is implausibly low (< 100 m/s).
     """
-    G0 = 9.80665  # m/s²
-
     if not thrust_data or len(thrust_data) < 2:
         raise ValueError("thrust_data must contain at least two points")
 
@@ -288,7 +300,17 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         motor_pos      = params['motor_pos']
         motor_dry_mass = params['motor_dry_mass']
         backfire_delay = params['backfire_delay']
-        body_cd        = params.get('body_cd') or 0.45  # rocket airframe Cd during flight
+        # ── Drag coefficients — boost vs coast phase split (Phase B) ─────────
+        # ``power_on_cd``  applies while the motor is producing thrust (jet
+        # entrainment lowers base drag slightly versus the coast value).
+        # ``power_off_cd`` applies after burnout while the rocket is coasting
+        # to apogee.  Both come from the AppState advanced-settings panel.
+        power_on_cd  = float(params.get('power_on_cd',  0.45))
+        power_off_cd = float(params.get('power_off_cd', 0.40))
+        # ``body_cd`` retained as a single-value diagnostic reference (used by
+        # the legacy _diag() drag-estimate prints below).  It does NOT feed
+        # the Rocket constructor any more — the split values do.
+        body_cd      = power_off_cd
         para_cd        = params['para_cd']             # parachute Cd (used only for CdS product)
         para_area      = params['para_area']
         para_lag       = params['para_lag']
@@ -308,14 +330,38 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
         safe_burn_time = max(0.1, motor_burn_time)
         backfire_time  = safe_burn_time + backfire_delay
 
-        I_z  = 0.5  * airframe_mass * (radius ** 2)
-        I_xy = (1 / 12) * airframe_mass * (3 * (radius ** 2) + airframe_len ** 2)
+        # ── Moment of inertia ────────────────────────────────────────────────
+        # Prefer the precise MoI values computed by ``utils/geometry_math.py``
+        # and passed in via ``params`` (keys ``I_z`` for the longitudinal/roll
+        # axis and ``I_xy`` for the lateral pitch/yaw axes — symmetric for
+        # axisymmetric airframes).  Only fall back to the homogeneous solid-
+        # cylinder approximation when the caller has not supplied them.
+        _I_z_param  = params.get('I_z')
+        _I_xy_param = params.get('I_xy')
+        if _I_z_param is not None and _I_xy_param is not None:
+            I_z  = float(_I_z_param)
+            I_xy = float(_I_xy_param)
+        else:
+            I_z  = 0.5 * airframe_mass * (radius ** 2)
+            I_xy = (1 / 12) * airframe_mass * (3 * (radius ** 2) + airframe_len ** 2)
 
+        # ── Atmosphere ───────────────────────────────────────────────────────
+        # Use RocketPy's standard atmosphere (ISA) for pressure AND temperature
+        # so air-density / drag calculations respect the lapse rate at apogee.
+        # ``type="custom_atmosphere"`` is retained as the carrier so the user-
+        # supplied wind profile is honoured; passing ``pressure=None`` and
+        # ``temperature=None`` tells RocketPy to fall back to the ISA model
+        # for those two variables (equivalent to ``standard_atmosphere`` plus
+        # custom wind).  The previous hard-coded ``temperature=300`` flattened
+        # the entire column to 26.85 °C and corrupted high-altitude density.
         env = Environment(
             latitude=launch_lat, longitude=launch_lon, elevation=0)
         env.set_atmospheric_model(
-            type="custom_atmosphere", pressure=None, temperature=300,
-            wind_u=wind_u_prof, wind_v=wind_v_prof,
+            type="custom_atmosphere",
+            pressure=None,
+            temperature=None,
+            wind_u=wind_u_prof,
+            wind_v=wind_v_prof,
         )
 
         def _build_rocket() -> tuple:
@@ -328,13 +374,17 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
                   burn_time_param=safe_burn_time)
 
             # Derive grain geometry from thrust curve + Isp — no hard-coded values.
-            isp_s = float(params.get("motor_isp", 90.0))
+            # Both Isp and propellant bulk density are now sourced from the
+            # AppState advanced-settings panel (defaults match Black Powder).
+            isp_s         = float(params.get("motor_isp",                80.0))
+            grain_density = float(params.get("motor_propellant_density", 1700.0))
             motor = build_motor_from_curve(
                 thrust_data=thrust_data,
                 burn_time=safe_burn_time,
                 dry_mass=motor_dry_mass,
                 rocket_radius=radius,
                 isp_s=isp_s,
+                grain_density=grain_density,
             )
 
             # ── motor post-build diagnostics ──────────────────────────────────
@@ -372,14 +422,33 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
                   body_cd=round(body_cd, 3),
                   cd_type=type(body_cd).__name__,
                   expected_drag_at_60ms=round(
-                      0.5 * 1.225 * 60**2 * _ref_area * body_cd, 2))
+                      0.5 * RHO_0 * 60**2 * _ref_area * body_cd, 2))
+
+            # ── Drag model selection (Phase C) ───────────────────────────────
+            # RocketPy accepts either a scalar Cd or a list of
+            # ``(Mach, Cd)`` tuples for ``power_on_drag`` / ``power_off_drag``.
+            # If the operator has loaded a curve via the Advanced Settings
+            # dialog it lives in ``params['cd_curve_power_on/off']`` as a list;
+            # otherwise the entry is ``None`` and we fall back to the scalar.
+            # A curve is considered usable only when it has at least two
+            # interpolation points — anything else degrades silently to the
+            # scalar so a malformed payload can never break the simulation.
+            def _pick_drag(curve, scalar):
+                if isinstance(curve, list) and len(curve) >= 2:
+                    return curve
+                return scalar
+
+            power_on_drag  = _pick_drag(
+                params.get("cd_curve_power_on"),  power_on_cd)
+            power_off_drag = _pick_drag(
+                params.get("cd_curve_power_off"), power_off_cd)
 
             rk = Rocket(
                 radius=radius,
                 mass=airframe_mass,
                 inertia=(I_xy, I_xy, I_z),
-                power_off_drag=body_cd,
-                power_on_drag=body_cd,
+                power_off_drag=power_off_drag,
+                power_on_drag=power_on_drag,
                 center_of_mass_without_motor=airframe_cg,
                 coordinate_system_orientation="nose_to_tail",
             )
@@ -541,11 +610,11 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
                 _measured_az = (_vz_c - _vz_prev) / _dt if _dt > 0 else float("nan")
                 # Expected: a_z = -(g + C_D * 0.5*rho*v^2*A/m)
                 # Bug D: coasting mass = airframe + motor dry (propellant exhausted)
-                _rho = 1.225
+                _rho = RHO_0
                 _coast_mass = airframe_mass + motor_dry_mass
                 _a_drag = (body_cd * 0.5 * _rho * _vz_c**2 * (math.pi * radius**2)
                            / max(_coast_mass, 0.001))
-                _expected_az = -(9.81 + abs(_a_drag))
+                _expected_az = -(G0 + abs(_a_drag))
                 _diag("COAST_DECEL",
                       t_s=round(float(t_vals[_ci]), 3),
                       vz_m_s=round(_vz_c, 2),
