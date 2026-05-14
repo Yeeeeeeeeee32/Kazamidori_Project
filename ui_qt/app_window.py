@@ -1777,8 +1777,23 @@ class AppWindow(QMainWindow):
         cwl.addWidget(self.wind_canvas, stretch=1)
         lay.addWidget(canvas_wrap, stretch=1)
 
-        # ── Right: current-values table ───────────────────────────────────────
-        self._wind_table = QTableWidget(5, 3, container)
+        # ── Right column: wind table on top, status labels directly below ────
+        # Previously the table and the two status labels lived as three
+        # separate slots inside the outer QHBoxLayout, which pushed the
+        # Koinobori / GPV labels to the far-right of the panel and produced
+        # visible horizontal dead space.  Wrapping them into a dedicated
+        # QVBoxLayout keeps the compass canvas at stretch=1 (so it absorbs
+        # the reclaimed width) and stacks the labels neatly under the table.
+        right_col = QWidget(container)
+        right_col.setSizePolicy(
+            QSizePolicy.Policy.Maximum,    # do not let the column eat canvas width
+            QSizePolicy.Policy.Preferred,
+        )
+        right_lay = QVBoxLayout(right_col)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(4)
+
+        self._wind_table = QTableWidget(5, 3, right_col)
         self._wind_table.setObjectName("WindTable")
         self._wind_table.setHorizontalHeaderLabels(["Alt", "Speed (m/s)", "Dir (°)"])
         self._wind_table.verticalHeader().setVisible(False)
@@ -1798,24 +1813,38 @@ class AppWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._wind_table.setItem(r, c, item)
 
-        lay.addWidget(self._wind_table)
+        right_lay.addWidget(self._wind_table)
 
-        # ── System Status Labels ──────────────────────────────────────────────
+        # ── System Status Labels (stacked under the table) ───────────────────
+        # Koinobori on the left edge, GPV timestamp on the right edge of the
+        # same row.  ``addStretch`` keeps them pinned to opposite sides so
+        # the row stays compact when the column is narrow and the labels
+        # remain readable when the column widens.  Signal/slot bindings to
+        # AppState.koinobori_status_changed and gpv_last_fetch_time_changed
+        # are wired elsewhere (search for ``lbl_koinobori_status`` /
+        # ``lbl_gpv_status``); only the layout placement is touched here.
         status_lay = QHBoxLayout()
-        status_lay.setContentsMargins(4, 4, 4, 4)
+        status_lay.setContentsMargins(4, 0, 4, 0)
+        status_lay.setSpacing(8)
 
-        self.lbl_koinobori_status = QLabel("Koinobori: Disconnected", container)
+        self.lbl_koinobori_status = QLabel("Koinobori: Disconnected", right_col)
         self.lbl_koinobori_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
+        self.lbl_koinobori_status.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        self.lbl_gpv_status = QLabel("GPV Updated: N/A", container)
+        self.lbl_gpv_status = QLabel("GPV Updated: N/A", right_col)
         self.lbl_gpv_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
-        self.lbl_gpv_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_gpv_status.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         status_lay.addWidget(self.lbl_koinobori_status)
         status_lay.addStretch()
         status_lay.addWidget(self.lbl_gpv_status)
 
-        lay.addLayout(status_lay)
+        right_lay.addLayout(status_lay)
+        right_lay.addStretch()   # keep table + status pinned to the top
+
+        lay.addWidget(right_col)
 
         return container
 
