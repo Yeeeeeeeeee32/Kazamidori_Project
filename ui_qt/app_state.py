@@ -59,6 +59,10 @@ class AppState(QObject):
     has_sim_result_changed = Signal(bool)
     phase1_result_changed  = Signal(object)
 
+    # ── External System Status ─────────────────────────────────────────────────
+    koinobori_status_changed    = Signal(str)
+    gpv_last_fetch_time_changed = Signal(str)
+
     # ── Monte Carlo results ────────────────────────────────────────────────────
     mc_scatter_changed   = Signal(object)
     mc_ellipse_changed   = Signal(object)
@@ -239,6 +243,10 @@ class AppState(QObject):
         # Phase 2 / live tracking
         self._p2_ellipse    = None
         self._phase2_active = False
+
+        # System statuses
+        self._koinobori_status    = "Disconnected"
+        self._gpv_last_fetch_time = "N/A"
 
         # View toggles
         self._show_kde     = True
@@ -1260,6 +1268,32 @@ class AppState(QObject):
             self._backfire_delay = value
             self.backfire_delay_changed.emit(value)
             self._check_readiness()
+
+
+
+    # ── External System Status ─────────────────────────────────────────────────
+
+    @Property(str, notify=koinobori_status_changed)
+    def koinobori_status(self) -> str:
+        return self._koinobori_status
+
+    @koinobori_status.setter
+    def koinobori_status(self, value: str) -> None:
+        value = str(value)
+        if self._koinobori_status != value:
+            self._koinobori_status = value
+            self.koinobori_status_changed.emit(value)
+
+    @Property(str, notify=gpv_last_fetch_time_changed)
+    def gpv_last_fetch_time(self) -> str:
+        return self._gpv_last_fetch_time
+
+    @gpv_last_fetch_time.setter
+    def gpv_last_fetch_time(self, value: str) -> None:
+        value = str(value)
+        if self._gpv_last_fetch_time != value:
+            self._gpv_last_fetch_time = value
+            self.gpv_last_fetch_time_changed.emit(value)
 
     # ── Engine / motor loader ─────────────────────────────────────────────────
 

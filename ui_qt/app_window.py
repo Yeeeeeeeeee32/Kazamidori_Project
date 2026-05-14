@@ -811,10 +811,11 @@ class AppWindow(QMainWindow):
         self.af_backfire_input.setDecimals(2); self.af_backfire_input.setSingleStep(0.1)
         self.af_backfire_input.setSuffix(" s"); self.af_backfire_input.setRange(-9999.0, 10.0)
         self.af_backfire_input.setSpecialValueText(""); self.af_backfire_input.setValue(-9999.0)
+        self.af_backfire_input.clear()
         self.af_backfire_input.wheelEvent = lambda event: event.ignore()
         self._setup_splitter()
 
-        self.af_backfire_input.valueChanged.connect(lambda v: self._mark_modified())
+        # self.af_backfire_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_mass_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_cg_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_len_input.valueChanged.connect(lambda v: self._mark_modified())
@@ -1449,7 +1450,25 @@ class AppWindow(QMainWindow):
                 item = QTableWidgetItem("—")
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._wind_table.setItem(r, c, item)
+
         lay.addWidget(self._wind_table)
+
+        # ── System Status Labels ──────────────────────────────────────────────
+        status_lay = QHBoxLayout()
+        status_lay.setContentsMargins(4, 4, 4, 4)
+
+        self.lbl_koinobori_status = QLabel("Koinobori: Disconnected", container)
+        self.lbl_koinobori_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
+
+        self.lbl_gpv_status = QLabel("GPV Updated: N/A", container)
+        self.lbl_gpv_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
+        self.lbl_gpv_status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        status_lay.addWidget(self.lbl_koinobori_status)
+        status_lay.addStretch()
+        status_lay.addWidget(self.lbl_gpv_status)
+
+        lay.addLayout(status_lay)
 
         return container
 
@@ -1466,6 +1485,7 @@ class AppWindow(QMainWindow):
 
         s.needs_redraw.connect(self.update_profile_plot)
         s.needs_redraw.connect(self.update_map_plot)
+
         s.needs_redraw.connect(self.update_wind_plot)
 
         self.update_profile_plot()
@@ -1765,14 +1785,25 @@ class AppWindow(QMainWindow):
             # pts are 3-tuples: (relative_t, speed_ms, dir_deg)
             for i, alt in enumerate(_HIST_ALTS):
                 pts = hist_buf.get(alt, [])
+
+                col = (self._NODE_COLORS[i] if i < len(self._NODE_COLORS) else "#cdd6f4")
+                lbl = (self._NODE_LABELS[i] if i < len(self._NODE_LABELS) else f"{alt:.0f} m")
+
                 if not pts:
+                    # ZOH Fallback if deque is empty: draw horizontal line at last known speed
+                    fallback_speed = speeds[i] if i < len(speeds) else 0.0
+                    ax_p.axhline(fallback_speed, color=col, lw=1.4, alpha=0.85)
+                    ax_p.scatter([0.0], [fallback_speed], color=col, s=28, zorder=5)
+                    ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
                     continue
+
                 xs = [p[0] for p in pts]
                 ys = [p[1] for p in pts]
-                col = (self._NODE_COLORS[i]
-                       if i < len(self._NODE_COLORS) else "#cdd6f4")
-                lbl = (self._NODE_LABELS[i]
-                       if i < len(self._NODE_LABELS) else f"{alt:.0f} m")
+                # Zero-Order Hold (ZOH): extend horizontal line to current time (t=0.0)
+                if xs and xs[-1] < 0.0:
+                    xs.append(0.0)
+                    ys.append(ys[-1])
+
                 # Only the latest data point has a marker, prior points only line
                 ax_p.plot(xs[:-1], ys[:-1], color=col, lw=1.4, alpha=0.85)
                 # Link the last line segment
