@@ -30,6 +30,18 @@ class MapView(QWidget):
 
         if hasattr(app_state, 'is_calculating_changed'): app_state.is_calculating_changed.connect(self._on_calculating_changed)
         if hasattr(app_state, 'simulation_result_changed'): app_state.simulation_result_changed.connect(self._on_simulation_result)
+        if hasattr(app_state, 'launch_lat_changed'):
+            app_state.launch_lat_changed.connect(lambda _: self._render_result(self._state.simulation_result or {}))
+        if hasattr(app_state, 'launch_lon_changed'):
+            app_state.launch_lon_changed.connect(lambda _: self._render_result(self._state.simulation_result or {}))
+
+        # Connect visibility toggle signals from AppState to redraw map view
+        if hasattr(app_state, 'show_kde_changed'):
+            app_state.show_kde_changed.connect(lambda _: self._render_result(self._state.simulation_result or {}))
+        if hasattr(app_state, 'show_cep_changed'):
+            app_state.show_cep_changed.connect(lambda _: self._render_result(self._state.simulation_result or {}))
+        if hasattr(app_state, 'show_scatter_changed'):
+            app_state.show_scatter_changed.connect(lambda _: self._render_result(self._state.simulation_result or {}))
 
     def _build_ui(self):
         layout = QStackedLayout(self)
