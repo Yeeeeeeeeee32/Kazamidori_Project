@@ -159,16 +159,19 @@ def build_perturbed_wind_prof(
 
     # Stage 3: per-level turbulence noise scaled to local wind speed
     if wu > 1e-9:
-        u_new, v_new = [], []
+        u_new, v_new, spd_prof = [], [], []
         for (z_u, u), (_, v) in zip(u_prof, v_prof):
             local_spd = math.hypot(u, v)
             sigma = wu * max(local_spd, 1.0) * 0.30
-            u_new.append((z_u, u + rng.gauss(0.0, sigma)))
-            v_new.append((z_u, v + rng.gauss(0.0, sigma)))
+            un = u + rng.gauss(0.0, sigma)
+            vn = v + rng.gauss(0.0, sigma)
+            u_new.append((z_u, un))
+            v_new.append((z_u, vn))
+            spd_prof.append((z_u, math.hypot(un, vn)))
         u_prof, v_prof = u_new, v_new
-
-    spd_prof = [(z_u, math.hypot(u, v))
-                for (z_u, u), (_, v) in zip(u_prof, v_prof)]
+    else:
+        spd_prof = [(z_u, math.hypot(u, v))
+                    for (z_u, u), (_, v) in zip(u_prof, v_prof)]
 
     return u_prof, v_prof, surf_spd, up_spd, spd_prof
 
