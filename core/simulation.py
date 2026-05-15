@@ -135,8 +135,9 @@ def build_motor_from_curve(
     # RocketPy requires the thrust curve to start at t=0.  If the first data
     # point has a non-zero time, prepend a zero-thrust point so the integrator
     # and burn_time derivation are both anchored to the true ignition instant.
-    if thrust_data[0][0] != 0.0:
-        thrust_data = [[0.0, 0.0]] + list(thrust_data)
+    thrust_data = [list(pt) for pt in thrust_data]
+    if float(thrust_data[0][0]) > 0:
+        thrust_data = [[0.0, 0.0]] + thrust_data
 
     # ── Total impulse (trapezoidal integration of the thrust curve) ───────────
     total_impulse = sum(
