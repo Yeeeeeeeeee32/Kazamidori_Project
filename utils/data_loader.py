@@ -436,7 +436,13 @@ def _load_rkt_bytes(filepath: str) -> bytes:
     """Return the XML payload from a .rkt file (ZIP-wrapped or raw XML)."""
     try:
         with _zipfile.ZipFile(filepath) as zf:
-            names = zf.namelist()
+            # Security: filter out entries with path traversal (Zip Slip)
+            names = [n for n in zf.namelist()
+                     if not (n.startswith("/") or ".." in n.replace("\\", "/").split("/"))]
+
+            if not names:
+                raise RocketConfigError(f"No safe entries found in ZIP: {filepath}")
+
             xml_entries = [n for n in names
                            if n.lower().endswith((".ork", ".xml", ".rkt"))]
             entry = xml_entries[0] if xml_entries else names[0]
