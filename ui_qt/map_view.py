@@ -1,6 +1,7 @@
 import math
 import io
 import folium
+import branca
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QStackedLayout, QHBoxLayout
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtCore import Qt, Slot, Signal, QObject
@@ -121,7 +122,8 @@ class MapView(QWidget):
 
         self._land_lat, self._land_lon = offset_to_latlon(lat0, lon0, impact_x, impact_y)
 
-        m = folium.Map(location=[lat0, lon0], zoom_start=15, control_scale=True, scrollWheelZoom=True, dragging=True)
+        m = folium.Map(location=[lat0, lon0], zoom_start=15, scrollWheelZoom=True, dragging=True)
+        folium.Control.Scale(metric=True, imperial=False).add_to(m)
 
         # Launch dot
         folium.CircleMarker(
@@ -190,13 +192,39 @@ class MapView(QWidget):
                         fill=False,
                     ).add_to(m)
 
-            if len(scatter_x) > 0 and len(scatter_y) > 0:
+            if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
                 for px, py in zip(scatter_x[:500], scatter_y[:500]):
                     plat, plon = offset_to_latlon(lat0, lon0, px, py)
                     folium.CircleMarker(
                         location=[plat, plon],
                         radius=2, color='none', fill=True, fill_color='#ff6633', fill_opacity=0.45
                     ).add_to(m)
+
+        legend_html = '''
+        {% macro html(this, kwargs) %}
+        <div style="
+            position: fixed;
+            bottom: 50px;
+            left: 50px;
+            width: 150px;
+            height: 110px;
+            background-color: white;
+            border:2px solid grey;
+            z-index:9999;
+            font-size:12px;
+            padding: 10px;
+            ">
+            <b>Legend</b><br>
+            <i style="background:#4488ff; width: 10px; height: 10px; border-radius: 50%; display: inline-block;"></i> Launch Site<br>
+            <i style="background:#ff6633; width: 10px; height: 10px; border-radius: 50%; display: inline-block;"></i> Impact Points<br>
+            <i style="background:#00bb00; width: 10px; height: 10px; border-radius: 50%; display: inline-block; opacity: 0.3; border: 1px solid #00bb00;"></i> 90% CEP<br>
+            <i style="border: 2px solid #cc5500; width: 10px; height: 10px; display: inline-block;"></i> KDE Contours<br>
+        </div>
+        {% endmacro %}
+        '''
+        macro = branca.element.MacroElement()
+        macro._template = branca.element.Template(legend_html)
+        m.get_root().add_child(macro)
 
         data = io.BytesIO()
         m.save(data, close_file=False)
