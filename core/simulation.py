@@ -65,25 +65,12 @@ from __future__ import annotations
 
 import math
 import sys
-import time as _wall
 from typing import Any
 
 import numpy as np
 from rocketpy import Environment, SolidMotor, Rocket, Flight
 
 from .constants import G0, RHO_0
-
-# ── Forensic diagnostic flag ──────────────────────────────────────────────────
-# Set True to dump physics state at every key milestone to stderr.
-# Flip to False (or delete the block) when the anomaly is resolved.
-_DIAG: bool = True
-
-def _diag(tag: str, **kw) -> None:
-    """Print one diagnostic line to stderr with wall-clock prefix."""
-    if not _DIAG:
-        return
-    vals = "  ".join(f"{k}={v}" for k, v in kw.items())
-    print(f"[DIAG {_wall.monotonic():.3f}s] {tag}  {vals}", file=sys.stderr, flush=True)
 
 
 # ── Motor builder ────────────────────────────────────────────────────────────
@@ -262,7 +249,7 @@ def make_backfire_trigger(backfire_alt: float):
 
 # ── Core simulation ───────────────────────────────────────────────────────────
 
-def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
+def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: int = 0) -> dict:
     """Run a two-pass RocketPy simulation and return a result dict.
 
     Pass 1 (terminate_on_apogee=True) finds the altitude at which the
@@ -287,6 +274,16 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
     Never raises — exceptions are caught and returned as {'ok': False,
     'error': <message>}.
     """
+    diag_buffer = []
+
+    def _diag(tag: str, **kw) -> None:
+        vals = "  ".join(f"{k}={v}" for k, v in kw.items())
+        diag_buffer.append(f"[Trial {trial_idx}] {tag}  {vals}")
+        if len(diag_buffer) > 2000:
+            with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
+                f.write("\n".join(diag_buffer) + "\n")
+            diag_buffer.clear()
+
     try:
         # ── unpack params ────────────────────────────────────────────────────
         airframe_mass  = max(0.01,  params['airframe_mass'])
@@ -629,6 +626,11 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
               impact_x_m=round(impact_x, 1),
               impact_y_m=round(impact_y, 1))
 
+        if diag_buffer:
+            with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
+                f.write("\n".join(diag_buffer) + "\n")
+            diag_buffer.clear()
+
         return {
             'ok':             True,
             # ── Scalar summaries (SI: m, s) ──────────────────────────────────
@@ -666,9 +668,17 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any]) -> dict:
     except ZeroDivisionError as _zdx:
         import traceback as _tb
         _tb_str = _tb.format_exc()
+        _diag("ERROR", msg=f"ZeroDivisionError: {_zdx}")
+        if diag_buffer:
+            with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
+                f.write("\n".join(diag_buffer) + "\n")
         print(f"[simulate_once] ZeroDivisionError:\n{_tb_str}", flush=True)
         return {'ok': False, 'error': f'ZeroDivisionError: {_zdx}\n{_tb_str}'}
     except Exception as exc:
         import traceback as _tb
+        _diag("ERROR", msg=f"{type(exc).__name__}: {exc}")
+        if diag_buffer:
+            with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
+                f.write("\n".join(diag_buffer) + "\n")
         print(f"[simulate_once] {type(exc).__name__}: {exc}\n{_tb.format_exc()}", flush=True)
         return {'ok': False, 'error': str(exc)}

@@ -119,6 +119,7 @@ def _mc_worker_task(
     flight_mode: str,
     target_radius: float,
     seed: int,
+    trial_idx: int = 0,
 ) -> dict | None:
     """
     Top-level, picklable worker function for ProcessPoolExecutor.
@@ -166,7 +167,7 @@ def _mc_worker_task(
         "thrust_data": perturbed_thrust,
     }
 
-    r = simulate_once(elev, azi, trial_p)
+    r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
 
     if r["ok"]:
         from core.optimization import p1_objective_score
@@ -764,6 +765,9 @@ class SimulationWorker(QThread):
         _MAX_PROG_SIGNALS = 20
         _emit_every = max(1, n_total // _MAX_PROG_SIGNALS)
 
+        with open("mc_diagnostics.log", "w", encoding="utf-8") as f:
+            f.write("--- Kazamidori Diagnostics Log ---\n")
+
         # ── ProcessPoolExecutor for CPU-bound Monte Carlo ─────────────────────
         # max_workers=os.cpu_count() fully utilizes available CPU cores,
         # completely bypassing the Python GIL for heavy RocketPy math.
@@ -792,6 +796,7 @@ class SimulationWorker(QThread):
                     flight_mode,
                     target_radius,
                     base_seed + i,
+                    i + 1,
                 )
                 futures.append(fut)
 
