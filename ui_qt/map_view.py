@@ -20,6 +20,17 @@ class MapView(QWidget):
         super().__init__(parent)
         self._state = app_state
         self._build_ui()
+
+        # Map interaction state
+        self._drag_start = None
+        self._is_dragging = False
+        self._ghost_marker = None
+
+        # Connect Matplotlib events
+        self.canvas.mpl_connect('button_press_event', self._on_button_press)
+        self.canvas.mpl_connect('motion_notify_event', self._on_motion_notify)
+        self.canvas.mpl_connect('button_release_event', self._on_button_release)
+
         self._draw_static_items(getattr(app_state, 'target_radius', 0.0))
 
         if hasattr(app_state, 'is_calculating_changed'):
@@ -30,17 +41,22 @@ class MapView(QWidget):
         # We don't necessarily re-render everything just on lat/lon change for a metric map,
         # but we keep the connections to avoid breaking the expected reactivity.
         if hasattr(app_state, 'launch_lat_changed'):
-            app_state.launch_lat_changed.connect(lambda _: self._render_result(getattr(self._state, 'simulation_result', {}) or {}))
+            app_state.launch_lat_changed.connect(lambda _: self._render_current_state())
         if hasattr(app_state, 'launch_lon_changed'):
-            app_state.launch_lon_changed.connect(lambda _: self._render_result(getattr(self._state, 'simulation_result', {}) or {}))
+            app_state.launch_lon_changed.connect(lambda _: self._render_current_state())
 
         # Connect visibility toggle signals from AppState to redraw map view
         if hasattr(app_state, 'show_kde_changed'):
-            app_state.show_kde_changed.connect(lambda _: self._render_result(getattr(self._state, 'simulation_result', {}) or {}))
+            app_state.show_kde_changed.connect(lambda _: self._render_current_state())
         if hasattr(app_state, 'show_cep_changed'):
-            app_state.show_cep_changed.connect(lambda _: self._render_result(getattr(self._state, 'simulation_result', {}) or {}))
+            app_state.show_cep_changed.connect(lambda _: self._render_current_state())
         if hasattr(app_state, 'show_scatter_changed'):
-            app_state.show_scatter_changed.connect(lambda _: self._render_result(getattr(self._state, 'simulation_result', {}) or {}))
+            app_state.show_scatter_changed.connect(lambda _: self._render_current_state())
+
+
+    def _render_current_state(self):
+        result = getattr(self._state, 'simulation_result', {}) or {}
+        self._render_result(result)
 
     def _build_ui(self):
         layout = QStackedLayout(self)
@@ -110,6 +126,17 @@ class MapView(QWidget):
         self.ax.set_ylabel("North (m)", color='#cdd6f4')
         self.ax.tick_params(colors='#cdd6f4')
 
+        try:
+            cur_lat = float(getattr(self._state, 'launch_lat', 0.0))
+            cur_lon = float(getattr(self._state, 'launch_lon', 0.0))
+            self.ax.set_title(f"Launch Site: {cur_lat:.5f}, {cur_lon:.5f}", color='#cdd6f4')
+        except Exception:
+            pass
+
+        # To keep track of all points for manual bounds
+        all_x = [0.0]
+        all_y = [0.0]
+
         # Launch Site
         self.ax.scatter(0, 0, marker='*', s=150, color='#4488ff', label='Launch Site', zorder=10)
 
@@ -117,17 +144,25 @@ class MapView(QWidget):
         if target_radius > 0:
             target_circle = patches.Circle((0, 0), radius=target_radius, edgecolor='#0055ff', facecolor='none', linestyle='--', zorder=5)
             self.ax.add_patch(target_circle)
+            all_x.extend([-target_radius, target_radius])
+            all_y.extend([-target_radius, target_radius])
 
         if not result:
             self.canvas.draw()
             return
 
-        impact_x = float(result.get('land_x', 0.0))
-        impact_y = float(result.get('land_y', 0.0))
+        impact_x = float(result.get('impact_x', result.get('land_x', 0.0)))
+        impact_y = float(result.get('impact_y', result.get('land_y', 0.0)))
         r90 = float(result.get('r_N_radius', 0.0))
         cep = float(result.get('cep', 0.0))
+
         scatter_x = result.get('mc_scatter_x', [])
         scatter_y = result.get('mc_scatter_y', [])
+        scatter_points = result.get('scatter_points', [])
+        if not scatter_x and scatter_points:
+            scatter_x = [p[0] for p in scatter_points]
+            scatter_y = [p[1] for p in scatter_points]
+
         ellipse = result.get('cep_ellipse') or result.get('ellipse') # fallback for 'ellipse'
         contours = result.get('kde_contours', [])
         prob = int(result.get('landing_prob', 90))
@@ -139,17 +174,25 @@ class MapView(QWidget):
             f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s"
         )
 
+        # Nominal Landing point
+        self.ax.scatter(impact_x, impact_y, marker='o', s=40, color='#ff4444', edgecolor='#cc0000', label='Impact Site', zorder=6)
+        all_x.append(impact_x)
+        all_y.append(impact_y)
+
         # Impact Scatter
         if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
-            self.ax.scatter(scatter_x[:500], scatter_y[:500], c='#ff6633', s=10, alpha=0.5, label='MC Impacts', zorder=2)
-
-        # Nominal Landing point
-        self.ax.scatter(impact_x, impact_y, marker='o', s=40, color='#ff4444', edgecolor='#cc0000', label='Nominal Impact', zorder=6)
+            sx = scatter_x[:500]
+            sy = scatter_y[:500]
+            self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)
+            all_x.extend(sx)
+            all_y.extend(sy)
 
         # R90 Circle
         if r90 > 0:
             r90_circle = patches.Circle((impact_x, impact_y), radius=r90, edgecolor='#cc0000', facecolor='none', linewidth=2, zorder=5)
             self.ax.add_patch(r90_circle)
+            all_x.extend([impact_x - r90, impact_x + r90])
+            all_y.extend([impact_y - r90, impact_y + r90])
 
         # CEP Circle
         if cep > 0 and getattr(self._state, 'show_cep', True):
@@ -165,26 +208,111 @@ class MapView(QWidget):
             angle_deg = math.degrees(ellipse['angle_rad'])
 
             ellipse_patch = patches.Ellipse((cx, cy), width, height, angle=angle_deg,
-                                            edgecolor='#00bb00', facecolor='#00bb00', alpha=0.3, linewidth=2, label='90% CEP', zorder=3)
+                                            edgecolor='#00bb00', facecolor='none', linewidth=2, label='90% CEP', zorder=3)
             self.ax.add_patch(ellipse_patch)
+
+            # Approximate ellipse bounds for autoscaling
+            a = ellipse['a']
+            b = ellipse['b']
+            # Max possible extent in x and y is roughly cx +- max(a,b)
+            r_max = max(a, b)
+            all_x.extend([cx - r_max, cx + r_max])
+            all_y.extend([cy - r_max, cy + r_max])
 
         # KDE Contours
         if contours and getattr(self._state, 'show_kde', True):
             for i, contour in enumerate(contours):
-                points = contour['points_m']
-                poly = patches.Polygon(points, closed=True, edgecolor='#cc5500', facecolor='none', linewidth=1.5, zorder=4, label='KDE Contours' if i == 0 else "")
-                self.ax.add_patch(poly)
+                points = contour['points_m'] if 'points_m' in contour else contour
+                if points:
+                    poly = patches.Polygon(points, closed=True, edgecolor='#cc5500', facecolor='none', linewidth=1.5, zorder=4, label='KDE Contours' if i == 0 else "")
+                    self.ax.add_patch(poly)
+                    all_x.extend([p[0] for p in points])
+                    all_y.extend([p[1] for p in points])
 
         # Legend
         handles, labels = self.ax.get_legend_handles_labels()
         if handles:
-            # Filter out duplicate labels
             by_label = dict(zip(labels, handles))
             legend = self.ax.legend(by_label.values(), by_label.keys(), loc='upper right', facecolor='#1e1e2e', edgecolor='#45475a', labelcolor='#cdd6f4')
             legend.set_zorder(20)
 
+        # Manual Axis Bounds
+        if all_x and all_y:
+            min_x, max_x = min(all_x), max(all_x)
+            min_y, max_y = min(all_y), max(all_y)
+
+            # Avoid singular bounds
+            if max_x == min_x:
+                max_x += 100
+                min_x -= 100
+            if max_y == min_y:
+                max_y += 100
+                min_y -= 100
+
+            dx = max_x - min_x
+            dy = max_y - min_y
+
+            # 15% margin
+            margin_x = dx * 0.15
+            margin_y = dy * 0.15
+
+            self.ax.set_xlim(min_x - margin_x, max_x + margin_x)
+            self.ax.set_ylim(min_y - margin_y, max_y + margin_y)
+
         self.figure.tight_layout()
         self.canvas.draw()
+
+    def _on_button_press(self, event):
+        if event.inaxes != self.ax: return
+        if event.key == 'control' and event.button == 1:
+            if event.xdata is not None and event.ydata is not None:
+                # Check if click is near origin (0, 0)
+                dist = math.hypot(event.xdata, event.ydata)
+                # Allowing some leeway to grab the launch site, e.g., within 10% of axis range or a fixed radius
+                # We will just assume if control is held, they want to drag it
+                self._drag_start = (event.xdata, event.ydata)
+                self._is_dragging = True
+
+                # Create a ghost marker
+                self._ghost_marker, = self.ax.plot([event.xdata], [event.ydata], marker='*', markersize=15,
+                                                  color='white', alpha=0.5, zorder=20)
+                self.canvas.draw_idle()
+
+    def _on_motion_notify(self, event):
+        if not self._is_dragging: return
+        if event.inaxes != self.ax: return
+        if event.xdata is not None and event.ydata is not None:
+            if self._ghost_marker:
+                self._ghost_marker.set_data([event.xdata], [event.ydata])
+                self.canvas.draw_idle()
+
+    def _on_button_release(self, event):
+        if not self._is_dragging: return
+        self._is_dragging = False
+
+        if self._ghost_marker:
+            self._ghost_marker.remove()
+            self._ghost_marker = None
+
+        if event.xdata is not None and event.ydata is not None and self._drag_start is not None:
+            dx = event.xdata - self._drag_start[0]
+            dy = event.ydata - self._drag_start[1]
+
+            try:
+                current_lat = float(self._state.launch_lat)
+                current_lon = float(self._state.launch_lon)
+
+                delta_lat = dy / 111111.0
+                delta_lon = dx / (111111.0 * math.cos(math.radians(current_lat)))
+
+                # Update AppState which will trigger UI updates and redraw
+                self._state.launch_lat = current_lat + delta_lat
+                self._state.launch_lon = current_lon + delta_lon
+            except Exception as e:
+                print(f"Error updating coordinates: {e}")
+
+        self._drag_start = None
+        self.canvas.draw_idle()
 
     def _on_reset_view(self):
         # Reset the view to autoscale based on all data
