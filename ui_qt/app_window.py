@@ -1288,8 +1288,8 @@ class AppWindow(QMainWindow):
         fm.addAction(QAction("Quit", self, triggered=self.close))
 
         sm = mb.addMenu("&Simulation")
-        sm.addAction(QAction("▶  Run Simulation", self, triggered=self._on_run))
-        sm.addAction(QAction("⏹  Stop",           self, triggered=self._on_stop))
+        sm.addAction(QAction("▶  Run Simulation (F5)", self, triggered=self._on_run))
+        sm.addAction(QAction("⏹  Stop (Esc)",           self, triggered=self._on_stop))
 
         self._view_menu = mb.addMenu("&View")
 
@@ -1341,7 +1341,11 @@ class AppWindow(QMainWindow):
         btn_stop = QPushButton("⏹  Stop", tb); btn_stop.setObjectName("btn_stop")
 
         btn_run.setFixedWidth(90);  btn_run.clicked.connect(self._on_run)
+        btn_run.setToolTip("Run Simulation (F5)")
+        btn_run.setShortcut("F5")
         btn_stop.setFixedWidth(74); btn_stop.clicked.connect(self._on_stop)
+        btn_stop.setToolTip("Stop Simulation (Esc)")
+        btn_stop.setShortcut("Esc")
 
         tb.addWidget(btn_run)
         _vline()
@@ -1597,6 +1601,8 @@ class AppWindow(QMainWindow):
         btn_run.setObjectName("btn_phase1_run")
         btn_run.setMinimumHeight(48)
         btn_run.clicked.connect(self._on_phase1)
+        btn_run.setToolTip("Run Phase 1 Optimization (F6)")
+        btn_run.setShortcut("F6")
         lay.addWidget(btn_run)
 
         return container
@@ -1972,7 +1978,7 @@ class AppWindow(QMainWindow):
                     lbl, color=c, fontsize=7, alpha=alpha)
         ax.scatter([0], [0], [0], c="#a6e3a1", s=100, marker="^", zorder=5,
                    label="Launch (0, 0, 0)")
-        ax.text2D(0.5, 0.40, "Run a simulation\nto display the 3D trajectory",
+        ax.text2D(0.5, 0.40, "Configure parameters and click\n'Run' (F5) to begin simulation.",
                   transform=ax.transAxes, ha="center", va="center",
                   color="#45475a", fontsize=10, linespacing=1.8)
         ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.05), fontsize=7,

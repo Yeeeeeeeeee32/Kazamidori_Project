@@ -1,3 +1,6 @@
 ## 2024-05-15 - UI Execution Button States
 **Learning:** PySide6 reactive interfaces with complex background processing states require strict binding to the state properties (e.g. `is_calculating` or `is_ready_to_run`). When the interface implements an enable/disable pattern for standard run buttons, it's easy to miss secondary controls (like a Phase 1 button or Stop button) leaving them detached from the state and vulnerable to duplicate interactions or confusing states.
 **Action:** When implementing or fixing UI buttons tied to asynchronous simulations or processes, trace the `setEnabled` logic to ensure *all* related start/stop inputs react correctly to the system's "idle vs running" and "ready vs not ready" boundaries.
+## 2026-05-16 - Adding Tooltips and Shortcuts to Primary Buttons
+**Learning:** In PySide6 applications with complex interfaces, adding `setShortcut()` and `setToolTip()` to primary action buttons (like Run/Stop) and improving empty state labels with actionable instructions significantly enhances discoverability and keyboard accessibility without changing the visual layout.
+**Action:** Next time, always check if main execution buttons have keyboard shortcuts assigned, and look for 'dead end' empty states that can be rewritten to guide the user towards the next action.
