@@ -460,7 +460,7 @@ def _parse_rocksim_attached(
     extracted:     dict,
 ) -> None:
     """Parse every element inside a <BodyTube>'s <AttachedParts>."""
-    from utils.geometry_math import (
+    from core.geometry_math import (
         Component, moi_hollow_cylinder, moi_point_mass, moi_trapezoidal_fin_set,
     )
     for child in attached:
@@ -545,7 +545,7 @@ def _parse_rocksim_attached(
 
 def _parse_rocksim_xml(root: _ET.Element) -> dict:
     """Traverse <RockSimDocument> and return the AppState-ready result dict."""
-    from utils.geometry_math import (
+    from core.geometry_math import (
         Component, calculate_system_cg, calculate_total_moi,
         moi_hollow_cone, moi_hollow_cylinder, moi_point_mass,
     )
