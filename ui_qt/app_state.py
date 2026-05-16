@@ -21,10 +21,14 @@ Categories
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Property
+
+# ── Constants ───────────────────────────────────────────────
+WIND_HISTORY_MAX_SAMPLES: int = 60
 
 # ── Wind-history altitude constants ───────────────────────────────────────────
 # Must match core.wind_model.WIND_SAMPLE_ALTS exactly.
@@ -220,7 +224,7 @@ class AppState(QObject):
 
     # ──────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, config: Optional[dict] = None, parent=None) -> None:
+    def __init__(self, config: Optional[dict] = None, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         cfg = config or {}
 
@@ -284,7 +288,7 @@ class AppState(QObject):
         self._simulation_result = None
 
         # Wind history — per-altitude rolling 60-sample buffers at ~1 Hz.
-        # Structure: dict[alt_m → deque(maxlen=60)].
+        # Structure: dict[alt_m → deque(maxlen=WIND_HISTORY_MAX_SAMPLES)].
         # Each deque entry is a dict:
         #   {"ts": float,       monotonic timestamp (s)
         #    "speed_ms": float, wind speed (m/s)
@@ -295,7 +299,7 @@ class AppState(QObject):
         #   (i.e. after each simulation run via append_wind_nodes).  Between runs
         #   these deques hold the last known API values and are NOT padded.
         self._wind_history: dict[float, deque] = {
-            alt: deque(maxlen=60) for alt in _WIND_SAMPLE_ALTS
+            alt: deque(maxlen=WIND_HISTORY_MAX_SAMPLES) for alt in _WIND_SAMPLE_ALTS
         }
 
         # Zero-Order Hold (ZOH) cache — stores the last VALID sample per altitude.
@@ -750,31 +754,34 @@ class AppState(QObject):
             self.has_sim_result_changed.emit(value)
 
     @Property(object, notify=phase1_result_changed)
-    def phase1_result(self):
+    def phase1_result(self) -> Optional[dict]:
+        """Dictionary containing Phase 1 results."""
         return self._phase1_result
 
     @phase1_result.setter
-    def phase1_result(self, value) -> None:
+    def phase1_result(self, value: Optional[dict]) -> None:
         self._phase1_result = value
         self.phase1_result_changed.emit(value)
 
     # ── Monte Carlo results ────────────────────────────────────────────────────
 
     @Property(object, notify=mc_scatter_changed)
-    def mc_scatter(self):
+    def mc_scatter(self) -> Optional[object]:
+        """Raw scatter data of Monte Carlo results."""
         return self._mc_scatter
 
     @mc_scatter.setter
-    def mc_scatter(self, value) -> None:
+    def mc_scatter(self, value: Optional[object]) -> None:
         self._mc_scatter = value
         self.mc_scatter_changed.emit(value)
 
     @Property(object, notify=mc_ellipse_changed)
-    def mc_ellipse(self):
+    def mc_ellipse(self) -> Optional[dict]:
+        """Dictionary containing parameters of the CEP error ellipse."""
         return self._mc_ellipse
 
     @mc_ellipse.setter
-    def mc_ellipse(self, value) -> None:
+    def mc_ellipse(self, value: Optional[dict]) -> None:
         self._mc_ellipse = value
         self.mc_ellipse_changed.emit(value)
 
@@ -790,11 +797,12 @@ class AppState(QObject):
             self.mc_cep_changed.emit(value)
 
     @Property(object, notify=kde_contours_changed)
-    def kde_contours(self):
+    def kde_contours(self) -> Optional[list]:
+        """List of KDE contour dictionaries."""
         return self._kde_contours
 
     @kde_contours.setter
-    def kde_contours(self, value) -> None:
+    def kde_contours(self, value: Optional[list]) -> None:
         self._kde_contours = value
         self.kde_contours_changed.emit(value)
 
@@ -812,11 +820,12 @@ class AppState(QObject):
     # ── Phase 2 / live tracking ────────────────────────────────────────────────
 
     @Property(object, notify=p2_ellipse_changed)
-    def p2_ellipse(self):
+    def p2_ellipse(self) -> Optional[dict]:
+        """Dictionary containing parameters of the Phase 2 ellipse."""
         return self._p2_ellipse
 
     @p2_ellipse.setter
-    def p2_ellipse(self, value) -> None:
+    def p2_ellipse(self, value: Optional[dict]) -> None:
         self._p2_ellipse = value
         self.p2_ellipse_changed.emit(value)
 
@@ -892,12 +901,12 @@ class AppState(QObject):
 
     @Property(object, notify=wind_history_updated)
     def wind_history(self) -> dict:
-        """Per-altitude rolling 60-sample wind history.
+        """Per-altitude rolling wind history.
 
         Returns a ``dict[float, deque]`` keyed by altitude in metres AGL:
             {3.0: deque, 10.0: deque, 150.0: deque, 300.0: deque, 600.0: deque}
 
-        Each deque contains up to 60 samples of the form:
+        Each deque contains up to WIND_HISTORY_MAX_SAMPLES samples of the form:
             {"ts": float, "speed_ms": float, "dir_deg": float}
         sorted oldest → newest (deque order).
 
@@ -929,9 +938,8 @@ class AppState(QObject):
             speed:     Wind speed in m/s (non-negative).
             direction: Meteorological direction in degrees FROM which wind blows.
         """
-        import time as _time
         sample = {
-            "ts":       _time.monotonic(),
+            "ts":       time.monotonic(),
             "speed_ms": float(speed),
             "dir_deg":  float(direction),
         }
@@ -962,9 +970,7 @@ class AppState(QObject):
                    ``alt_m`` (float), ``speed_ms`` (float), ``dir_deg`` (float).
                    Typically the direct output of ``core.wind_model.sample_wind_nodes``.
         """
-        import math as _math
-        import time as _time
-        ts = _time.monotonic()
+        ts = time.monotonic()
         for node in nodes:
             alt = float(node.get("alt_m", -1.0))
             if alt not in self._wind_history:
@@ -979,7 +985,7 @@ class AppState(QObject):
                 drc = float(raw_dir)
             except (TypeError, ValueError):
                 continue
-            if _math.isnan(spd) or _math.isnan(drc):
+            if math.isnan(spd) or math.isnan(drc):
                 continue
             entry = {"ts": ts, "speed_ms": spd, "dir_deg": drc}
             self._wind_history[alt].append(entry)
@@ -995,7 +1001,7 @@ class AppState(QObject):
         both speed_ms and dir_deg were finite — or ``None`` if no valid reading
         has ever arrived for this altitude.
 
-        The ZOH value persists across deque rollovers: even after 60 samples
+        The ZOH value persists across deque rollovers: even after WIND_HISTORY_MAX_SAMPLES samples
         have been replaced, the cache still holds the last known-good reading.
 
         Returns:
@@ -1077,7 +1083,7 @@ class AppState(QObject):
     # ── Unified simulation result ──────────────────────────────────────────────
 
     @Property(object, notify=simulation_result_changed)
-    def simulation_result(self):
+    def simulation_result(self) -> Optional[dict]:
         """Complete payload dict from the last successful SimulationWorker run.
 
         Keys: cancelled, has_sim_result, t_vals, x_vals, y_vals, z_vals,
@@ -1092,7 +1098,7 @@ class AppState(QObject):
         return self._simulation_result
 
     @simulation_result.setter
-    def simulation_result(self, value) -> None:
+    def simulation_result(self, value: Optional[dict]) -> None:
         self._simulation_result = value
         self.simulation_result_changed.emit(value)
         # Broadcast a unified redraw notification after every new result.
@@ -1171,7 +1177,7 @@ class AppState(QObject):
             self.wind_uncertainty_display_changed.emit(value)
 
     @Property(object, notify=cached_mc_scatter_changed)
-    def cached_mc_scatter(self):
+    def cached_mc_scatter(self) -> Optional[object]:
         """Raw MC landing scatter as numpy.ndarray of shape (N, 2).
 
         Columns: [x_east_m, y_north_m] in the ENU metric frame.
@@ -1181,7 +1187,7 @@ class AppState(QObject):
         return self._cached_mc_scatter
 
     @cached_mc_scatter.setter
-    def cached_mc_scatter(self, value) -> None:
+    def cached_mc_scatter(self, value: Optional[object]) -> None:
         self._cached_mc_scatter = value
         self.cached_mc_scatter_changed.emit(value)
 
@@ -1502,7 +1508,7 @@ class AppState(QObject):
     # ── Two-stage rendering ────────────────────────────────────────────────────
 
     @Property(object, notify=nominal_result_changed)
-    def nominal_result(self):
+    def nominal_result(self) -> Optional[dict]:
         """Nominal single-run payload; set before MC starts so views render early.
 
         Setting this property emits both nominal_result_changed (carrying the
@@ -1512,7 +1518,7 @@ class AppState(QObject):
         return self._nominal_result
 
     @nominal_result.setter
-    def nominal_result(self, value) -> None:
+    def nominal_result(self, value: Optional[dict]) -> None:
         self._nominal_result = value
         self.nominal_result_changed.emit(value)
         self.nominal_needs_redraw.emit()
