@@ -31,12 +31,10 @@ class MapView(QWidget):
         self.canvas.mpl_connect('motion_notify_event', self._on_motion_notify)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
 
-        self._draw_static_items(getattr(app_state, 'target_radius', 0.0))
-
         if hasattr(app_state, 'is_calculating_changed'):
             app_state.is_calculating_changed.connect(self._on_calculating_changed)
-        if hasattr(app_state, 'simulation_result_changed'):
-            app_state.simulation_result_changed.connect(self._on_simulation_result)
+
+        self.bind_app_state(app_state)
 
         # We don't necessarily re-render everything just on lat/lon change for a metric map,
         # but we keep the connections to avoid breaking the expected reactivity.
@@ -97,26 +95,36 @@ class MapView(QWidget):
         layout.addWidget(self.canvas)
         layout.addWidget(top_widget)
 
-    def _draw_static_items(self, target_radius):
-        self._render_result({})
-
     def update_landing(self, lat, lon):
         # We don't use lat/lon directly in metric map anymore, but keep API
         pass
+
+    def bind_app_state(self, state):
+        self._state = state
+
+        # Connect Simulation Results
+        if hasattr(self._state, 'simulation_result_changed'):
+            self._state.simulation_result_changed.connect(self._render_result)
+
+        # Connect Coordinate Changes
+        if hasattr(self._state, 'launch_lat_changed'):
+            self._state.launch_lat_changed.connect(lambda _: self._render_result())
+        if hasattr(self._state, 'launch_lon_changed'):
+            self._state.launch_lon_changed.connect(lambda _: self._render_result())
+
+        # Trigger initial draw
+        self._render_result()
 
     @Slot(bool)
     def _on_calculating_changed(self, calculating: bool):
         if calculating:
             self._info.setText("Calculating...")
 
-    @Slot(object)
-    def _on_simulation_result(self, result):
-        if not result or result.get('cancelled'):
-            self._info.setText("Simulation cancelled or no result.")
-            return
-        self._render_result(result)
+    def _render_result(self, result=None):
+        if result is None:
+            result = getattr(self, '_last_result', {})
+        self._last_result = result
 
-    def _render_result(self, result):
         self.ax.clear()
 
         # Setup Axes
