@@ -26,9 +26,8 @@ matplotlib.use("QtAgg")
 matplotlib.rcParams['font.family'] = ['Yu Gothic', 'Meiryo', 'MS Gothic', 'DejaVu Sans']
 
 import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from matplotlib.patches import Ellipse as MplEllipse
 
 from PySide6.QtCore import Qt, QSize, QObject, Signal, Slot, QTimer
 from PySide6.QtWidgets import (
@@ -45,6 +44,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QAction, QColor
 from ui_qt.map_view import MapView
 
+
+# ── Constants ───────────────────────────────────────────────────────────────
+DEFAULT_AZIMUTH: int = 45
+AZIMUTH_STEP: int = 3
+MARKER_SIZE: int = 50
+SCROLL_STEP: int = 5
+MAX_SCATTER_POINTS: int = 500
+WIND_HISTORY_SAMPLES: int = 60
 
 # ── Window-local reactive state ───────────────────────────────────────────────
 
@@ -931,7 +938,7 @@ class _AzimCanvas(FigureCanvasQTAgg):
         if event.modifiers() & Qt.ShiftModifier:
             if self._traj_t is not None and len(self._traj_t) > 0:
                 delta = event.angleDelta().y()
-                step = 5 if delta > 0 else -5
+                step = SCROLL_STEP if delta > 0 else -SCROLL_STEP
                 self._current_time_idx = max(0, min(len(self._traj_t) - 1, self._current_time_idx + step))
                 self._update_marker()
                 event.accept()
@@ -940,11 +947,20 @@ class _AzimCanvas(FigureCanvasQTAgg):
         sl = getattr(self, '_azim_slider', None)
         if sl is not None:
             delta = event.angleDelta().y()
-            step = 3 if delta > 0 else -3
+            step = AZIMUTH_STEP if delta > 0 else -AZIMUTH_STEP
             sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
         event.accept()
 
-    def set_trajectory(self, x, y, z, t, ax):
+    def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
+        """Set the trajectory arrays and reset the time index.
+
+        Args:
+            x: Array of X coordinates.
+            y: Array of Y coordinates.
+            z: Array of Z coordinates.
+            t: Array of time values.
+            ax: Matplotlib 3D axes object.
+        """
         self._traj_x = x
         self._traj_y = y
         self._traj_z = z
@@ -963,12 +979,13 @@ class _AzimCanvas(FigureCanvasQTAgg):
                 pass
 
         # Draw the marker point
-        self._marker_artist = ax.scatter([x[0]], [y[0]], [z[0]], color='red', s=50, zorder=10)
+        self._marker_artist = ax.scatter([x[0]], [y[0]], [z[0]], color='red', s=MARKER_SIZE, zorder=10)
         # Use text2D on the axis to place it at the top-left
         self._time_label = ax.text2D(0.05, 0.95, f"T+ {t[0]:.1f}s | Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
         self.draw_idle()
 
-    def _update_marker(self):
+    def _update_marker(self) -> None:
+        """Update the position of the 3D marker and the time label based on current index."""
         if self._marker_artist and self._traj_x is not None:
             idx = self._current_time_idx
             self._marker_artist._offsets3d = ([self._traj_x[idx]], [self._traj_y[idx]], [self._traj_z[idx]])
@@ -1010,7 +1027,17 @@ def _equalise_3d_axes(ax) -> None:
     ax.set_zlim3d(max(0.0, centers[2] - max_r), centers[2] + max_r)
 
 
-def _make_altitude_lc(x, y, z):
+def _make_altitude_lc(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> object:
+    """Create a 3D LineCollection coloured by altitude.
+
+    Args:
+        x: Array of X coordinates.
+        y: Array of Y coordinates.
+        z: Array of Z coordinates.
+
+    Returns:
+        A Line3DCollection object.
+    """
     from mpl_toolkits.mplot3d.art3d import Line3DCollection
     import matplotlib.cm as _cm
     pts  = np.column_stack([x, y, z])
@@ -1020,8 +1047,21 @@ def _make_altitude_lc(x, y, z):
     return Line3DCollection(segs, colors=_cm.cool(norm), linewidth=2.0, alpha=0.92)
 
 
-def _draw_ellipse_3d(ax, *, cx, cy, a, b, angle_rad=0.0,
-                     color="#cba6f7", lw=1.6, label="") -> None:
+def _draw_ellipse_3d(ax: object, *, cx: float, cy: float, a: float, b: float, angle_rad: float = 0.0,
+                     color: str = "#cba6f7", lw: float = 1.6, label: str = "") -> None:
+    """Draw an ellipse projected onto the Z=0 plane in a 3D plot.
+
+    Args:
+        ax: Matplotlib 3D axes object.
+        cx: Center X coordinate.
+        cy: Center Y coordinate.
+        a: Semi-major axis length.
+        b: Semi-minor axis length.
+        angle_rad: Rotation angle in radians.
+        color: Stroke color.
+        lw: Line width.
+        label: Legend label.
+    """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
     xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
     ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
@@ -1030,8 +1070,25 @@ def _draw_ellipse_3d(ax, *, cx, cy, a, b, angle_rad=0.0,
             label=label if label else "_nolegend_")
 
 
-def _draw_ellipse_2d(ax, *, cx, cy, a, b, angle_rad=0.0,
-                     color="#cba6f7", lw=1.6, alpha=0.90, label=""):
+def _draw_ellipse_2d(ax: object, *, cx: float, cy: float, a: float, b: float, angle_rad: float = 0.0,
+                     color: str = "#cba6f7", lw: float = 1.6, alpha: float = 0.90, label: str = "") -> object:
+    """Draw a 2D ellipse.
+
+    Args:
+        ax: Matplotlib 2D axes object.
+        cx: Center X coordinate.
+        cy: Center Y coordinate.
+        a: Semi-major axis length.
+        b: Semi-minor axis length.
+        angle_rad: Rotation angle in radians.
+        color: Stroke color.
+        lw: Line width.
+        alpha: Transparency.
+        label: Legend label.
+
+    Returns:
+        The created Line2D artist.
+    """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
     xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
     ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
@@ -1404,7 +1461,7 @@ class AppWindow(QMainWindow):
         self._azim_slider = QSlider(Qt.Orientation.Horizontal, azim_row)
         self._azim_slider.setMinimum(0)
         self._azim_slider.setMaximum(90)
-        self._azim_slider.setValue(45)
+        self._azim_slider.setValue(DEFAULT_AZIMUTH)
         self._azim_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self._azim_slider.setStyleSheet(
             "QSlider::groove:horizontal { height: 4px; background: #3c3c3c;"
@@ -1413,7 +1470,7 @@ class AppWindow(QMainWindow):
             "  background: #7eb3ff; border-radius: 6px; margin: -4px 0; }"
             "QSlider::sub-page:horizontal { background: #7eb3ff; border-radius: 2px; }")
 
-        self._azim_val_lbl = QLabel("45°", azim_row)
+        self._azim_val_lbl = QLabel(f"{DEFAULT_AZIMUTH}°", azim_row)
         self._azim_val_lbl.setStyleSheet("color: #a6adc8; font-size: 7pt;")
         self._azim_val_lbl.setFixedWidth(28)
 
@@ -1887,7 +1944,7 @@ class AppWindow(QMainWindow):
         ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
         ax.set_zlabel("Alt  (m)",   color="#6c7086", fontsize=8, labelpad=4)
         azim = getattr(self, '_azim_slider', None)
-        ax.view_init(elev=22, azim=azim.value() if azim is not None else 45)
+        ax.view_init(elev=22, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
         if res is not None:
             _equalise_3d_axes(ax)
 
@@ -2057,8 +2114,8 @@ class AppWindow(QMainWindow):
         # MC landing scatter at Z=0 — single scatter3D call, max 500 pts
         if "mc_scatter_x" in res and res["mc_scatter_x"]:
             try:
-                _sc_x = np.asarray(res["mc_scatter_x"][:500], dtype=float)
-                _sc_y = np.asarray(res["mc_scatter_y"][:500], dtype=float)
+                _sc_x = np.asarray(res["mc_scatter_x"][:MAX_SCATTER_POINTS], dtype=float)
+                _sc_y = np.asarray(res["mc_scatter_y"][:MAX_SCATTER_POINTS], dtype=float)
                 ax.scatter(_sc_x, _sc_y, np.zeros(len(_sc_x)),
                            c="#f38ba8", s=3, alpha=0.40, zorder=3,
                            linewidths=0, label=f"MC impacts  ({len(res['mc_scatter_x'])})")
@@ -2200,7 +2257,7 @@ class AppWindow(QMainWindow):
             ax_p.axvline(0.0, color="#45475a", lw=0.8, linestyle=":", alpha=0.6)
             ax_p.set_xlabel("Time  (s)", color="#6c7086", fontsize=7, labelpad=3)
             ax_p.set_ylabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
-            ax_p.set_title("Wind Speed History  (60 s)",
+            ax_p.set_title(f"Wind Speed History  ({WIND_HISTORY_SAMPLES} s)",
                            color="#aaaaaa", fontsize=8, pad=6)
             ax_p.set_xlim(-60.0, 2.0)
             ax_p.set_ylim(bottom=0.0)
