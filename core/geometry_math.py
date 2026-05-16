@@ -1,5 +1,5 @@
 """
-utils/geometry_math.py
+core/geometry_math.py
 Moment of Inertia (MoI) calculation engine for rocket component geometry.
 
 All functions are pure (no I/O, no class state, no UI).

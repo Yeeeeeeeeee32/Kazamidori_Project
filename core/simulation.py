@@ -329,7 +329,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         backfire_time  = safe_burn_time + backfire_delay
 
         # ── Moment of inertia ────────────────────────────────────────────────
-        # Prefer the precise MoI values computed by ``utils/geometry_math.py``
+        # Prefer the precise MoI values computed by ``core/geometry_math.py``
         # and passed in via ``params`` (keys ``I_z`` for the longitudinal/roll
         # axis and ``I_xy`` for the lateral pitch/yaw axes — symmetric for
         # axisymmetric airframes).  Only fall back to the homogeneous solid-

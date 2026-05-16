@@ -264,7 +264,7 @@ class SimulationWorker(QThread):
             sim_params = self._build_sim_params(p, u_prof, v_prof)
 
             # ── Inject accurate Moment of Inertia from AppState ──────────────
-            # ``utils/geometry_math.py`` computes (Ixx, Iyy, Izz) when the
+            # ``core/geometry_math.py`` computes (Ixx, Iyy, Izz) when the
             # operator loads an .rkt file and stores them in AppState via
             # ``set_moi()``.  Forward those values to the physics core so it
             # stops falling back to the solid-cylinder approximation.
