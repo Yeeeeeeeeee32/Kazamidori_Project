@@ -1355,6 +1355,10 @@ class SimController(QObject):
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
         for btn in self._window.findChildren(QPushButton, "btn_run"):
             btn.setEnabled(enabled)
+        for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
+            btn.setEnabled(enabled)
+        for btn in self._window.findChildren(QPushButton, "btn_stop"):
+            btn.setEnabled(self._state.is_calculating)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
