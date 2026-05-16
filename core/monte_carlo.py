@@ -156,20 +156,30 @@ def _perturb_wind_profile(
 
     u_new: list[tuple[float, float]] = []
     v_new: list[tuple[float, float]] = []
+    spd_out: list[tuple[float, float]] = []
+
+    has_gust = gust_intensity > 0.0
+    gust_sigma = float(gust_intensity)
 
     for (alt_u, u_nom), (_, v_nom) in zip(u_prof, v_prof):
+        # 1. Global (synoptic) rotation & scaling
         u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
         v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
 
+        # 2. Local (mesoscale) turbulence
         local_spd = math.hypot(u_nom, v_nom)
         sigma     = wu * max(local_spd, 1.0) * 0.30
-        u_new.append((alt_u, u_g + rng.gauss(0.0, sigma)))
-        v_new.append((alt_u, v_g + rng.gauss(0.0, sigma)))
+        u_val = u_g + rng.gauss(0.0, sigma)
+        v_val = v_g + rng.gauss(0.0, sigma)
 
-    # Gust layer: per-level independent noise applied after synoptic+mesoscale
-    u_new, v_new = apply_gust(u_new, v_new, gust_intensity, rng)
+        # 3. Gust layer
+        if has_gust:
+            u_val += rng.gauss(0.0, gust_sigma)
+            v_val += rng.gauss(0.0, gust_sigma)
 
-    spd_out = [(alt, math.hypot(u, v)) for (alt, u), (_, v) in zip(u_new, v_new)]
+        u_new.append((alt_u, u_val))
+        v_new.append((alt_u, v_val))
+        spd_out.append((alt_u, math.hypot(u_val, v_val)))
 
     return u_new, v_new, spd_out
 
