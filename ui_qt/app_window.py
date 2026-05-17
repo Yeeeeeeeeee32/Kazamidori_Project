@@ -1528,6 +1528,7 @@ class AppWindow(QMainWindow):
         # ── Advanced Settings button ──────────────────────────────────────────
         btn_adv = QPushButton("⚙  Advanced Settings…", container)
         btn_adv.setObjectName("btn_adv_settings")
+        btn_adv.setToolTip("Configure Monte Carlo parameters and simulation limits")
         btn_adv.clicked.connect(self._on_advanced_settings)
         lay.addWidget(btn_adv)
 
@@ -1638,6 +1639,7 @@ class AppWindow(QMainWindow):
         btn_manual.clicked.connect(self._on_manual_config)
 
         btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
+        btn_motor.setToolTip("Load a custom motor thrust curve from a CSV file")
         btn_motor.clicked.connect(self._on_load_motor)
 
         self.motor_label = QLabel("(no motor loaded)", w)
@@ -1763,6 +1765,7 @@ class AppWindow(QMainWindow):
         self.azim_input.setWrapping(True)
 
         btn_gps = QPushButton("📍  Get Current Location", w)
+        btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
         frm.addRow("Latitude:",         self.lat_input)
