@@ -614,19 +614,35 @@ def run_phase1(
     done, cands  = 0, []
     prog(f'Step 1/5  Grid search (0/{total})', 0.0)
 
-    for e in elev_grid:
-        for a in azi_grid:
+    import concurrent.futures
+    import os
+    import time
+
+    _t_start = time.perf_counter()
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = []
+        for e in elev_grid:
+            for a in azi_grid:
+                p = p1_params_at_wind(base_params, mu_nom)
+                # _grid_search_worker handles simulate_once and discards the bulky trajectory
+                futures.append(executor.submit(_grid_search_worker, e, a, p))
+
+        for future in concurrent.futures.as_completed(futures):
             if stop_flag.is_set():
+                executor.shutdown(wait=False, cancel_futures=True)
                 raise RuntimeError('cancelled')
-            p   = p1_params_at_wind(base_params, mu_nom)
-            res = simulate_once(e, a, p)
+            e_, a_, res = future.result()
             done += 1
             if res['ok']:
                 if not use_r_filter or res['r_horiz'] <= target_r:
                     score = p1_objective_score(res, mode)
-                    cands.append((score, e, a, res))
-            prog(f'Step 1/5  Grid ({done}/{total})  e={e}° a={a}°',
+                    cands.append((score, e_, a_, res))
+            prog(f'Step 1/5  Grid ({done}/{total})  e={e_}° a={a_}°',
                  done / total * 0.25)
+
+    _t_elapsed = time.perf_counter() - _t_start
+    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {total} combinations in {_t_elapsed:.3f} seconds using {os.cpu_count()} workers.")
 
     if not cands:
         raise ValueError(
