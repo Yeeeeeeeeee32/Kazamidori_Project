@@ -99,11 +99,9 @@ class SimController(QObject):
         self._window.lbl_gpv_status.setText(f"GPV Updated: {self._state.gpv_last_fetch_time}")
 
         # ── Parameter readiness interlock ──────────────────────────────────────
-        # RUN buttons start disabled; they unlock only after all 15 critical
-        # geometry parameters become non-None (i.e. after Rocket.json is loaded).
-        # sig_ready_state_changed fires True/False whenever readiness flips.
-        self._set_run_buttons_enabled(state.is_ready_to_run)
-        state.sig_ready_state_changed.connect(self._set_run_buttons_enabled)
+        # Run buttons are now always enabled to provide informative click feedback
+        # instead of silently disabling. Wait for validation in _on_run_clicked.
+        self._set_run_buttons_enabled(True)
 
         # ── Cross-state signal bridge ──────────────────────────────────────────
         # When a simulation result lands in the shared AppState, automatically
@@ -259,15 +257,24 @@ class SimController(QObject):
         "Simulation Controls" panel buttons in one pass.
         """
         for btn in self._window.findChildren(QPushButton, "btn_run"):
-            btn.clicked.disconnect()
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
             btn.clicked.connect(self._on_run_clicked)
 
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
-            btn.clicked.disconnect()
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
             btn.clicked.connect(self._on_stop_clicked)
 
         for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
-            btn.clicked.disconnect()
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
             btn.clicked.connect(self._on_phase1_clicked)
 
     # ── Run ────────────────────────────────────────────────────────────────────
@@ -277,36 +284,42 @@ class SimController(QObject):
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
 
-        # ── 60-second surface wind buffer check ───────────────────────────────
+        # ── Consolidated pre-flight parameter check ───────────────────────────
+        _unset_cats = []
+
+        # 1. Rocket Geometry & Parachute Check
+        # Uses AppState.is_ready_to_run which covers the 15 core parameters + lat/lon
+        if not self._state.is_ready_to_run:
+            _unset_cats.append("Rocket Geometry & Recovery Parameters")
+
+        # 2. Motor Thrust Curve Check
+        if not getattr(self._window, '_motor_thrust_data', None):
+            _unset_cats.append("Motor Thrust Curve (.csv)")
+
+        # 3. Surface Wind Buffer Check
         surface_hist = list(self._state.wind_history_for_alt(3.0))
         if len(surface_hist) < 5:
-            QMessageBox.warning(
-                self._window,
-                "Wind Buffer Insufficient",
-                f"Surface wind monitor has only {len(surface_hist)} sample(s) "
-                f"(minimum 5 required).\n\n"
-                "Wait a few seconds for the wind monitor to collect data, "
-                "then click RUN again.",
-            )
-            return
+            _unset_cats.append(f"Surface Wind Buffer ({len(surface_hist)}/5 samples, wait a few seconds)")
 
-
-        if self._window.af_backfire_input.value() == -9999.0:
-            QMessageBox.critical(self._window, "Missing Parameter", "Please enter a value for the Backfire Delay.")
-            return
-
-        # ── Launch site entry check ────────────────────────────────────────────
-
+        # 4. Launch Site Check
         _BLANK = -9999.0
-        _unset = []
-        if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
-        if self._window.lon_input.value()  == _BLANK: _unset.append("Longitude")
-        if self._window.azim_input.value() == _BLANK: _unset.append("Rail Azimuth")
-        if _unset:
+        _unset_launch = []
+        if self._window.lat_input.value()  == _BLANK: _unset_launch.append("Latitude")
+        if self._window.lon_input.value()  == _BLANK: _unset_launch.append("Longitude")
+        if self._window.azim_input.value() == _BLANK: _unset_launch.append("Rail Azimuth")
+        if _unset_launch:
+            _unset_cats.append("Launch Settings (" + ", ".join(_unset_launch) + ")")
+
+        # 5. Backfire Delay Check (specifically required if manually cleared despite is_ready_to_run)
+        if self._window.af_backfire_input.value() == -9999.0:
+            if "Rocket Geometry & Recovery Parameters" not in _unset_cats:
+                _unset_cats.append("Backfire Delay")
+
+        if _unset_cats:
             QMessageBox.warning(
                 self._window,
-                "Launch Settings Incomplete",
-                "Please enter a value for:\n  • " + "\n  • ".join(_unset),
+                "Missing Parameters",
+                "Cannot start simulation. Please provide the following missing data:\n\n  • " + "\n  • ".join(_unset_cats),
             )
             return
 
@@ -349,36 +362,41 @@ class SimController(QObject):
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
 
-        # ── 60-second surface wind buffer check ───────────────────────────────
+        # ── Consolidated pre-flight parameter check ───────────────────────────
+        _unset_cats = []
+
+        # 1. Rocket Geometry & Parachute Check
+        if not self._state.is_ready_to_run:
+            _unset_cats.append("Rocket Geometry & Recovery Parameters")
+
+        # 2. Motor Thrust Curve Check
+        if not getattr(self._window, '_motor_thrust_data', None):
+            _unset_cats.append("Motor Thrust Curve (.csv)")
+
+        # 3. Surface Wind Buffer Check
         surface_hist = list(self._state.wind_history_for_alt(3.0))
         if len(surface_hist) < 5:
-            QMessageBox.warning(
-                self._window,
-                "Wind Buffer Insufficient",
-                f"Surface wind monitor has only {len(surface_hist)} sample(s) "
-                f"(minimum 5 required).\n\n"
-                "Wait a few seconds for the wind monitor to collect data, "
-                "then click RUN again.",
-            )
-            return
+            _unset_cats.append(f"Surface Wind Buffer ({len(surface_hist)}/5 samples, wait a few seconds)")
 
-
-        if self._window.af_backfire_input.value() == -9999.0:
-            QMessageBox.critical(self._window, "Missing Parameter", "Please enter a value for the Backfire Delay.")
-            return
-
-        # ── Launch site entry check ────────────────────────────────────────────
-
+        # 4. Launch Site Check
         _BLANK = -9999.0
-        _unset = []
-        if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
-        if self._window.lon_input.value()  == _BLANK: _unset.append("Longitude")
-        if self._window.azim_input.value() == _BLANK: _unset.append("Rail Azimuth")
-        if _unset:
+        _unset_launch = []
+        if self._window.lat_input.value()  == _BLANK: _unset_launch.append("Latitude")
+        if self._window.lon_input.value()  == _BLANK: _unset_launch.append("Longitude")
+        if self._window.azim_input.value() == _BLANK: _unset_launch.append("Rail Azimuth")
+        if _unset_launch:
+            _unset_cats.append("Launch Settings (" + ", ".join(_unset_launch) + ")")
+
+        # 5. Backfire Delay Check
+        if self._window.af_backfire_input.value() == -9999.0:
+            if "Rocket Geometry & Recovery Parameters" not in _unset_cats:
+                _unset_cats.append("Backfire Delay")
+
+        if _unset_cats:
             QMessageBox.warning(
                 self._window,
-                "Launch Settings Incomplete",
-                "Please enter a value for:\n  • " + "\n  • ".join(_unset),
+                "Missing Parameters",
+                "Cannot start optimisation. Please provide the following missing data:\n\n  • " + "\n  • ".join(_unset_cats),
             )
             return
 
