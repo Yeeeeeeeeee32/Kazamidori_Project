@@ -47,6 +47,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+import os
+import concurrent.futures
 import numpy as np
 
 # Relative imports within the package
@@ -211,6 +213,25 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
 
 # ── Optimiser (from _optimize_worker) ────────────────────────────────────────
 
+def _grid_search_worker(e_: float, a_: float, base_params: dict) -> tuple[float, float, dict]:
+    """Module-level worker for parallel grid search.
+    Strips large trajectory arrays from result to minimise IPC overhead.
+    """
+    res = simulate_once(e_, a_, base_params)
+    if res['ok']:
+        light_res = {
+            'ok': True,
+            'apogee_m': res['apogee_m'],
+            'hang_time': res['hang_time'],
+            'impact_x': res['impact_x'],
+            'impact_y': res['impact_y'],
+            'r_horiz': res['r_horiz'],
+            'backfire_alt': res['backfire_alt'],
+        }
+        return e_, a_, light_res
+    return e_, a_, {'ok': False, 'error': res.get('error', 'unknown error')}
+
+
 def optimize_launch_angle(
     mode: str,
     base_params: dict,
@@ -264,11 +285,17 @@ def optimize_launch_angle(
 
     progress_cb(f"Phase 1: Coarse search (0/{total})", 0.0)
 
-    for e_ in elev_grid:
-        for a_ in azi_grid:
+    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = []
+        for e_ in elev_grid:
+            for a_ in azi_grid:
+                futures.append(executor.submit(_grid_search_worker, e_, a_, base_params))
+
+        for future in concurrent.futures.as_completed(futures):
             if stop_flag.is_set():
+                executor.shutdown(wait=False, cancel_futures=True)
                 raise RuntimeError('cancelled')
-            res = simulate_once(e_, a_, base_params)
+            e_, a_, res = future.result()
             done += 1
             if res['ok']:
                 score = objective(res, mc_r=None)
@@ -318,10 +345,14 @@ def optimize_launch_angle(
             f'(r + MC {landing_prob}% circle ≤ {r_max:.1f} m).\n'
             'Try increasing r_max or adjusting wind / airframe settings.')
 
-    score, best_e, best_a, best_res, best_mc_r = best
+    score, best_e, best_a, _, best_mc_r = best
 
     if stop_flag.is_set():
         raise RuntimeError('cancelled')
+
+    # Retrieve full trajectory arrays for the best result
+    # since we stripped them out during the parallel grid search
+    full_best_res = simulate_once(best_e, best_a, base_params)
 
     # Phase 3: final MC
     progress_cb(
@@ -346,7 +377,7 @@ def optimize_launch_angle(
         'elev':        best_e,
         'azi':         best_a,
         'score':       score,
-        'result':      best_res,
+        'result':      full_best_res,
         'mc_r':        reported_mc_r,
         'mc_success':  final_mc_succ,
         'mc_trials':   final_mc_trials,
