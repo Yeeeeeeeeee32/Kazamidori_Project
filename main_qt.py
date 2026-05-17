@@ -329,8 +329,8 @@ class SimController(QObject):
         self._worker.sig_nominal_done.connect(self._on_nominal_done)
         # sig_progress_updated fires after every single MC iteration (current, total).
         self._worker.sig_progress_updated.connect(self._on_progress_updated)
-        # finished covers both cancelled and full-MC-done paths (replaces _on_finished).
-        self._worker.finished.connect(self._on_mc_done)
+        # sig_finished covers both cancelled and full-MC-done paths (replaces _on_finished).
+        self._worker.sig_finished.connect(self._on_mc_done)
         self._worker.error.connect(self._on_error)
         self._worker.sig_status_text.connect(self._on_worker_status)
         self._worker.sig_early_warning.connect(self._on_early_warning)
@@ -400,7 +400,7 @@ class SimController(QObject):
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
             self._worker.sig_progress_updated.connect(self._on_progress_updated)
-            self._worker.finished.connect(self._on_mc_done)
+            self._worker.sig_finished.connect(self._on_mc_done)
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
             self._worker.sig_early_warning.connect(self._on_early_warning)
@@ -410,7 +410,7 @@ class SimController(QObject):
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
             self._worker.sig_progress_updated.connect(self._on_progress_updated)
-            self._worker.finished.connect(self._on_mc_done)
+            self._worker.sig_finished.connect(self._on_mc_done)
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
             self._worker.sig_early_warning.connect(self._on_early_warning)
@@ -787,7 +787,7 @@ class SimController(QObject):
             # cep_prob: read from AppState (authoritative) — updated by both the
             # main-window cep_prob_input widget and the Advanced Settings dialog.
             # Reading the widget directly would silently ignore Advanced Settings.
-            "cep_prob":   int(s.landing_prob),
+            "cep_prob":   int(s.landing_prob) if s.landing_prob is not None else 90,
             "launch_lat": w.lat_input.value()  if w.lat_input.value()  != -9999.0 else 35.6828,
             "launch_lon": w.lon_input.value()  if w.lon_input.value()  != -9999.0 else 139.7590,
             "elev":       s.launch_angle,   # degrees — AppState, default 85.0
@@ -1364,6 +1364,15 @@ class SimController(QObject):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    def global_excepthook(exc_type, exc_value, exc_traceback):
+        import traceback
+        import sys
+        print("--- GLOBAL EXCEPTION CAUGHT ---", file=sys.stderr)
+        traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
+        print("-------------------------------", file=sys.stderr)
+        sys.exit(1)
+    sys.excepthook = global_excepthook
+
     app = QApplication(sys.argv)
     # Task 4: enforce high-contrast dark theme globally before any widget is shown.
     app.setStyleSheet(GLOBAL_QSS)

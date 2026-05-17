@@ -207,7 +207,7 @@ class SimulationWorker(QThread):
     """
 
     progress             = Signal(int)        # 0–100 coarse progress bar
-    finished             = Signal(dict)       # always emitted last — check result["cancelled"]
+    sig_finished         = Signal(dict)       # always emitted last — check result["cancelled"]
     error                = Signal(str)        # only on unhandled exception
     sig_nominal_done     = Signal(dict)       # Stage 1: emitted after nominal run
     sig_progress_updated = Signal(int, int)   # Stage 2: (current_iteration, total_iterations)
@@ -346,7 +346,7 @@ class SimulationWorker(QThread):
                     )
 
             if self._stop_event.is_set():
-                self.finished.emit({
+                self.sig_finished.emit({
                     "cancelled":      True,
                     "has_sim_result": False,
                     "impact_x":  nom_pkg["impact_x"],
@@ -367,7 +367,7 @@ class SimulationWorker(QThread):
             scatter = self._run_mc_loop(sim_params, p)
 
             if self._stop_event.is_set():
-                self.finished.emit({
+                self.sig_finished.emit({
                     "cancelled":      True,
                     "has_sim_result": False,
                     "impact_x":  nom_pkg["impact_x"],
@@ -489,11 +489,11 @@ class SimulationWorker(QThread):
             result = self._package_result(nom_pkg, scatter, stats, prob_pct, cancelled=False)
             result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
             result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
-            self.finished.emit(result)
+            self.sig_finished.emit(result)
 
         except Exception as _exc:
             if self._stop_event.is_set() or str(_exc) == 'cancelled':
-                self.finished.emit({"cancelled": True})
+                self.sig_finished.emit({"cancelled": True})
             else:
                 self.error.emit(traceback.format_exc())
 
@@ -1045,7 +1045,7 @@ class OptimizationWorker(QThread):
     """
 
     progress             = Signal(int)
-    finished             = Signal(dict)
+    sig_finished         = Signal(dict)
     error                = Signal(str)
     sig_nominal_done     = Signal(dict)
     sig_progress_updated = Signal(int, int)
@@ -1142,7 +1142,7 @@ class OptimizationWorker(QThread):
             )
 
             if self._stop_event.is_set():
-                self.finished.emit({"cancelled": True})
+                self.sig_finished.emit({"cancelled": True})
                 return
 
             best_e = opt_res["elev"]
@@ -1188,7 +1188,7 @@ class OptimizationWorker(QThread):
                     )
 
             if self._stop_event.is_set():
-                self.finished.emit({"cancelled": True})
+                self.sig_finished.emit({"cancelled": True})
                 return
 
             self.sig_status_text.emit("Monte Carlo...")
@@ -1203,7 +1203,7 @@ class OptimizationWorker(QThread):
             scatter = dummy_worker._run_mc_loop(sim_params, p)
 
             if self._stop_event.is_set():
-                self.finished.emit({"cancelled": True})
+                self.sig_finished.emit({"cancelled": True})
                 return
 
             prob_pct = int(p.get("cep_prob", 90))
@@ -1227,11 +1227,11 @@ class OptimizationWorker(QThread):
             result["azi"] = best_a
 
             self.progress.emit(100)
-            self.finished.emit(result)
+            self.sig_finished.emit(result)
 
         except Exception as _exc:
             import traceback
             if self._stop_event.is_set() or str(_exc) == 'cancelled':
-                self.finished.emit({"cancelled": True})
+                self.sig_finished.emit({"cancelled": True})
             else:
                 self.error.emit(traceback.format_exc())

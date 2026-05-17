@@ -106,6 +106,9 @@ class MapView(QWidget):
         if hasattr(self._state, 'simulation_result_changed'):
             self._state.simulation_result_changed.connect(self._render_result)
 
+        if hasattr(self._state, 'target_radius_changed'):
+            self._state.target_radius_changed.connect(lambda _: self._render_result())
+
         # Connect Coordinate Changes
         if hasattr(self._state, 'launch_lat_changed'):
             self._state.launch_lat_changed.connect(lambda _: self._render_result())
@@ -244,7 +247,7 @@ class MapView(QWidget):
             legend = self.ax.legend(by_label.values(), by_label.keys(), loc='upper right', facecolor='#1e1e2e', edgecolor='#45475a', labelcolor='#cdd6f4')
             legend.set_zorder(20)
 
-        # Manual Axis Bounds
+        # Explicit Manual Auto-Scaling
         if all_x and all_y:
             min_x, max_x = min(all_x), max(all_x)
             min_y, max_y = min(all_y), max(all_y)
