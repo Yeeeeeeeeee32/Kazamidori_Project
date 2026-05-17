@@ -83,7 +83,7 @@ class MapView(QWidget):
         btn_layout.addWidget(self.btn_reset)
         btn_layout.addStretch()
 
-        self._info = QLabel("No simulation result.")
+        self._info = QLabel("No simulation result. Configure parameters and click 'Run' (F5).")
         self._info.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._info.setStyleSheet("QLabel { font-size: 11px; font-weight: bold; padding: 4px; background: rgba(30, 30, 46, 0.85); color: #cdd6f4; border-radius: 3px; }")
