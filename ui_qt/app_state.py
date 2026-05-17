@@ -46,14 +46,14 @@ class AppState(QObject):
     mc_n_runs_changed          = Signal(int)
 
     # ── Launch site ────────────────────────────────────────────────────────────
-    launch_lat_changed = Signal(float)
-    launch_lon_changed = Signal(float)
 
     # ── Rocket / flight parameters ─────────────────────────────────────────────
     mass_changed           = Signal(float)
     drag_coeff_changed     = Signal(float)
     ref_area_changed       = Signal(float)
     target_radius_changed  = Signal(float)
+    launch_lat_changed     = Signal(float)
+    launch_lon_changed     = Signal(float)
     operation_mode_changed = Signal(str)
 
     # ── Aerodynamics & Motor (advanced settings, exposed in Phase B) ──────────

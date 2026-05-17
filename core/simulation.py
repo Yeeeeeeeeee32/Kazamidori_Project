@@ -115,6 +115,9 @@ def build_motor_from_curve(
         If total impulse is non-positive, grain geometry would be non-physical,
         or the implied exhaust velocity is implausibly low (< 100 m/s).
     """
+    def _diag(*args, **kwargs):
+        pass
+
     if not thrust_data or len(thrust_data) < 2:
         raise ValueError("thrust_data must contain at least two points")
 
