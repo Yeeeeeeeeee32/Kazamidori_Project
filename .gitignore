@@ -20,3 +20,5 @@ __pycache__/
 *.pyo
 *.pyd
 mc_diagnostics.log
+assets/offline_map/
+log.txt

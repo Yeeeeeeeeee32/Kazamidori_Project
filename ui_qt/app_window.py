@@ -1390,6 +1390,12 @@ class AppWindow(QMainWindow):
         tb.addWidget(btn_run)
         _vline()
         tb.addWidget(btn_stop)
+        _vline()
+
+        self.btn_download_map = QPushButton("Download Map", tb)
+        self.btn_download_map.setObjectName("btn_download_map")
+        self.btn_download_map.setToolTip("Download offline map tiles for current location")
+        tb.addWidget(self.btn_download_map)
 
         spacer = QWidget(tb)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
