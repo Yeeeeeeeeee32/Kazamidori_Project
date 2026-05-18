@@ -1810,6 +1810,10 @@ class AppWindow(QMainWindow):
         self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
+        btn_dl_map = QPushButton("🗺️  Download Offline Map", w)
+        btn_dl_map.setObjectName("btn_download_map")
+        btn_dl_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
+
         btn_gps = QPushButton("📍  Get Current Location", w)
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)

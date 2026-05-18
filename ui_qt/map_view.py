@@ -93,10 +93,23 @@ class MapView(QWidget):
         top_layout.setContentsMargins(10, 10, 10, 10)
 
         btn_layout = QHBoxLayout()
-        self.btn_reset = QPushButton("Reset View", top_widget)
+        self.btn_reset = QPushButton("🔄 Reset View", top_widget)
         self.btn_reset.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.btn_reset.setToolTip("Reset map view to default bounds (Home)")
+        self.btn_reset.setShortcut("Home")
         self.btn_reset.clicked.connect(self._on_reset_view)
-        self.btn_reset.setStyleSheet("background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; padding: 4px; font-size: 10px; font-weight: bold; border-radius: 3px;")
+        self.btn_reset.setStyleSheet("""
+            QPushButton {
+                background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a;
+                padding: 4px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;
+            }
+            QPushButton:hover {
+                background: #313244; border-color: #89b4fa;
+            }
+            QPushButton:pressed {
+                background: #45475a; color: #ffffff;
+            }
+        """)
         btn_layout.addWidget(self.btn_reset)
         btn_layout.addStretch()
 
@@ -360,28 +373,23 @@ class MapView(QWidget):
         self.canvas.draw_idle()
 
     def _render_map_tiles(self) -> None:
-        """Render offline map tiles behind the coordinate canvas using local PNGs."""
+        """Render offline map tiles behind the coordinate canvas using the pre-stitched background.png."""
         import os
         import json
         from PIL import Image
         import numpy as np
 
         meta_path = "assets/offline_map/map_meta.json"
-        if not os.path.exists(meta_path):
+        img_path = "assets/offline_map/background.png"
+
+        if not os.path.exists(meta_path) or not os.path.exists(img_path):
             return
 
         try:
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
 
-            center_lat = meta.get("center_lat")
-            center_lon = meta.get("center_lon")
-            zoom = meta.get("zoom_level", 18)
             declination = meta.get("magnetic_declination", 0.0)
-
-            if center_lat is None or center_lon is None:
-                return
-
             if getattr(self._state, 'magnetic_declination', None) != declination:
                 self._state.magnetic_declination = declination
 
@@ -409,6 +417,10 @@ class MapView(QWidget):
             extent = meta.get("extent_meters", [-250.0, 250.0, -250.0, 250.0])
 
             self.ax.imshow(np.array(img), extent=extent, origin='upper', zorder=0, alpha=0.6)
+            # We assume it was correctly generated as 500x500m ENU extent [-250, 250, -250, 250]
+            # based on the map_downloader logic.
+            img = Image.open(img_path)
+            self.ax.imshow(np.array(img), extent=[-250, 250, -250, 250], zorder=-10, alpha=0.7)
 
         except Exception as e:
             print(f"Error rendering offline map tiles: {e}")

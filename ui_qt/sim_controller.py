@@ -275,6 +275,12 @@ class SimController(QObject):
             except RuntimeError:
                 pass
             self._window.btn_download_map.clicked.connect(self._on_download_map_clicked)
+        for btn in self._window.findChildren(QPushButton, "btn_download_map"):
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
+            btn.clicked.connect(self._on_download_map_clicked)
 
     # ── Run ────────────────────────────────────────────────────────────────────
 
@@ -395,6 +401,56 @@ class SimController(QObject):
 
         QMessageBox.information(self._window, "Download Complete", f"Offline map tiles downloaded.\nMagnetic Declination: {declination:.4f}°")
 
+        if self._worker and self._worker.isRunning():
+            return
+
+        lat = self._state.launch_lat
+        lon = self._state.launch_lon
+
+        if lat is None or lon is None:
+            QMessageBox.warning(self._window, "No Location", "Please enter valid launch coordinates before downloading the map.")
+            return
+
+        from PySide6.QtCore import QThread, Signal
+        from utils.map_downloader import download_offline_map
+        import traceback
+
+        class MapWorker(QThread):
+            sig_status_update = Signal(str, str)
+            sig_finished = Signal(bool, str)
+
+            def __init__(self, lat, lon, parent=None):
+                super().__init__(parent)
+                self.lat = lat
+                self.lon = lon
+
+            def run(self):
+                try:
+                    self.sig_status_update.emit("Downloading offline map...", "#f9e2af")
+                    download_offline_map(self.lat, self.lon)
+                    self.sig_finished.emit(True, "Offline map downloaded successfully.")
+                except Exception as e:
+                    print(traceback.format_exc())
+                    self.sig_finished.emit(False, f"Map download failed: {e}")
+
+        # Retain a reference to prevent garbage collection
+        self._map_worker = MapWorker(lat, lon, parent=self)
+
+        def on_status_update(msg: str, color: str):
+            self._window.set_status(msg, color)
+
+        def on_finished(success: bool, msg: str):
+            if success:
+                self._window.set_status(msg, "#a8e6a1")
+                self._state.needs_redraw.emit()
+            else:
+                self._window.set_status(msg, "#f38ba8")
+
+        self._map_worker.sig_status_update.connect(on_status_update)
+        self._map_worker.sig_finished.connect(on_finished)
+        self._map_worker.start()
+
+    @Slot()
     def _on_run_clicked(self) -> None:
         print(f"=== SimController._on_run_clicked === Current AppState: id={id(self._state)}")
         if self._worker and self._worker.isRunning():

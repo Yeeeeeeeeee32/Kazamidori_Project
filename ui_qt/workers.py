@@ -1147,8 +1147,12 @@ class OptimizationWorker(QThread):
             from core.optimization import optimize_launch_angle
             from core.simulation import simulate_once
 
-            def prog_cb(completed: int, total: int, msg: str):
-                self.sig_progress.emit(completed, total, msg)
+            def prog_cb(msg: str, frac: float):
+                # core.optimization calls back with (msg, frac in 0..1).
+                # sig_progress carries (completed, total, msg), so map the
+                # fraction onto a /100 scale that _on_progress_updated converts
+                # straight to a percent without surprises.
+                self.sig_progress.emit(int(frac * 100), 100, msg)
 
             opt_res = optimize_launch_angle(
                 mode=mode,
