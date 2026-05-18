@@ -1925,6 +1925,12 @@ class AppWindow(QMainWindow):
         self.mode_combo.currentTextChanged.connect(
             lambda v: setattr(s, "sim_mode", v))
 
+        self.lat_input.valueChanged.connect(lambda v: setattr(s, 'launch_lat', v))
+        self.lon_input.valueChanged.connect(lambda v: setattr(s, 'launch_lon', v))
+
+        s.launch_lat = self.lat_input.value()
+        s.launch_lon = self.lon_input.value()
+
         s.needs_redraw.connect(self.update_profile_plot)
         s.needs_redraw.connect(self.update_map_plot)
 
