@@ -119,6 +119,21 @@ class SimController(QObject):
             state.flight_mode = _mode_combo.currentText()   # sync initial value
             _mode_combo.currentTextChanged.connect(self._on_flight_mode_changed)
 
+        # ── Launch Coordinates → AppState.launch_lat / launch_lon ──────────────
+        _lat_input = getattr(window, 'lat_input', None)
+        if _lat_input is not None:
+            state.launch_lat = float(_lat_input.value())
+            _lat_input.valueChanged.connect(
+                lambda v: setattr(state, 'launch_lat', float(v))
+            )
+
+        _lon_input = getattr(window, 'lon_input', None)
+        if _lon_input is not None:
+            state.launch_lon = float(_lon_input.value())
+            _lon_input.valueChanged.connect(
+                lambda v: setattr(state, 'launch_lon', float(v))
+            )
+
         # ── rmax_input → AppState.target_radius ────────────────────────────────
         # Bidirectional: spinbox drives target_radius; external writes (JSON load)
         # drive spinbox back via target_radius_changed signal.
