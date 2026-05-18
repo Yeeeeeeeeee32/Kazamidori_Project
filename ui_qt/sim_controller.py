@@ -49,6 +49,7 @@ class SimController(QObject):
         super().__init__(parent)
         self._window: AppWindow               = window
         self._state:  AppState                = state
+        print(f"=== SimController.__init__ === Received AppState: id={id(self._state)}")
         self._worker: SimulationWorker | None = None
         # Cache the sig_nominal_done payload so _on_mc_done can forward
         # phases/events (phase-coloured 3-D trajectory) into the final result.
@@ -346,6 +347,7 @@ class SimController(QObject):
 
     @Slot()
     def _on_run_clicked(self) -> None:
+        print(f"=== SimController._on_run_clicked === Current AppState: id={id(self._state)}")
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
 
