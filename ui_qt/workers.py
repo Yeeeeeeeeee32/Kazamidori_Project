@@ -126,28 +126,6 @@ def _mc_worker_task(
     Runs a single perturbed Monte Carlo simulation and returns purely scalar values.
     The Flight array data is aggressively discarded to keep memory O(1).
     """
-    # ── One-shot child-process diagnostic (Phase E) ──────────────────────────
-    # ProcessPoolExecutor spawns N child processes; each one imports this
-    # module fresh and gets its own copy of every module-level attribute.
-    # The function-attribute guard therefore prints exactly once *per child
-    # process*, regardless of how many MC trials that child eventually runs.
-    # We log here so a silent pickle-failure of ``cd_curve_power_*`` (which
-    # would land in the child as ``None`` or missing) is immediately visible
-    # in the console.
-    if not getattr(_mc_worker_task, "_logged", False):
-        import os as _os
-        _curve_on  = sim_params.get("cd_curve_power_on")  or []
-        _curve_off = sim_params.get("cd_curve_power_off") or []
-        print(
-            f"[MC Worker PID {_os.getpid()}] "
-            f"Cd curves received — power_on={len(_curve_on)} pts, "
-            f"power_off={len(_curve_off)} pts  |  "
-            f"I_z={sim_params.get('I_z', 'fallback')}, "
-            f"I_xy={sim_params.get('I_xy', 'fallback')}",
-            flush=True,
-        )
-        _mc_worker_task._logged = True   # type: ignore[attr-defined]
-
     rng = _random.Random(seed)
 
     # ── Wind perturbation
