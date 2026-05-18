@@ -383,6 +383,8 @@ class CdCurvePreviewDialog(QDialog):
         layout.addWidget(self._canvas, 1)
 
         btn_close = QPushButton("Close")
+        btn_close.setToolTip("Close the preview (Esc)")
+        btn_close.setShortcut("Esc")
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close, 0, Qt.AlignmentFlag.AlignRight)
 
@@ -553,8 +555,11 @@ class AdvancedSettingsDialog(QDialog):
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
             btn_load    = QPushButton("Load Cd Curve…")
+            btn_load.setToolTip("Load a Mach-dependent Cd curve from a CSV file")
             btn_preview = QPushButton("Preview")
+            btn_preview.setToolTip("Preview the currently loaded Cd curve")
             btn_clear   = QPushButton("Clear")
+            btn_clear.setToolTip("Clear the loaded Cd curve and fallback to the static scalar value")
             lbl         = QLabel("Using Static Value")
             lbl.setStyleSheet("color: #888888;")
             row.addWidget(btn_load)
@@ -891,7 +896,9 @@ class ManualSetupDialog(QDialog):
 
         # ── Load / Save JSON buttons ──────────────────────────────────────────
         btn_load = QPushButton("📂  Load JSON (rocket.json)")
+        btn_load.setToolTip("Load rocket geometry configuration from a JSON file")
         btn_save = QPushButton("💾  Save JSON")
+        btn_save.setToolTip("Save the current rocket geometry configuration to a JSON file")
         btn_load.clicked.connect(self.sig_load_json.emit)
         btn_save.clicked.connect(self.sig_save_json.emit)
         btn_row = QHBoxLayout()
