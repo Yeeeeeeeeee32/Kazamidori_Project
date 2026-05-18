@@ -826,6 +826,7 @@ class ManualSetupDialog(QDialog):
 
     sig_load_json = Signal()   # forwarded → AppWindow.sig_load_rocket_json_clicked
     sig_save_json = Signal()   # forwarded → AppWindow.sig_save_rocket_json_clicked
+    sig_reset     = Signal()   # forwarded to handle reset
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -871,17 +872,29 @@ class ManualSetupDialog(QDialog):
         self.af_motorpos_input  = _dsb( 5.0, 3, 0.001, " m")
         self.af_motormass_input = _dsb( 5.0, 4, 0.001, " kg")
 
-        frm.addRow("Mass [kg]:",           self.af_mass_input)
-        frm.addRow("CG from Nose [m]:",    self.af_cg_input)
-        frm.addRow("Length [m]:",          self.af_len_input)
-        frm.addRow("Body Radius [m]:",     self.af_radius_input)
-        frm.addRow("Nose Length [m]:",     self.af_nose_input)
-        frm.addRow("Fin Root Chord [m]:",  self.af_finroot_input)
-        frm.addRow("Fin Tip Chord [m]:",   self.af_fintip_input)
-        frm.addRow("Fin Semi-Span [m]:",   self.af_finspan_input)
-        frm.addRow("Fin LE Position [m]:", self.af_finpos_input)
-        frm.addRow("Motor CG Pos. [m]:",   self.af_motorpos_input)
-        frm.addRow("Motor Dry Mass [kg]:", self.af_motormass_input)
+        self.lbl_mass      = QLabel("Mass [kg]:")
+        self.lbl_cg        = QLabel("CG from Nose [m]:")
+        self.lbl_len       = QLabel("Length [m]:")
+        self.lbl_radius    = QLabel("Body Radius [m]:")
+        self.lbl_nose      = QLabel("Nose Length [m]:")
+        self.lbl_finroot   = QLabel("Fin Root Chord [m]:")
+        self.lbl_fintip    = QLabel("Fin Tip Chord [m]:")
+        self.lbl_finspan   = QLabel("Fin Semi-Span [m]:")
+        self.lbl_finpos    = QLabel("Fin LE Position [m]:")
+        self.lbl_motorpos  = QLabel("Motor CG Pos. [m]:")
+        self.lbl_motormass = QLabel("Motor Dry Mass [kg]:")
+
+        frm.addRow(self.lbl_mass,      self.af_mass_input)
+        frm.addRow(self.lbl_cg,        self.af_cg_input)
+        frm.addRow(self.lbl_len,       self.af_len_input)
+        frm.addRow(self.lbl_radius,    self.af_radius_input)
+        frm.addRow(self.lbl_nose,      self.af_nose_input)
+        frm.addRow(self.lbl_finroot,   self.af_finroot_input)
+        frm.addRow(self.lbl_fintip,    self.af_fintip_input)
+        frm.addRow(self.lbl_finspan,   self.af_finspan_input)
+        frm.addRow(self.lbl_finpos,    self.af_finpos_input)
+        frm.addRow(self.lbl_motorpos,  self.af_motorpos_input)
+        frm.addRow(self.lbl_motormass, self.af_motormass_input)
 
 
         inner_lay.addWidget(grp)
@@ -899,6 +912,10 @@ class ManualSetupDialog(QDialog):
         btn_load.setToolTip("Load rocket geometry configuration from a JSON file")
         btn_save = QPushButton("💾  Save JSON")
         btn_save.setToolTip("Save the current rocket geometry configuration to a JSON file")
+        self.btn_reset = QPushButton("Reset Configuration")
+        self.btn_reset.setToolTip("Restore all tracking parameters back to the original values from the loaded .rkt file")
+
+        self.btn_reset.clicked.connect(self.sig_reset.emit)
         btn_load.clicked.connect(self.sig_load_json.emit)
         btn_save.clicked.connect(self.sig_save_json.emit)
         btn_row = QHBoxLayout()
@@ -911,6 +928,7 @@ class ManualSetupDialog(QDialog):
 
         root.addWidget(sa, stretch=1)
         root.addLayout(btn_row)
+        root.addWidget(self.btn_reset)
         root.addWidget(btns)
 
         self.setMinimumHeight(500)
@@ -1201,6 +1219,7 @@ class AppWindow(QMainWindow):
         self._manual_dialog = ManualSetupDialog(self)
         self._manual_dialog.sig_load_json.connect(self._on_load_airframe_json)
         self._manual_dialog.sig_save_json.connect(self.sig_save_rocket_json_clicked.emit)
+        self._manual_dialog.sig_reset.connect(self._on_manual_config_reset)
         self.af_mass_input      = self._manual_dialog.af_mass_input
         self.af_cg_input        = self._manual_dialog.af_cg_input
         self.af_len_input       = self._manual_dialog.af_len_input
@@ -1233,6 +1252,19 @@ class AppWindow(QMainWindow):
         self.af_finpos_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_motorpos_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_motormass_input.valueChanged.connect(lambda v: self._mark_modified())
+
+        # Phase 2 Tracker evaluation hooks
+        self.af_mass_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_cg_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_len_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_radius_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_nose_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_finroot_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_fintip_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_finspan_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_finpos_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_motorpos_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_motormass_input.valueChanged.connect(self._evaluate_config_deltas)
 
         self._bind_state()
 
@@ -1916,6 +1948,18 @@ class AppWindow(QMainWindow):
         status_lay.addWidget(self.lbl_gpv_status)
 
         right_lay.addLayout(status_lay)
+
+        telemetry_lay = QHBoxLayout()
+        telemetry_lay.setContentsMargins(4, 4, 4, 0)
+        self.lbl_max_gust = QLabel("Max Gust: —", right_col)
+        self.lbl_mean_wind = QLabel("Mean Wind: —", right_col)
+        self.lbl_std_dev = QLabel("Std Dev: —", right_col)
+        for _lbl in (self.lbl_max_gust, self.lbl_mean_wind, self.lbl_std_dev):
+            _lbl.setStyleSheet("color: #cdd6f4; font-size: 8pt;")
+            _lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            telemetry_lay.addWidget(_lbl)
+
+        right_lay.addLayout(telemetry_lay)
         right_lay.addStretch()   # keep table + status pinned to the top
 
         lay.addWidget(right_col)
@@ -1949,6 +1993,13 @@ class AppWindow(QMainWindow):
         self.update_wind_plot()
 
     # ══ Plot: 3-D Flight Profile ══════════════════════════════════════════════
+    #
+    # ROADMAP - 3D Flight Profile Integration:
+    # Schedule the following adjustments for the 3D Plot:
+    # 1. Re-orient the 3D axis so that North (the Y axis) points directly into
+    #    the screen (the depth/background axis).
+    # 2. Recalibrate the camera rotation limits strictly between -90° and 90°
+    #    (representing a sweep from true West to true East).
 
     def update_profile_plot(self) -> None:
         ax = self.profile_ax
@@ -2260,16 +2311,27 @@ class AppWindow(QMainWindow):
                     xs.append(0.0)
                     ys.append(ys[-1])
 
-                # Only the latest data point has a marker, prior points only line
-                ax_p.plot(xs[:-1], ys[:-1], color=col, lw=1.4, alpha=0.85)
-                # Link the last line segment
-                if len(xs) > 1:
-                    ax_p.plot(xs[-2:], ys[-2:], color=col, lw=1.4, alpha=0.85)
+                # Plot the continuous line connecting all historical data points
+                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85)
+
                 # Add proxy artist for legend
                 ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
 
-                # Draw marker only on the latest point
-                ax_p.scatter([xs[-1]], [ys[-1]], color=col, s=28, zorder=5)
+                # Draw markers ONLY at the precise timestamps where data was actively fetched
+                # (exclude the synthesized ZOH points where t == 0.0 unless it genuinely is the fetch time)
+                fetch_xs = []
+                fetch_ys = []
+                # We filter by finding points where t is not exactly 0.0 (unless it's the very first point)
+                # But actually, looking at `update_wind_history`, `pts` only contains actual received
+                # points relative to `now`. ZOH at `0.0` is only appended to `xs` / `ys` locally for plotting the line!
+                # So `pts` itself ONLY has the actively fetched points.
+                for p in pts:
+                    fetch_xs.append(p[0])
+                    fetch_ys.append(p[1])
+
+                if fetch_xs:
+                    ax_p.scatter(fetch_xs, fetch_ys, color=col, s=28, zorder=5)
+
                 # 10-second rolling average horizontal dotted line
                 recent = [p[1] for p in pts if p[0] >= -10.0]
                 if recent:
@@ -2372,10 +2434,9 @@ class AppWindow(QMainWindow):
         ax_c.set_title("Wind Compass", color="#aaaaaa", fontsize=8, pad=12)
         # Combined legend for both plots attached to the figure, not individual axes
         handles_p, labels_p = ax_p.get_legend_handles_labels()
-        handles_c, labels_c = ax_c.get_legend_handles_labels()
 
-        # Avoid duplicate labels (from ax_p history lines and ax_c proxies)
-        by_label = dict(zip(labels_p + labels_c, handles_p + handles_c))
+        # Avoid duplicate labels (from ax_p history lines)
+        by_label = dict(zip(labels_p, handles_p))
         if by_label:
             fig.legends.clear()
             fig.legend(
@@ -2456,6 +2517,21 @@ class AppWindow(QMainWindow):
                     item.setText(txt)
                 if c == 0:
                     item.setData(Qt.ItemDataRole.ForegroundRole, QColor(col))
+
+        # Update Telemetry Stats for 3.0m altitude
+        surf_pts = hist_buf.get(3.0, [])
+        if surf_pts:
+            speeds = [p[1] for p in surf_pts]
+            max_gust = max(speeds)
+            mean_wind = sum(speeds) / len(speeds)
+            std_dev = (sum((s - mean_wind) ** 2 for s in speeds) / len(speeds)) ** 0.5
+            self.lbl_max_gust.setText(f"Max Gust: {max_gust:.1f}")
+            self.lbl_mean_wind.setText(f"Mean Wind: {mean_wind:.1f}")
+            self.lbl_std_dev.setText(f"Std Dev: {std_dev:.2f}")
+        else:
+            self.lbl_max_gust.setText("Max Gust: —")
+            self.lbl_mean_wind.setText("Mean Wind: —")
+            self.lbl_std_dev.setText("Std Dev: —")
 
     # ── Smart partial redraw ──────────────────────────────────────────────────
 
@@ -2699,7 +2775,62 @@ class AppWindow(QMainWindow):
 
     def _on_manual_config(self) -> None:
         """Open the ManualSetupDialog modally."""
+        self._evaluate_config_deltas()
         self._manual_dialog.exec()
+
+    def _evaluate_config_deltas(self, *args) -> None:
+        """Evaluate current widget values against AppState.original_rocket_config."""
+        orig = self.state.original_rocket_config
+        if orig is None:
+            return
+
+        def _check_and_style(widget, label, orig_key, scale=1.0):
+            if widget.value() == -9999.0:
+                return
+
+            # Allow minor floating point deviations
+            current_val = widget.value()
+            orig_val = orig.get(orig_key, 0.0) * scale
+            if abs(current_val - orig_val) > 1e-4:
+                label.setStyleSheet("color: #ff5555; font-weight: bold;")
+            else:
+                label.setStyleSheet("")
+
+        md = self._manual_dialog
+        _check_and_style(self.af_mass_input,      md.lbl_mass,      "mass")
+        _check_and_style(self.af_cg_input,        md.lbl_cg,        "cg")
+        _check_and_style(self.af_len_input,       md.lbl_len,       "length")
+        _check_and_style(self.af_radius_input,    md.lbl_radius,    "radius")
+        _check_and_style(self.af_nose_input,      md.lbl_nose,      "nose_length")
+        _check_and_style(self.af_finroot_input,   md.lbl_finroot,   "fin_root")
+        _check_and_style(self.af_fintip_input,    md.lbl_fintip,    "fin_tip")
+        _check_and_style(self.af_finspan_input,   md.lbl_finspan,   "fin_span")
+        _check_and_style(self.af_finpos_input,    md.lbl_finpos,    "fin_pos")
+        _check_and_style(self.af_motorpos_input,  md.lbl_motorpos,  "motor_pos")
+        _check_and_style(self.af_motormass_input, md.lbl_motormass, "motor_dry_mass")
+
+    def _on_manual_config_reset(self) -> None:
+        """Reset values in ManualSetupDialog to match original_rocket_config."""
+        orig = self.state.original_rocket_config
+        if orig is None:
+            return
+
+        def _set(widget, orig_key, scale=1.0):
+            val = orig.get(orig_key)
+            if val is not None:
+                widget.setValue(val * scale)
+
+        _set(self.af_mass_input,      "mass")
+        _set(self.af_cg_input,        "cg")
+        _set(self.af_len_input,       "length")
+        _set(self.af_radius_input,    "radius")
+        _set(self.af_nose_input,      "nose_length")
+        _set(self.af_finroot_input,   "fin_root")
+        _set(self.af_fintip_input,    "fin_tip")
+        _set(self.af_finspan_input,   "fin_span")
+        _set(self.af_finpos_input,    "fin_pos")
+        _set(self.af_motorpos_input,  "motor_pos")
+        _set(self.af_motormass_input, "motor_dry_mass")
 
     def _on_run(self) -> None:
         self.set_status("Simulation running…", "#f9e2af")
