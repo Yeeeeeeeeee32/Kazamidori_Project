@@ -11,6 +11,22 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QStacke
 from PySide6.QtCore import Qt, Slot, Signal, QObject
 from ui_qt.app_state import AppState
 
+def _safe_float(val, default=0.0) -> float:
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+def _safe_int(val, default=0) -> int:
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
 class MapView(QWidget):
     # This signal is kept for API compatibility if something connects to it,
     # though it might not be used directly in pure Matplotlib display without custom event handlers.
@@ -151,7 +167,7 @@ class MapView(QWidget):
         # Launch Site
         self.ax.scatter(0, 0, marker='*', s=150, color='#4488ff', label='Launch Site', zorder=10)
 
-        target_radius = getattr(self._state, 'target_radius', 0.0) or 0.0
+        target_radius = _safe_float(getattr(self._state, 'target_radius', 0.0))
         if target_radius > 0:
             target_circle = patches.Circle((0, 0), radius=target_radius, edgecolor='#0055ff', facecolor='none', linestyle='--', zorder=5)
             self.ax.add_patch(target_circle)
@@ -162,10 +178,10 @@ class MapView(QWidget):
             self.canvas.draw()
             return
 
-        impact_x = float(result.get('impact_x', result.get('land_x', 0.0)))
-        impact_y = float(result.get('impact_y', result.get('land_y', 0.0)))
-        r90 = float(result.get('r_N_radius', 0.0))
-        cep = float(result.get('cep', 0.0))
+        impact_x = _safe_float(result.get('impact_x', result.get('land_x', 0.0)))
+        impact_y = _safe_float(result.get('impact_y', result.get('land_y', 0.0)))
+        r90 = _safe_float(result.get('r_N_radius', 0.0))
+        cep = _safe_float(result.get('cep', 0.0))
 
         scatter_x = result.get('mc_scatter_x', [])
         scatter_y = result.get('mc_scatter_y', [])
@@ -176,9 +192,9 @@ class MapView(QWidget):
 
         ellipse = result.get('cep_ellipse') or result.get('ellipse') # fallback for 'ellipse'
         contours = result.get('kde_contours', [])
-        prob = int(result.get('landing_prob', 90))
-        apogee = float(result.get('apogee_m', 0.0))
-        tof = float(result.get('hang_time', 0.0))
+        prob = _safe_int(result.get('landing_prob', 90), 90)
+        apogee = _safe_float(result.get('apogee_m', 0.0))
+        tof = _safe_float(result.get('hang_time', 0.0))
 
         self._info.setText(
             f"R{prob}: {r90:.1f} m  |  CEP50: {cep:.1f} m  |  "
