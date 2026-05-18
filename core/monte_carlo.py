@@ -154,32 +154,36 @@ def _perturb_wind_profile(
     dir_rot      = rng.gauss(0.0, wu * math.pi / 6.0)
     cos_r, sin_r = math.cos(dir_rot), math.sin(dir_rot)
 
-    u_new: list[tuple[float, float]] = []
-    v_new: list[tuple[float, float]] = []
-    spd_out: list[tuple[float, float]] = []
-
     has_gust = gust_intensity > 0.0
     gust_sigma = float(gust_intensity)
 
-    for (alt_u, u_nom), (_, v_nom) in zip(u_prof, v_prof):
+    rng_gauss = rng.gauss
+    math_hypot = math.hypot
+
+    n = len(u_prof)
+    u_new: list[tuple[float, float]] = [None] * n  # type: ignore
+    v_new: list[tuple[float, float]] = [None] * n  # type: ignore
+    spd_out: list[tuple[float, float]] = [None] * n  # type: ignore
+
+    for i, ((alt_u, u_nom), (_, v_nom)) in enumerate(zip(u_prof, v_prof)):
         # 1. Global (synoptic) rotation & scaling
         u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
         v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
 
         # 2. Local (mesoscale) turbulence
-        local_spd = math.hypot(u_nom, v_nom)
+        local_spd = math_hypot(u_nom, v_nom)
         sigma     = wu * max(local_spd, 1.0) * 0.30
-        u_val = u_g + rng.gauss(0.0, sigma)
-        v_val = v_g + rng.gauss(0.0, sigma)
+        u_val = u_g + rng_gauss(0.0, sigma)
+        v_val = v_g + rng_gauss(0.0, sigma)
 
         # 3. Gust layer
         if has_gust:
-            u_val += rng.gauss(0.0, gust_sigma)
-            v_val += rng.gauss(0.0, gust_sigma)
+            u_val += rng_gauss(0.0, gust_sigma)
+            v_val += rng_gauss(0.0, gust_sigma)
 
-        u_new.append((alt_u, u_val))
-        v_new.append((alt_u, v_val))
-        spd_out.append((alt_u, math.hypot(u_val, v_val)))
+        u_new[i] = (alt_u, u_val)
+        v_new[i] = (alt_u, v_val)
+        spd_out[i] = (alt_u, math_hypot(u_val, v_val))
 
     return u_new, v_new, spd_out
 
@@ -435,13 +439,20 @@ def compute_cep(scatter: list[tuple[float, float]]) -> float:
     """
     if not scatter:
         return 0.0
-    arr   = np.array(scatter, dtype=float)
-    cx    = float(arr[:, 0].mean())
-    cy    = float(arr[:, 1].mean())
-    dists = sorted(math.hypot(x - cx, y - cy) for x, y in scatter)
-    mid   = (len(dists) - 1) / 2.0
+    n = len(scatter)
+    sum_x = 0.0
+    sum_y = 0.0
+    for x, y in scatter:
+        sum_x += x
+        sum_y += y
+    cx = sum_x / n
+    cy = sum_y / n
+
+    math_hypot = math.hypot
+    dists = sorted(math_hypot(x - cx, y - cy) for x, y in scatter)
+    mid   = (n - 1) / 2.0
     lo    = int(mid)
-    hi    = min(lo + 1, len(dists) - 1)
+    hi    = min(lo + 1, n - 1)
     return dists[lo] + (mid - lo) * (dists[hi] - dists[lo])
 
 

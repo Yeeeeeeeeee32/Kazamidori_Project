@@ -1,3 +1,11 @@
-## 2024-05-17 - [Optimizing RocketPy Phase 1 Grid Search]
-**Learning:** Evaluated grid searches sequentially calling `simulate_once` which blocks the event loop and takes a lot of time. By substituting the sequential loop in `run_phase1` with a `ProcessPoolExecutor` running `_grid_search_worker`, we are able to effectively utilize multiple cores and drastically reduce computation time.
-**Action:** When working with compute-heavy nested loops, identify independent operations and use Pythons multiprocess workers to bypass the GIL. Ensure that arguments and return values are picklable and stripped of unnecessary large objects (e.g. trajectories) to avoid excessive Inter-Process Communication (IPC) overhead.
+## YYYY-MM-DD - [Python vs Numpy for small data]
+**Learning:** Instantiating `numpy.array` from lists solely to calculate means on small-to-medium datasets introduces significant Python-to-C memory translation overhead that outweighs vectorization benefits.
+**Action:** Use native Python sums (`sum_x += x`, `cx = sum_x / n`) for simple statistics on short lists (like landing zone scatter points) instead of forcing them into NumPy arrays inside hot paths.
+
+## YYYY-MM-DD - [Pre-allocating lists in hot loops]
+**Learning:** Calling `.append()` in a hot loop has noticeable overhead due to dynamic array resizing.
+**Action:** When the length is known in advance (e.g., matching a zip length), pre-allocate lists using `[None] * n` and index into them to improve loop execution speed.
+
+## YYYY-MM-DD - [Caching function references]
+**Learning:** Method lookups (like `math.hypot` and `rng.gauss`) inside tight inner loops cost dictionary lookup overhead on every single iteration.
+**Action:** Cache method references to local variables (e.g., `math_hypot = math.hypot`) before the loop starts to shave off milliseconds per thousand iterations in heavy computations.
