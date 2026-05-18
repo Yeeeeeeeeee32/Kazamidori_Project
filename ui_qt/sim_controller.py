@@ -272,6 +272,17 @@ class SimController(QObject):
         if s._backfire_delay is None:
             missing.append("Backfire Delay")
 
+        print("=== COORDINATE FORENSICS ===")
+        print(f"1. UI SpinBox LAT: {self._window.lat_input.value()} (Type: {type(self._window.lat_input.value())})")
+        print(f"2. UI SpinBox LON: {self._window.lon_input.value()} (Type: {type(self._window.lon_input.value())})")
+        print(f"3. AppState Getter LAT: {self._state.launch_lat} (Type: {type(self._state.launch_lat)})")
+        print(f"4. AppState Getter LON: {self._state.launch_lon} (Type: {type(self._state.launch_lon)})")
+        try:
+            print(f"5. AppState Raw _launch_lat: {self._state._launch_lat}")
+        except AttributeError:
+            print("5. AppState Raw _launch_lat: DOES NOT EXIST")
+        print("============================")
+
         # Launch Coordinates
         if any(v is None for v in (s._launch_lat, s._launch_lon)) or \
            self._window.lat_input.value() == -9999.0 or \
