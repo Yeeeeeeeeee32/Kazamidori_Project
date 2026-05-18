@@ -269,6 +269,13 @@ class SimController(QObject):
                 pass
             btn.clicked.connect(self._on_phase1_clicked)
 
+        for btn in self._window.findChildren(QPushButton, "btn_download_map"):
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
+            btn.clicked.connect(self._on_download_map_clicked)
+
     # ── Run ────────────────────────────────────────────────────────────────────
 
     def _validate_run_prerequisites(self) -> bool:
@@ -349,6 +356,57 @@ class SimController(QObject):
         return True
 
     @Slot()
+    def _on_download_map_clicked(self) -> None:
+        if self._worker and self._worker.isRunning():
+            return
+
+        lat = self._state.launch_lat
+        lon = self._state.launch_lon
+
+        if lat is None or lon is None:
+            QMessageBox.warning(self._window, "No Location", "Please enter valid launch coordinates before downloading the map.")
+            return
+
+        from PySide6.QtCore import QThread, Signal
+        from utils.map_downloader import download_offline_map
+        import traceback
+
+        class MapWorker(QThread):
+            sig_status_update = Signal(str, str)
+            sig_finished = Signal(bool, str)
+
+            def __init__(self, lat, lon, parent=None):
+                super().__init__(parent)
+                self.lat = lat
+                self.lon = lon
+
+            def run(self):
+                try:
+                    self.sig_status_update.emit("Downloading offline map...", "#f9e2af")
+                    download_offline_map(self.lat, self.lon)
+                    self.sig_finished.emit(True, "Offline map downloaded successfully.")
+                except Exception as e:
+                    print(traceback.format_exc())
+                    self.sig_finished.emit(False, f"Map download failed: {e}")
+
+        # Retain a reference to prevent garbage collection
+        self._map_worker = MapWorker(lat, lon, parent=self)
+
+        def on_status_update(msg: str, color: str):
+            self._window.set_status(msg, color)
+
+        def on_finished(success: bool, msg: str):
+            if success:
+                self._window.set_status(msg, "#a8e6a1")
+                self._state.needs_redraw.emit()
+            else:
+                self._window.set_status(msg, "#f38ba8")
+
+        self._map_worker.sig_status_update.connect(on_status_update)
+        self._map_worker.sig_finished.connect(on_finished)
+        self._map_worker.start()
+
+    @Slot()
     def _on_run_clicked(self) -> None:
         print(f"=== SimController._on_run_clicked === Current AppState: id={id(self._state)}")
         if self._worker and self._worker.isRunning():
@@ -374,8 +432,8 @@ class SimController(QObject):
         # ── Two-stage routing ──────────────────────────────────────────────────
         # sig_nominal_done fires before any MC runs start; renders trajectory now.
         self._worker.sig_nominal_done.connect(self._on_nominal_done)
-        # sig_progress_updated fires after every single MC iteration (current, total).
-        self._worker.sig_progress_updated.connect(self._on_progress_updated)
+        # sig_progress fires after every single MC iteration (current, total, msg).
+        self._worker.sig_progress.connect(self._on_progress_updated)
         # sig_finished covers both cancelled and full-MC-done paths (replaces _on_finished).
         self._worker.sig_finished.connect(self._on_mc_done)
         self._worker.error.connect(self._on_error)
@@ -415,7 +473,7 @@ class SimController(QObject):
             self._worker = SimulationWorker(self._collect_params(), parent=self)
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
-            self._worker.sig_progress_updated.connect(self._on_progress_updated)
+            self._worker.sig_progress.connect(self._on_progress_updated)
             self._worker.sig_finished.connect(self._on_mc_done)
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
@@ -424,7 +482,7 @@ class SimController(QObject):
             self._worker = OptimizationWorker(self._collect_params(), parent=self)
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
-            self._worker.sig_progress_updated.connect(self._on_progress_updated)
+            self._worker.sig_progress.connect(self._on_progress_updated)
             self._worker.sig_finished.connect(self._on_mc_done)
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
@@ -530,19 +588,21 @@ class SimController(QObject):
         self._window.profile_canvas.draw_idle()
         QApplication.processEvents()
 
-    @Slot(int, int)
-    def _on_progress_updated(self, current: int, total: int) -> None:
+    @Slot(int, int, str)
+    def _on_progress_updated(self, current: int, total: int, msg: str) -> None:
         """Invoked on the GUI thread after every single MC run.
 
         Converts the raw (current, total) heartbeat into a 0–100 percentage
         and pushes it to AppState.progress_percentage.  Division-by-zero is
         guarded: if total == 0, percentage stays at 0.
 
-        Thread safety: sig_progress_updated crosses thread boundaries via Qt's
+        Thread safety: sig_progress crosses thread boundaries via Qt's
         queued connection, so the AppState write always happens on the GUI thread.
         """
-        pct = int(current / total * 100) if total > 0 else 0
+        pct = int((current / total) * 100) if total > 0 else 0
         self._state.progress_percentage = pct
+        self._window._progress.setValue(pct)
+        self._window._status_label.setText(msg)
 
     @Slot(dict)
     def _on_mc_done(self, result: dict) -> None:

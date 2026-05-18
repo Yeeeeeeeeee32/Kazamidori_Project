@@ -149,11 +149,15 @@ def build_perturbed_wind_prof(
     base_up   = max(params['up_spd'],   0.1)
     dir_sigma = wu * 60.0
 
+    # Cache methods for hot loop
+    rng_gauss = rng.gauss
+    math_hypot = math.hypot
+
     # Stage 1: perturb anchor speeds and directions
-    surf_spd = max(0.0, rng.gauss(params['surf_spd'], wu * base_surf))
-    up_spd   = max(0.0, rng.gauss(params['up_spd'],   wu * base_up))
-    surf_dir = params['surf_dir'] + rng.gauss(0.0, dir_sigma)
-    up_dir   = params['up_dir']   + rng.gauss(0.0, dir_sigma)
+    surf_spd = max(0.0, rng_gauss(params['surf_spd'], wu * base_surf))
+    up_spd   = max(0.0, rng_gauss(params['up_spd'],   wu * base_up))
+    surf_dir = params['surf_dir'] + rng_gauss(0.0, dir_sigma)
+    up_dir   = params['up_dir']   + rng_gauss(0.0, dir_sigma)
 
     # Stage 2: rebuild smooth Hellmann profile from perturbed anchors
     u_prof, v_prof = build_wind_profile(
@@ -161,18 +165,22 @@ def build_perturbed_wind_prof(
 
     # Stage 3: per-level turbulence noise scaled to local wind speed
     if wu > 1e-9:
-        u_new, v_new, spd_prof = [], [], []
-        for (z_u, u), (_, v) in zip(u_prof, v_prof):
-            local_spd = math.hypot(u, v)
+        n = len(u_prof)
+        u_new: list[tuple[float, float]] = [None] * n  # type: ignore
+        v_new: list[tuple[float, float]] = [None] * n  # type: ignore
+        spd_prof: list[tuple[float, float]] = [None] * n  # type: ignore
+
+        for i, ((z_u, u), (_, v)) in enumerate(zip(u_prof, v_prof)):
+            local_spd = math_hypot(u, v)
             sigma = wu * max(local_spd, 1.0) * 0.30
-            un = u + rng.gauss(0.0, sigma)
-            vn = v + rng.gauss(0.0, sigma)
-            u_new.append((z_u, un))
-            v_new.append((z_u, vn))
-            spd_prof.append((z_u, math.hypot(un, vn)))
+            un = u + rng_gauss(0.0, sigma)
+            vn = v + rng_gauss(0.0, sigma)
+            u_new[i] = (z_u, un)
+            v_new[i] = (z_u, vn)
+            spd_prof[i] = (z_u, math_hypot(un, vn))
         u_prof, v_prof = u_new, v_new
     else:
-        spd_prof = [(z_u, math.hypot(u, v))
+        spd_prof = [(z_u, math_hypot(u, v))
                     for (z_u, u), (_, v) in zip(u_prof, v_prof)]
 
     return u_prof, v_prof, surf_spd, up_spd, spd_prof

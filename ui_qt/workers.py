@@ -188,7 +188,7 @@ class SimulationWorker(QThread):
     sig_finished         = Signal(dict)       # always emitted last — check result["cancelled"]
     error                = Signal(str)        # only on unhandled exception
     sig_nominal_done     = Signal(dict)       # Stage 1: emitted after nominal run
-    sig_progress_updated = Signal(int, int)   # Stage 2: (current_iteration, total_iterations)
+    sig_progress         = Signal(int, int, str)   # Stage 2: (completed, total, msg)
     sig_mc_done          = Signal(dict)       # Stage 2: emitted after MC loop + statistics
     sig_status_text      = Signal(str)        # Human-readable stage label for the status bar
     sig_early_warning    = Signal(str)        # Nominal pre-eval: emitted before MC if out of target
@@ -798,7 +798,7 @@ class SimulationWorker(QThread):
                 # Emit progress signals at most _MAX_PROG_SIGNALS times total.
                 # Always emit on the final iteration so the bar reaches 90%.
                 if _done % _emit_every == 0 or _done == n_total:
-                    self.sig_progress_updated.emit(_done, n_total)
+                    self.sig_progress.emit(_done, n_total, f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})")
                     self.progress.emit(min(25 + int(_done / n_total * 65), 90))
 
         return scatter
@@ -1026,7 +1026,7 @@ class OptimizationWorker(QThread):
     sig_finished         = Signal(dict)
     error                = Signal(str)
     sig_nominal_done     = Signal(dict)
-    sig_progress_updated = Signal(int, int)
+    sig_progress         = Signal(int, int, str)
     sig_mc_done          = Signal(dict)
     sig_status_text      = Signal(str)
     sig_early_warning    = Signal(str)
@@ -1099,14 +1099,11 @@ class OptimizationWorker(QThread):
             from core.simulation import simulate_once
 
             def prog_cb(msg: str, frac: float):
-                if "Phase 1:" in msg:
-                    self.sig_status_text.emit("Coarse Search...")
-                elif "Phase 2:" in msg or "Phase 3:" in msg:
-                    self.sig_status_text.emit("Fine Search...")
-                else:
-                    self.sig_status_text.emit(msg)
-                # Keep progress between 2% and 20% during optimization
-                self.progress.emit(2 + int(frac * 18))
+                # core.optimization calls back with (msg, frac in 0..1).
+                # sig_progress carries (completed, total, msg), so map the
+                # fraction onto a /100 scale that _on_progress_updated converts
+                # straight to a percent without surprises.
+                self.sig_progress.emit(int(frac * 100), 100, msg)
 
             opt_res = optimize_launch_angle(
                 mode=mode,
@@ -1176,7 +1173,7 @@ class OptimizationWorker(QThread):
             dummy_worker = SimulationWorker(p)
             dummy_worker._stop_event = self._stop_event
             dummy_worker.progress.connect(self.progress.emit)
-            dummy_worker.sig_progress_updated.connect(self.sig_progress_updated.emit)
+            dummy_worker.sig_progress.connect(self.sig_progress.emit)
 
             scatter = dummy_worker._run_mc_loop(sim_params, p)
 

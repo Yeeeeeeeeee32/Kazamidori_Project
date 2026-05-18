@@ -93,10 +93,23 @@ class MapView(QWidget):
         top_layout.setContentsMargins(10, 10, 10, 10)
 
         btn_layout = QHBoxLayout()
-        self.btn_reset = QPushButton("Reset View", top_widget)
+        self.btn_reset = QPushButton("🔄 Reset View", top_widget)
         self.btn_reset.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.btn_reset.setToolTip("Reset map view to default bounds (Home)")
+        self.btn_reset.setShortcut("Home")
         self.btn_reset.clicked.connect(self._on_reset_view)
-        self.btn_reset.setStyleSheet("background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; padding: 4px; font-size: 10px; font-weight: bold; border-radius: 3px;")
+        self.btn_reset.setStyleSheet("""
+            QPushButton {
+                background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a;
+                padding: 4px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;
+            }
+            QPushButton:hover {
+                background: #313244; border-color: #89b4fa;
+            }
+            QPushButton:pressed {
+                background: #45475a; color: #ffffff;
+            }
+        """)
         btn_layout.addWidget(self.btn_reset)
         btn_layout.addStretch()
 
@@ -360,57 +373,30 @@ class MapView(QWidget):
         self.canvas.draw_idle()
 
     def _render_map_tiles(self) -> None:
-        """Render offline map tiles behind the coordinate canvas using local PNGs."""
+        """Render offline map tiles behind the coordinate canvas using the pre-stitched background.png."""
         import os
+        import json
         from PIL import Image
         import numpy as np
 
-        tile_dir = "./assets/map_tiles"
-        if not os.path.isdir(tile_dir):
+        meta_path = "assets/offline_map/map_meta.json"
+        img_path = "assets/offline_map/background.png"
+
+        if not os.path.exists(meta_path) or not os.path.exists(img_path):
             return
 
-        # Convert lat/lon to Z/X/Y (slippy map format) at a set zoom level (e.g. 15)
-        # and load specific tiles corresponding to the view area.
         try:
-            cur_lat = float(getattr(self._state, 'launch_lat', 0.0))
-            cur_lon = float(getattr(self._state, 'launch_lon', 0.0))
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
 
-            # Simple check to avoid running logic if coordinates are completely absent
-            if cur_lat == 0.0 and cur_lon == 0.0:
-                return
+            declination = meta.get("magnetic_declination", 0.0)
+            if getattr(self._state, 'magnetic_declination', None) != declination:
+                self._state.magnetic_declination = declination
 
-            z = 15
-            lat_rad = math.radians(cur_lat)
-            n = 2.0 ** z
-            x_tile = int((cur_lon + 180.0) / 360.0 * n)
-            y_tile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
-
-            # Look for 3x3 grid around center tile
-            for dx in [-1, 0, 1]:
-                for dy in [-1, 0, 1]:
-                    tx = x_tile + dx
-                    ty = y_tile + dy
-                    tile_path = os.path.join(tile_dir, str(z), str(tx), f"{ty}.png")
-
-                    if os.path.exists(tile_path):
-                        # Approximate meters per tile at this zoom & lat
-                        # Earth circumference ~ 40,075,016 m
-                        meters_per_tile = 40075016 * math.cos(lat_rad) / n
-
-                        # Calculate physical ENU bounds for this tile
-                        x_offset = dx * meters_per_tile
-                        # dy increases southwards in slippy map, but ENU y increases northwards
-                        y_offset = -dy * meters_per_tile
-
-                        extent = [
-                            x_offset - meters_per_tile/2,
-                            x_offset + meters_per_tile/2,
-                            y_offset - meters_per_tile/2,
-                            y_offset + meters_per_tile/2
-                        ]
-
-                        img = Image.open(tile_path)
-                        self.ax.imshow(np.array(img), extent=extent, origin='upper', zorder=0, alpha=0.6)
+            # We assume it was correctly generated as 500x500m ENU extent [-250, 250, -250, 250]
+            # based on the map_downloader logic.
+            img = Image.open(img_path)
+            self.ax.imshow(np.array(img), extent=[-250, 250, -250, 250], zorder=-10, alpha=0.7)
 
         except Exception as e:
             print(f"Error rendering offline map tiles: {e}")
