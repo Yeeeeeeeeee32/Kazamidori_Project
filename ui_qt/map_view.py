@@ -93,10 +93,23 @@ class MapView(QWidget):
         top_layout.setContentsMargins(10, 10, 10, 10)
 
         btn_layout = QHBoxLayout()
-        self.btn_reset = QPushButton("Reset View", top_widget)
+        self.btn_reset = QPushButton("🔄 Reset View", top_widget)
         self.btn_reset.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.btn_reset.setToolTip("Reset map view to default bounds (Home)")
+        self.btn_reset.setShortcut("Home")
         self.btn_reset.clicked.connect(self._on_reset_view)
-        self.btn_reset.setStyleSheet("background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a; padding: 4px; font-size: 10px; font-weight: bold; border-radius: 3px;")
+        self.btn_reset.setStyleSheet("""
+            QPushButton {
+                background: #1e1e2e; color: #cdd6f4; border: 1px solid #45475a;
+                padding: 4px 8px; font-size: 10px; font-weight: bold; border-radius: 3px;
+            }
+            QPushButton:hover {
+                background: #313244; border-color: #89b4fa;
+            }
+            QPushButton:pressed {
+                background: #45475a; color: #ffffff;
+            }
+        """)
         btn_layout.addWidget(self.btn_reset)
         btn_layout.addStretch()
 
