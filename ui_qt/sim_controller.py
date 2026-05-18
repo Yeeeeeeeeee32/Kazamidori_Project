@@ -374,8 +374,8 @@ class SimController(QObject):
         # ── Two-stage routing ──────────────────────────────────────────────────
         # sig_nominal_done fires before any MC runs start; renders trajectory now.
         self._worker.sig_nominal_done.connect(self._on_nominal_done)
-        # sig_progress_updated fires after every single MC iteration (current, total).
-        self._worker.sig_progress_updated.connect(self._on_progress_updated)
+        # sig_progress fires after every single MC iteration (current, total, msg).
+        self._worker.sig_progress.connect(self._on_progress_updated)
         # sig_finished covers both cancelled and full-MC-done paths (replaces _on_finished).
         self._worker.sig_finished.connect(self._on_mc_done)
         self._worker.error.connect(self._on_error)
@@ -415,7 +415,7 @@ class SimController(QObject):
             self._worker = SimulationWorker(self._collect_params(), parent=self)
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
-            self._worker.sig_progress_updated.connect(self._on_progress_updated)
+            self._worker.sig_progress.connect(self._on_progress_updated)
             self._worker.sig_finished.connect(self._on_mc_done)
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
@@ -424,7 +424,7 @@ class SimController(QObject):
             self._worker = OptimizationWorker(self._collect_params(), parent=self)
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
-            self._worker.sig_progress_updated.connect(self._on_progress_updated)
+            self._worker.sig_progress.connect(self._on_progress_updated)
             self._worker.sig_finished.connect(self._on_mc_done)
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
@@ -530,19 +530,21 @@ class SimController(QObject):
         self._window.profile_canvas.draw_idle()
         QApplication.processEvents()
 
-    @Slot(int, int)
-    def _on_progress_updated(self, current: int, total: int) -> None:
+    @Slot(int, int, str)
+    def _on_progress_updated(self, current: int, total: int, msg: str) -> None:
         """Invoked on the GUI thread after every single MC run.
 
         Converts the raw (current, total) heartbeat into a 0–100 percentage
         and pushes it to AppState.progress_percentage.  Division-by-zero is
         guarded: if total == 0, percentage stays at 0.
 
-        Thread safety: sig_progress_updated crosses thread boundaries via Qt's
+        Thread safety: sig_progress crosses thread boundaries via Qt's
         queued connection, so the AppState write always happens on the GUI thread.
         """
-        pct = int(current / total * 100) if total > 0 else 0
+        pct = int((current / total) * 100) if total > 0 else 0
         self._state.progress_percentage = pct
+        self._window._progress.setValue(pct)
+        self._window._status_label.setText(msg)
 
     @Slot(dict)
     def _on_mc_done(self, result: dict) -> None:
