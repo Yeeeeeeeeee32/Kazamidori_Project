@@ -72,11 +72,9 @@ class SimController(QObject):
         self._window.lbl_gpv_status.setText(f"GPV Updated: {self._state.gpv_last_fetch_time}")
 
         # ── Parameter readiness interlock ──────────────────────────────────────
-        # RUN buttons start disabled; they unlock only after all 15 critical
-        # geometry parameters become non-None (i.e. after Rocket.json is loaded).
-        # sig_ready_state_changed fires True/False whenever readiness flips.
-        self._set_run_buttons_enabled(state.is_ready_to_run)
-        state.sig_ready_state_changed.connect(self._set_run_buttons_enabled)
+        # RUN buttons start enabled; validation happens inside the slots to
+        # avoid silent disablement and provide user feedback.
+        self._set_run_buttons_enabled(True)
 
         # ── Cross-state signal bridge ──────────────────────────────────────────
         # When a simulation result lands in the shared AppState, automatically
@@ -232,23 +230,78 @@ class SimController(QObject):
         "Simulation Controls" panel buttons in one pass.
         """
         for btn in self._window.findChildren(QPushButton, "btn_run"):
-            btn.clicked.disconnect()
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
             btn.clicked.connect(self._on_run_clicked)
 
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
-            btn.clicked.disconnect()
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
             btn.clicked.connect(self._on_stop_clicked)
 
         for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
-            btn.clicked.disconnect()
+            try:
+                btn.clicked.disconnect()
+            except RuntimeError:
+                pass
             btn.clicked.connect(self._on_phase1_clicked)
 
     # ── Run ────────────────────────────────────────────────────────────────────
 
-    @Slot()
-    def _on_run_clicked(self) -> None:
-        if self._worker and self._worker.isRunning():
-            return  # guard against double-click spam
+    def _validate_run_prerequisites(self) -> bool:
+        missing = []
+        s = self._state
+
+        # Rocket Geometry
+        if any(v is None for v in (
+            s._rocket_dry_mass, s._rocket_cg, s._rocket_length, s._rocket_diameter,
+            s._nose_length, s._fin_root_chord, s._fin_tip_chord, s._fin_span,
+            s._fin_position, s._motor_cg, s._motor_dry_mass
+        )):
+            missing.append("Rocket Geometry (Load Rocket JSON or .rkt)")
+
+        # Parachute Parameters
+        if any(v is None for v in (s._parachute_cd, s._parachute_area, s._parachute_lag)):
+            missing.append("Parachute Parameters (Load Rocket JSON or Parachute JSON)")
+
+        # Backfire Delay
+        if s._backfire_delay is None:
+            missing.append("Backfire Delay")
+
+        # Launch Coordinates
+        if any(v is None for v in (s._launch_lat, s._launch_lon)) or \
+           self._window.lat_input.value() == -9999.0 or \
+           self._window.lon_input.value() == -9999.0:
+            missing.append("Launch Coordinates (Latitude/Longitude)")
+
+        # Rail Azimuth
+        if self._window.azim_input.value() == -9999.0:
+            missing.append("Rail Azimuth")
+
+        # Simulation Uncertainty Params
+        if any(v is None for v in (s._wind_uncertainty, s._thrust_uncertainty)):
+            missing.append("Simulation Uncertainty Parameters")
+
+        # Target Radius
+        is_free_mode = "free" in str(s._flight_mode).lower() or "自由" in str(s._flight_mode).lower()
+        if not is_free_mode and s._target_radius is None:
+            missing.append("Target Radius")
+
+        # Motor Thrust Data
+        if not getattr(self._window, '_motor_thrust_data', None):
+            missing.append("Motor Thrust Curve (.csv)")
+
+        if missing:
+            QMessageBox.warning(
+                self._window,
+                "Missing Parameters",
+                "Cannot start simulation. Please provide the following missing data:\n  • " + "\n  • ".join(missing),
+            )
+            return False
 
         # ── 60-second surface wind buffer check ───────────────────────────────
         surface_hist = list(self._state.wind_history_for_alt(3.0))
@@ -261,26 +314,16 @@ class SimController(QObject):
                 "Wait a few seconds for the wind monitor to collect data, "
                 "then click RUN again.",
             )
-            return
+            return False
 
+        return True
 
-        if self._window.af_backfire_input.value() == -9999.0:
-            QMessageBox.critical(self._window, "Missing Parameter", "Please enter a value for the Backfire Delay.")
-            return
+    @Slot()
+    def _on_run_clicked(self) -> None:
+        if self._worker and self._worker.isRunning():
+            return  # guard against double-click spam
 
-        # ── Launch site entry check ────────────────────────────────────────────
-
-        _BLANK = -9999.0
-        _unset = []
-        if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
-        if self._window.lon_input.value()  == _BLANK: _unset.append("Longitude")
-        if self._window.azim_input.value() == _BLANK: _unset.append("Rail Azimuth")
-        if _unset:
-            QMessageBox.warning(
-                self._window,
-                "Launch Settings Incomplete",
-                "Please enter a value for:\n  • " + "\n  • ".join(_unset),
-            )
+        if not self._validate_run_prerequisites():
             return
 
         self._state.mc_running = True
@@ -322,37 +365,7 @@ class SimController(QObject):
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
 
-        # ── 60-second surface wind buffer check ───────────────────────────────
-        surface_hist = list(self._state.wind_history_for_alt(3.0))
-        if len(surface_hist) < 5:
-            QMessageBox.warning(
-                self._window,
-                "Wind Buffer Insufficient",
-                f"Surface wind monitor has only {len(surface_hist)} sample(s) "
-                f"(minimum 5 required).\n\n"
-                "Wait a few seconds for the wind monitor to collect data, "
-                "then click RUN again.",
-            )
-            return
-
-
-        if self._window.af_backfire_input.value() == -9999.0:
-            QMessageBox.critical(self._window, "Missing Parameter", "Please enter a value for the Backfire Delay.")
-            return
-
-        # ── Launch site entry check ────────────────────────────────────────────
-
-        _BLANK = -9999.0
-        _unset = []
-        if self._window.lat_input.value()  == _BLANK: _unset.append("Latitude")
-        if self._window.lon_input.value()  == _BLANK: _unset.append("Longitude")
-        if self._window.azim_input.value() == _BLANK: _unset.append("Rail Azimuth")
-        if _unset:
-            QMessageBox.warning(
-                self._window,
-                "Launch Settings Incomplete",
-                "Please enter a value for:\n  • " + "\n  • ".join(_unset),
-            )
+        if not self._validate_run_prerequisites():
             return
 
         self._state.mc_running = True
