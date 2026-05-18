@@ -279,11 +279,15 @@ def optimize_launch_angle(
         return p1_objective_score(res, mode, r_max)
 
     candidates = []
-    total       = len(elev_grid) * len(azi_grid)
+    N       = len(elev_grid) * len(azi_grid)
     done        = 0
     phase1_weight = 0.6
 
-    progress_cb(f"Phase 1: Coarse search (0/{total})", 0.0)
+    progress_cb(f"Phase 1: Coarse search (0/{N})", 0.0)
+
+    import os
+    import time
+    _t_start = time.perf_counter()
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
         futures = []
@@ -300,10 +304,13 @@ def optimize_launch_angle(
             if res['ok']:
                 score = objective(res, mc_r=None)
                 candidates.append((score, e_, a_, res))
-            frac = (done / total) * phase1_weight
+            frac = (done / N) * phase1_weight
             progress_cb(
-                f"Phase 1: Coarse search ({done}/{total}) "
+                f"Phase 1: Coarse search ({done}/{N}) "
                 f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+
+    elapsed = time.perf_counter() - _t_start
+    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
 
     if not candidates:
         raise ValueError(
@@ -610,9 +617,9 @@ def run_phase1(
     elev_grid    = list(range(60, 91, 6))   # 60, 66, …, 90
     azi_grid     = list(range(0, 360, 15))  # 24 azimuths
     use_r_filter = (mode != 'Precision Landing')
-    total        = len(elev_grid) * len(azi_grid)
+    N        = len(elev_grid) * len(azi_grid)
     done, cands  = 0, []
-    prog(f'Step 1/5  Grid search (0/{total})', 0.0)
+    prog(f'Step 1/5  Grid search (0/{N})', 0.0)
 
     import concurrent.futures
     import os
@@ -638,11 +645,11 @@ def run_phase1(
                 if not use_r_filter or res['r_horiz'] <= target_r:
                     score = p1_objective_score(res, mode)
                     cands.append((score, e_, a_, res))
-            prog(f'Step 1/5  Grid ({done}/{total})  e={e_}° a={a_}°',
-                 done / total * 0.25)
+            prog(f'Step 1/5  Grid ({done}/{N})  e={e_}° a={a_}°',
+                 done / N * 0.25)
 
-    _t_elapsed = time.perf_counter() - _t_start
-    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {total} combinations in {_t_elapsed:.3f} seconds using {os.cpu_count()} workers.")
+    elapsed = time.perf_counter() - _t_start
+    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
 
     if not cands:
         raise ValueError(
