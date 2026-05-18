@@ -4,3 +4,6 @@
 ## 2026-05-16 - Adding Tooltips and Shortcuts to Primary Buttons
 **Learning:** In PySide6 applications with complex interfaces, adding `setShortcut()` and `setToolTip()` to primary action buttons (like Run/Stop) and improving empty state labels with actionable instructions significantly enhances discoverability and keyboard accessibility without changing the visual layout.
 **Action:** Next time, always check if main execution buttons have keyboard shortcuts assigned, and look for 'dead end' empty states that can be rewritten to guide the user towards the next action.
+## 2024-05-17 - Button Tooltips and Shortcuts
+**Learning:** PySide6 UI elements inside modal dialogs (like `QDialog`) often hide features from users unless explicitly documented. Adding tooltips using `setToolTip` to secondary actions (like 'Load JSON' or 'Clear Curve') clarifies function without adding visual clutter. Associating a keyboard shortcut (like 'Esc') to close operations using `setShortcut` massively improves keyboard navigation inside modals.
+**Action:** When inspecting modal dialog UI patterns, check whether utility buttons have tooltips to explain their side effects, and verify keyboard shortcuts exist for modal dismissal.
