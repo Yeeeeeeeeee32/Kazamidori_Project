@@ -171,6 +171,9 @@ class MapView(QWidget):
             except Exception:
                 pass
 
+            # Phase 4.1: Offline Map Raster Tile Engine
+            self._render_map_tiles()
+
             # To keep track of all points for manual bounds
             all_x = [0.0]
             all_y = [0.0]
@@ -355,6 +358,62 @@ class MapView(QWidget):
 
         self._drag_start = None
         self.canvas.draw_idle()
+
+    def _render_map_tiles(self) -> None:
+        """Render offline map tiles behind the coordinate canvas using local PNGs."""
+        import os
+        from PIL import Image
+        import numpy as np
+
+        tile_dir = "./assets/map_tiles"
+        if not os.path.isdir(tile_dir):
+            return
+
+        # Convert lat/lon to Z/X/Y (slippy map format) at a set zoom level (e.g. 15)
+        # and load specific tiles corresponding to the view area.
+        try:
+            cur_lat = float(getattr(self._state, 'launch_lat', 0.0))
+            cur_lon = float(getattr(self._state, 'launch_lon', 0.0))
+
+            # Simple check to avoid running logic if coordinates are completely absent
+            if cur_lat == 0.0 and cur_lon == 0.0:
+                return
+
+            z = 15
+            lat_rad = math.radians(cur_lat)
+            n = 2.0 ** z
+            x_tile = int((cur_lon + 180.0) / 360.0 * n)
+            y_tile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
+
+            # Look for 3x3 grid around center tile
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    tx = x_tile + dx
+                    ty = y_tile + dy
+                    tile_path = os.path.join(tile_dir, str(z), str(tx), f"{ty}.png")
+
+                    if os.path.exists(tile_path):
+                        # Approximate meters per tile at this zoom & lat
+                        # Earth circumference ~ 40,075,016 m
+                        meters_per_tile = 40075016 * math.cos(lat_rad) / n
+
+                        # Calculate physical ENU bounds for this tile
+                        x_offset = dx * meters_per_tile
+                        # dy increases southwards in slippy map, but ENU y increases northwards
+                        y_offset = -dy * meters_per_tile
+
+                        extent = [
+                            x_offset - meters_per_tile/2,
+                            x_offset + meters_per_tile/2,
+                            y_offset - meters_per_tile/2,
+                            y_offset + meters_per_tile/2
+                        ]
+
+                        img = Image.open(tile_path)
+                        self.ax.imshow(np.array(img), extent=extent, origin='upper', zorder=0, alpha=0.6)
+
+        except Exception as e:
+            print(f"Error rendering offline map tiles: {e}")
 
     def _on_reset_view(self):
         # Reset the view to autoscale based on all data
