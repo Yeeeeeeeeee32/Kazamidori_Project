@@ -2597,9 +2597,11 @@ class AppWindow(QMainWindow):
         Wires:
           *  Advanced Settings dialog (Phase B aero/motor + Phase C Cd curves)
           *  File menu Save / Load Session actions (Phase E session manager)
+          *  Phase 2 Map View (for global coordinates and target radius)
         """
         self._app_state = state            # cached for the session menu slots
         self._adv_dialog.bind_app_state(state)
+        self.map_view.bind_app_state(state)
 
     # ── Session persistence (Phase E) ────────────────────────────────────────
 
