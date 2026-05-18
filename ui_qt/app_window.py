@@ -2803,7 +2803,7 @@ class AppWindow(QMainWindow):
 
     def _evaluate_config_deltas(self, *args) -> None:
         """Evaluate current widget values against AppState.original_rocket_config."""
-        orig = self.state.original_rocket_config
+        orig = getattr(self.state, "original_rocket_config", None)
         if orig is None:
             return
 
@@ -2834,7 +2834,7 @@ class AppWindow(QMainWindow):
 
     def _on_manual_config_reset(self) -> None:
         """Reset values in ManualSetupDialog to match original_rocket_config."""
-        orig = self.state.original_rocket_config
+        orig = getattr(self.state, "original_rocket_config", None)
         if orig is None:
             return
 
