@@ -1155,6 +1155,7 @@ class AppWindow(QMainWindow):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.state = AppState()
+        print(f"=== AppWindow.__init__ === Created local AppWindow State: id={id(self.state)}")
 
         self.setWindowTitle("Kazamidori Project")
         self.resize(1600, 900)
@@ -2605,6 +2606,7 @@ class AppWindow(QMainWindow):
           *  File menu Save / Load Session actions (Phase E session manager)
           *  Phase 2 Map View (for global coordinates and target radius)
         """
+        print(f"=== AppWindow.bind_app_state === Forwarding global State: id={id(state)}")
         self._app_state = state            # cached for the session menu slots
         self._adv_dialog.bind_app_state(state)
         self.map_view.bind_app_state(state)

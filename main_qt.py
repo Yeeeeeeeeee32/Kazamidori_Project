@@ -56,6 +56,7 @@ if __name__ == "__main__":
 
     # Shared data bus: holds computed simulation results for all future views.
     app_state = AppState(config=DEFAULT_CONFIG)
+    print(f"=== main_qt.py === Created global AppState: id={id(app_state)}")
 
     # AppWindow manages its own lightweight reactive state for the 3-D plot;
     # we do NOT inject app_state here to avoid a needs_redraw incompatibility.
