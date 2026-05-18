@@ -1016,6 +1016,55 @@ class SimulationWorker(QThread):
 
 
 
+class MapDownloadWorker(QThread):
+    """
+    Executes the map download in a background thread to prevent UI freezing.
+    """
+    sig_progress = Signal(int, int, str)
+    sig_finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, lat: float, lon: float, parent=None):
+        super().__init__(parent)
+        self.lat = lat
+        self.lon = lon
+
+    def run(self) -> None:
+        try:
+            import os
+            import subprocess
+            import json
+
+            self.sig_progress.emit(10, 100, "Starting map download...")
+
+            # Using run_in_bash_session style via subprocess to call our CLI tool natively
+            import sys
+            cmd = [sys.executable, "utils/map_downloader.py", "--lat", str(self.lat), "--lon", str(self.lon)]
+
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in process.stdout:
+                if "Downloaded" in line:
+                    self.sig_progress.emit(50, 100, "Downloading tiles...")
+                elif "Saved stitched" in line:
+                    self.sig_progress.emit(90, 100, "Stitching map...")
+            process.wait()
+
+            if process.returncode != 0:
+                raise RuntimeError(f"Map downloader script failed with return code {process.returncode}")
+
+            meta_path = "assets/offline_map/map_meta.json"
+            if not os.path.exists(meta_path):
+                raise RuntimeError("Map download succeeded but metadata file is missing.")
+
+            with open(meta_path, "r") as f:
+                meta = json.load(f)
+
+            self.sig_progress.emit(100, 100, "Download complete")
+            self.sig_finished.emit(meta)
+        except Exception as _exc:
+            import traceback
+            self.error.emit(traceback.format_exc())
+
 class OptimizationWorker(QThread):
     """
     Executes the Phase 1 Coarse Search optimization + full Monte Carlo scatter

@@ -111,18 +111,30 @@ def main():
     print("Downloading tiles...")
     downloaded_tiles = []
 
+    from PIL import Image
+    import io
+
+    # To stitch tiles, we need a base image
+    width_tiles = tile_x_max - tile_x_min + 1
+    height_tiles = tile_y_max - tile_y_min + 1
+    tile_size = 256
+
+    stitched_image = Image.new("RGB", (width_tiles * tile_size, height_tiles * tile_size))
+
     for x in range(tile_x_min, tile_x_max + 1):
         for y in range(tile_y_min, tile_y_max + 1):
             tile_path = os.path.join(output_dir, str(zoom), str(x), f"{y}.png")
             os.makedirs(os.path.dirname(tile_path), exist_ok=True)
 
+            img_data = None
             if not os.path.exists(tile_path):
                 url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
                 try:
                     response = session.get(url, timeout=10)
                     response.raise_for_status()
+                    img_data = response.content
                     with open(tile_path, "wb") as f:
-                        f.write(response.content)
+                        f.write(img_data)
                     print(f"  Downloaded: {url}")
                     # Be nice to OSM servers
                     time.sleep(0.1)
@@ -130,8 +142,52 @@ def main():
                     print(f"  Failed to download {url}: {e}")
             else:
                 print(f"  Cached: {zoom}/{x}/{y}.png")
+                with open(tile_path, "rb") as f:
+                    img_data = f.read()
+
+            if img_data:
+                try:
+                    tile_img = Image.open(io.BytesIO(img_data)).convert("RGB")
+                    px = (x - tile_x_min) * tile_size
+                    py = (y - tile_y_min) * tile_size
+                    stitched_image.paste(tile_img, (px, py))
+                except Exception as e:
+                    print(f"  Failed to process tile image {x}/{y}: {e}")
 
             downloaded_tiles.append({"x": x, "y": y, "z": zoom})
+
+    # Save stitched image
+    # We must crop it so that the 500x500m area is exactly centered and bounded correctly
+    # But wait, it's easier to just save it and let map_view scale it.
+    # However, to be precise, the tiles cover more than 500x500.
+    # We need to map the tile boundaries to ENU coordinates relative to the center,
+    # and save that actual extent in map_meta.json, OR we crop it to exactly 500x500m.
+    # Let's save the actual extent in map_meta.json based on the exact lat/lons of the stitched image edges.
+
+    n_tiles = 2.0 ** zoom
+    lon_left = tile_x_min / n_tiles * 360.0 - 180.0
+    lon_right = (tile_x_max + 1) / n_tiles * 360.0 - 180.0
+
+    lat_rad_top = math.atan(math.sinh(math.pi * (1 - 2 * tile_y_min / n_tiles)))
+    lat_top = math.degrees(lat_rad_top)
+
+    lat_rad_bottom = math.atan(math.sinh(math.pi * (1 - 2 * (tile_y_max + 1) / n_tiles)))
+    lat_bottom = math.degrees(lat_rad_bottom)
+
+    def latlon_to_offset_inline(lat0, lon0, lat, lon):
+        phi = math.radians(lat0)
+        m_lat = (111132.92 - 559.82 * math.cos(2 * phi) + 1.175 * math.cos(4 * phi) - 0.0023 * math.cos(6 * phi))
+        m_lon = (111412.84 * math.cos(phi) - 93.5 * math.cos(3 * phi) + 0.118 * math.cos(5 * phi))
+        return ((lon - lon0) * m_lon, (lat - lat0) * m_lat)
+
+    dx_left, dy_bottom = latlon_to_offset_inline(args.lat, args.lon, lat_bottom, lon_left)
+    dx_right, dy_top = latlon_to_offset_inline(args.lat, args.lon, lat_top, lon_right)
+
+    actual_extent = [dx_left, dx_right, dy_bottom, dy_top]
+
+    background_path = os.path.join(output_dir, "background.png")
+    stitched_image.save(background_path)
+    print(f"Saved stitched background map to {background_path}")
 
     declination = 0.0
     if geomag is not None:
@@ -148,7 +204,7 @@ def main():
         "center_lon": args.lon,
         "magnetic_declination": declination,
         "zoom_level": zoom,
-        "extent_meters": [-250.0, 250.0, -250.0, 250.0],
+        "extent_meters": actual_extent,
         "tile_bounds": {
             "x_min": tile_x_min,
             "x_max": tile_x_max,

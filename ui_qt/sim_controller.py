@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, Q
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
-from ui_qt.workers import SimulationWorker, OptimizationWorker
+from ui_qt.workers import SimulationWorker, OptimizationWorker, MapDownloadWorker
 from core.monte_carlo  import compute_cep_ellipse
 from utils.data_loader import (
     RocketConfigError,
@@ -269,6 +269,13 @@ class SimController(QObject):
                 pass
             btn.clicked.connect(self._on_phase1_clicked)
 
+        if hasattr(self._window, "btn_download_map"):
+            try:
+                self._window.btn_download_map.clicked.disconnect()
+            except RuntimeError:
+                pass
+            self._window.btn_download_map.clicked.connect(self._on_download_map_clicked)
+
     # ── Run ────────────────────────────────────────────────────────────────────
 
     def _validate_run_prerequisites(self) -> bool:
@@ -349,6 +356,45 @@ class SimController(QObject):
         return True
 
     @Slot()
+    def _on_download_map_clicked(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return
+
+        lat = getattr(self._state, "pad_lat", 0.0)
+        lon = getattr(self._state, "pad_lon", 0.0)
+
+        if lat == 0.0 and lon == 0.0:
+            QMessageBox.warning(self._window, "Invalid Coordinates", "Please enter valid launch pad coordinates first.")
+            return
+
+        self._state.is_calculating = True
+        self._state.status_text = "Downloading Map..."
+
+        # Instantiate and start the worker
+        self._worker = MapDownloadWorker(lat, lon, parent=self)
+        self._worker.sig_progress.connect(self._on_worker_progress)
+        self._worker.sig_finished.connect(self._on_download_map_finished)
+        self._worker.error.connect(self._on_worker_error)
+        self._worker.start()
+
+    @Slot(dict)
+    def _on_download_map_finished(self, meta: dict) -> None:
+        self._worker.deleteLater()
+        self._worker = None
+        self._state.is_calculating = False
+        self._state.status_text = "Map Download Complete"
+
+        declination = meta.get("magnetic_declination", 0.0)
+        self._state.magnetic_declination = declination
+        # Push declination into UI (which feeds AppState back) if needed, or just keep it in state.
+
+        # Force map to redraw by clearing result and emitting signal
+        # Since map relies on result for some things, but map_view can check for assets/offline_map/background.png
+        # Let's just emit simulation_result_changed with None (or current result)
+        self._state.simulation_result_changed.emit(None)
+
+        QMessageBox.information(self._window, "Download Complete", f"Offline map tiles downloaded.\nMagnetic Declination: {declination:.4f}°")
+
     def _on_run_clicked(self) -> None:
         print(f"=== SimController._on_run_clicked === Current AppState: id={id(self._state)}")
         if self._worker and self._worker.isRunning():
