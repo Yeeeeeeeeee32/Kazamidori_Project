@@ -360,99 +360,30 @@ class MapView(QWidget):
         self.canvas.draw_idle()
 
     def _render_map_tiles(self) -> None:
-        """Render offline map tiles behind the coordinate canvas using local PNGs."""
+        """Render offline map tiles behind the coordinate canvas using the pre-stitched background.png."""
         import os
         import json
         from PIL import Image
         import numpy as np
 
         meta_path = "assets/offline_map/map_meta.json"
-        if not os.path.exists(meta_path):
+        img_path = "assets/offline_map/background.png"
+
+        if not os.path.exists(meta_path) or not os.path.exists(img_path):
             return
 
         try:
             with open(meta_path, 'r') as f:
                 meta = json.load(f)
 
-            center_lat = meta.get("center_lat")
-            center_lon = meta.get("center_lon")
-            zoom = meta.get("zoom_level", 18)
             declination = meta.get("magnetic_declination", 0.0)
-
-            if center_lat is None or center_lon is None:
-                return
-
             if getattr(self._state, 'magnetic_declination', None) != declination:
                 self._state.magnetic_declination = declination
 
-            tile_bounds = meta.get("tile_bounds", {})
-            x_min = tile_bounds.get("x_min")
-            x_max = tile_bounds.get("x_max")
-            y_min = tile_bounds.get("y_min")
-            y_max = tile_bounds.get("y_max")
-
-            if None in (x_min, x_max, y_min, y_max):
-                return
-
-            # Render tiles
-            # Need to calculate each tile's ENU coordinates relative to the center_lat/center_lon
-            # so they form a continuous map aligned with the 0,0 center.
-
-            # Stitch the tiles together into a single image
-            tiles = []
-            for ty in range(y_min, y_max + 1):
-                row = []
-                for tx in range(x_min, x_max + 1):
-                    tile_path = f"assets/offline_map/{zoom}/{tx}/{ty}.png"
-                    if os.path.exists(tile_path):
-                        row.append(Image.open(tile_path))
-                    else:
-                        row.append(None)
-                tiles.append(row)
-
-            if not tiles or not tiles[0] or tiles[0][0] is None:
-                return
-
-            tile_w, tile_h = tiles[0][0].size
-
-            stitched_w = (x_max - x_min + 1) * tile_w
-            stitched_h = (y_max - y_min + 1) * tile_h
-            stitched_img = Image.new('RGBA', (stitched_w, stitched_h), (0, 0, 0, 0))
-
-            for row_idx, row in enumerate(tiles):
-                for col_idx, tile_img in enumerate(row):
-                    if tile_img is not None:
-                        stitched_img.paste(tile_img, (col_idx * tile_w, row_idx * tile_h))
-
-            # Calculate lat/lon of the stitched image bounds
-            n = 2.0 ** zoom
-            lon_left = x_min / n * 360.0 - 180.0
-            lon_right = (x_max + 1) / n * 360.0 - 180.0
-
-            lat_rad_top = math.atan(math.sinh(math.pi * (1 - 2 * y_min / n)))
-            lat_top = math.degrees(lat_rad_top)
-
-            lat_rad_bottom = math.atan(math.sinh(math.pi * (1 - 2 * (y_max + 1) / n)))
-            lat_bottom = math.degrees(lat_rad_bottom)
-
-            # Convert lat/lon bounds to ENU relative to center_lat/center_lon
-            # The feedback mentioned we shouldn't use `utils.geo_math as geo` if it's hallucinated.
-            # But wait, utils/geo_math.py *does* exist in this codebase! We found it earlier via `ls utils/`
-            # and `cat utils/geo_math.py`. Still, we can use the same math natively to be completely safe or just correctly import it.
-            # We already confirmed `utils/geo_math.py` has `latlon_to_offset`. I will import it properly or inline the calculation to avoid any module issues.
-
-            def latlon_to_offset_inline(lat0, lon0, lat, lon):
-                phi = math.radians(lat0)
-                m_lat = (111132.92 - 559.82 * math.cos(2 * phi) + 1.175 * math.cos(4 * phi) - 0.0023 * math.cos(6 * phi))
-                m_lon = (111412.84 * math.cos(phi) - 93.5 * math.cos(3 * phi) + 0.118 * math.cos(5 * phi))
-                return ((lon - lon0) * m_lon, (lat - lat0) * m_lat)
-
-            dx_left, dy_bottom = latlon_to_offset_inline(center_lat, center_lon, lat_bottom, lon_left)
-            dx_right, dy_top = latlon_to_offset_inline(center_lat, center_lon, lat_top, lon_right)
-
-            extent = [dx_left, dx_right, dy_bottom, dy_top]
-
-            self.ax.imshow(np.array(stitched_img), extent=extent, origin='upper', zorder=0, alpha=0.6)
+            # We assume it was correctly generated as 500x500m ENU extent [-250, 250, -250, 250]
+            # based on the map_downloader logic.
+            img = Image.open(img_path)
+            self.ax.imshow(np.array(img), extent=[-250, 250, -250, 250], zorder=-10, alpha=0.7)
 
         except Exception as e:
             print(f"Error rendering offline map tiles: {e}")
