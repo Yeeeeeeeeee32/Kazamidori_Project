@@ -372,8 +372,15 @@ class MapView(QWidget):
         # Convert lat/lon to Z/X/Y (slippy map format) at a set zoom level (e.g. 15)
         # and load specific tiles corresponding to the view area.
         try:
-            cur_lat = float(getattr(self._state, 'launch_lat', 0.0))
-            cur_lon = float(getattr(self._state, 'launch_lon', 0.0))
+            # launch_lat / launch_lon are ``None`` until the operator confirms
+            # coordinates (no hardcoded fallback in AppState).  Skip rendering
+            # rather than crashing on ``float(None)``.
+            _lat = getattr(self._state, 'launch_lat', None)
+            _lon = getattr(self._state, 'launch_lon', None)
+            if _lat is None or _lon is None:
+                return
+            cur_lat = float(_lat)
+            cur_lon = float(_lon)
 
             # Simple check to avoid running logic if coordinates are completely absent
             if cur_lat == 0.0 and cur_lon == 0.0:
