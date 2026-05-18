@@ -41,6 +41,7 @@ class AppState(QObject):
 
     # ── Simulation configuration ───────────────────────────────────────────────
     wind_uncertainty_changed   = Signal(float)
+    magnetic_declination_changed = Signal(float)
     thrust_uncertainty_changed = Signal(float)
     landing_prob_changed       = Signal(int)
     mc_n_runs_changed          = Signal(int)
@@ -240,6 +241,7 @@ class AppState(QObject):
         # Launch site — must be confirmed by GPS / manual entry; no hardcoded fallback.
         self._launch_lat = _ff("launch_lat")    # decimal degrees
         self._launch_lon = _ff("launch_lon")    # decimal degrees
+        self._magnetic_declination = 0.0
 
         # Rocket / flight parameters
         self._mass           = _ff("mass")           # kg   (legacy scalar; geometry detail below)
@@ -530,6 +532,17 @@ class AppState(QObject):
             self.mc_n_runs_changed.emit(value)
 
     # ── Launch site ────────────────────────────────────────────────────────────
+
+    @Property(float, notify=magnetic_declination_changed)
+    def magnetic_declination(self) -> float:
+        return self._magnetic_declination
+
+    @magnetic_declination.setter
+    def magnetic_declination(self, value: float) -> None:
+        value = float(value)
+        if self._magnetic_declination != value:
+            self._magnetic_declination = value
+            self.magnetic_declination_changed.emit(value)
 
     @Property(float, notify=launch_lat_changed)
     def launch_lat(self) -> float:
