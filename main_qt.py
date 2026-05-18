@@ -58,9 +58,9 @@ if __name__ == "__main__":
     app_state = AppState(config=DEFAULT_CONFIG)
     print(f"=== main_qt.py === Created global AppState: id={id(app_state)}")
 
-    # AppWindow manages its own lightweight reactive state for the 3-D plot;
-    # we do NOT inject app_state here to avoid a needs_redraw incompatibility.
+    # Inject the global app_state to unify instances and resolve the map view unresponsiveness
     window = AppWindow()
+    window.bind_app_state(app_state)
     window.show()
 
     # Controller wires the run/stop buttons to the background worker.

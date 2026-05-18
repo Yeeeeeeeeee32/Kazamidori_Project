@@ -2607,9 +2607,11 @@ class AppWindow(QMainWindow):
           *  Phase 2 Map View (for global coordinates and target radius)
         """
         print(f"=== AppWindow.bind_app_state === Forwarding global State: id={id(state)}")
+        self.state = state  # Overwrite with the true global instance
         self._app_state = state            # cached for the session menu slots
         self._adv_dialog.bind_app_state(state)
-        self.map_view.bind_app_state(state)
+        if hasattr(self, 'map_view') and self.map_view:
+            self.map_view.bind_app_state(state)
 
     # ── Session persistence (Phase E) ────────────────────────────────────────
 
