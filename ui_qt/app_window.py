@@ -2052,7 +2052,9 @@ class AppWindow(QMainWindow):
                 y_ell = cy + a * np.cos(theta) * np.sin(angle) + b * np.sin(theta) * np.cos(angle)
                 z_ell = np.zeros_like(x_ell)
 
-                ax.plot(x_ell, y_ell, z_ell, color="#f9e2af", lw=2.2, linestyle="-", alpha=0.9, zorder=6, label=f"CEP {self.state.cep_prob}%")
+                _cep_pct = getattr(self.state, "landing_prob",
+                                   getattr(self.state, "cep_prob", 90))
+                ax.plot(x_ell, y_ell, z_ell, color="#f9e2af", lw=2.2, linestyle="-", alpha=0.9, zorder=6, label=f"CEP {_cep_pct}%")
             except Exception as e:
                 print(f"Drawing Error (3D Ellipse): {e}")
 
@@ -2104,7 +2106,11 @@ class AppWindow(QMainWindow):
                     f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
 
         # ── Wind quivers (shown in both phase and fallback modes) ─────────────
-        profile = s.wind_profile
+        # ``wind_profile`` only exists on the local AppWindow AppState; after
+        # ``bind_app_state`` overwrites ``self.state`` with the global AppState
+        # (which has no such attribute) we fall back to an empty list so the
+        # quiver block stays a no-op rather than raising.
+        profile = getattr(s, "wind_profile", [])
         if profile and len(tx) > 1:
             n_q   = min(6, len(profile))
             q_alts = np.linspace(float(tz.min()), float(tz.max()) * 0.92, n_q)
@@ -2153,10 +2159,14 @@ class AppWindow(QMainWindow):
         ax.set_xlim3d(tx.min() - pad, tx.max() + pad)
         ax.set_ylim3d(ty.min() - pad, ty.max() + pad)
         ax.set_zlim3d(0.0, max(tz.max() * 1.12, 10.0))
+        _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
+        _spd  = getattr(s, "surf_wind_speed", getattr(s, "wind_speed", 0.0))
+        _dir  = getattr(s, "surf_wind_dir",   getattr(s, "wind_dir",   0.0))
+        _cep  = getattr(s, "landing_prob",    getattr(s, "cep_prob",   90))
         ax.set_title(
-            f"Mode: {s.sim_mode}   ·   "
-            f"Wind: {s.wind_speed:.1f} m/s @ {s.wind_dir:.0f}°   ·   "
-            f"CEP: {s.cep_prob} %",
+            f"Mode: {_mode}   ·   "
+            f"Wind: {_spd:.1f} m/s @ {_dir:.0f}°   ·   "
+            f"CEP: {_cep} %",
             color="#a6adc8", fontsize=9, pad=8,
         )
 
@@ -2193,12 +2203,21 @@ class AppWindow(QMainWindow):
         res   = self.state.simulation_result
         nodes = res.get("wind_nodes", []) if res is not None else []
 
-        # Fallback: synthesise a surface node from current spinbox values
+        # Fallback: synthesise a surface node from current spinbox values.
+        # ``self.state`` is the local lightweight AppState during __init__
+        # (exposes ``wind_speed`` / ``wind_dir``) and the global AppState
+        # after ``bind_app_state`` (exposes ``surf_wind_speed`` / ``surf_wind_dir``).
         if not nodes:
+            if hasattr(self.state, "surf_wind_speed"):
+                _spd = self.state.surf_wind_speed
+                _dir = self.state.surf_wind_dir
+            else:
+                _spd = self.state.wind_speed
+                _dir = self.state.wind_dir
             nodes = [{
                 "alt_m":    3.0,
-                "speed_ms": self.state.wind_speed,
-                "dir_deg":  self.state.wind_dir,
+                "speed_ms": _spd,
+                "dir_deg":  _dir,
             }]
 
         slice5   = nodes[:5]
@@ -2568,10 +2587,14 @@ class AppWindow(QMainWindow):
     def update_ellipse_layer(self, ellipse_data: dict | None) -> None:
         if self.state.simulation_result is not None:
             s = self.state
+            _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
+            _spd  = getattr(s, "surf_wind_speed", getattr(s, "wind_speed", 0.0))
+            _dir  = getattr(s, "surf_wind_dir",   getattr(s, "wind_dir",   0.0))
+            _cep  = getattr(s, "landing_prob",    getattr(s, "cep_prob",   90))
             self.profile_ax.set_title(
-                f"Mode: {s.sim_mode}   ·   "
-                f"Wind: {s.wind_speed:.1f} m/s @ {s.wind_dir:.0f}°   ·   "
-                f"CEP: {s.cep_prob} %",
+                f"Mode: {_mode}   ·   "
+                f"Wind: {_spd:.1f} m/s @ {_dir:.0f}°   ·   "
+                f"CEP: {_cep} %",
                 color="#a6adc8", fontsize=9, pad=8,
             )
             self.profile_canvas.draw_idle()

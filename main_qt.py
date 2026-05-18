@@ -23,7 +23,13 @@ writes to both.
 
 from __future__ import annotations
 
+import faulthandler
 import sys
+
+# Dump C-level tracebacks on native crashes (segfault, access violation, etc.)
+# so silent "window disappears" failures become diagnosable in stderr.
+faulthandler.enable()
+
 from PySide6.QtWidgets import QApplication
 
 from ui_qt.app_state import AppState

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import math
 import random
-import time as _time
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal
@@ -78,10 +77,14 @@ class SimController(QObject):
         self._set_run_buttons_enabled(True)
 
         # ── Cross-state signal bridge ──────────────────────────────────────────
-        # When a simulation result lands in the shared AppState, automatically
-        # drive the AppWindow's internal reactive state so its 3-D canvas
-        # repaints without the controller knowing anything about the canvas.
-        state.needs_redraw.connect(window.state.needs_redraw)
+        # Drive the AppWindow canvases directly from the global AppState's
+        # needs_redraw signal.  Forwarding via ``window.state.needs_redraw``
+        # would self-loop here because ``bind_app_state`` has already replaced
+        # ``window.state`` with the global ``state`` instance — connecting a
+        # signal to itself produces unbounded recursion on first emit.
+        state.needs_redraw.connect(window.update_profile_plot)
+        state.needs_redraw.connect(window.update_map_plot)
+        state.needs_redraw.connect(window.update_wind_plot)
 
         # ── Bi-directional Map Sync ────────────────────────────────────────────
         if hasattr(self._window, 'map_widget') and hasattr(self._window.map_widget, 'coordinates_picked'):
@@ -684,6 +687,13 @@ class SimController(QObject):
 
     @Slot(str)
     def _on_error(self, msg: str) -> None:
+        # Surface the worker traceback on stderr so silent-window failures
+        # produced by background QThread exceptions become diagnosable.
+        import sys as _sys
+        print("--- SIMULATION WORKER ERROR ---", file=_sys.stderr, flush=True)
+        print(msg, file=_sys.stderr, flush=True)
+        print("-------------------------------", file=_sys.stderr, flush=True)
+
         self._state.mc_running = False
         self._state.is_calculating = False
         self._window.set_status(f"Simulation error: {msg}", "#f38ba8")
@@ -1219,12 +1229,6 @@ class SimController(QObject):
         # Keep upper-wind state current so PlotView spaghetti/quiver are calibrated.
         self._state.upper_wind_speed = self._window.up_spd_input.value()
         self._state.upper_wind_dir   = self._window.up_dir_input.value()
-
-        # AppWindow local state: (timestamp_s, speed_m_s) tuples for the plot.
-        ts = _time.monotonic()
-        history = list(self._window.state.wind_history)
-        history.append((ts, speed))
-        self._window.state.wind_history = history   # setter emits needs_redraw
 
         # Keep the status-bar readout current.
         self._window.update_wind_readout(
