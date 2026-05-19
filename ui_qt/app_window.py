@@ -1614,32 +1614,53 @@ class AppWindow(QMainWindow):
         lay.addWidget(self._go_nogo_label)
 
 
-        # ── Results Panel (Hidden by Default) ─────────────────────────────────
-        self._results_grp = QGroupBox("Optimization Results", container)
-        self._results_grp.setVisible(False)
+        # ── Results Panel ─────────────────────────────────────────────────────
+        self._results_grp = QGroupBox("Simulation Results", container)
         self._results_grp.setStyleSheet("QGroupBox { border: 1px solid #7eb3ff; margin-top: 1ex; font-weight: bold; } QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #7eb3ff; }")
 
         res_lay = QFormLayout(self._results_grp)
         res_lay.setSpacing(4)
         res_lay.setContentsMargins(10, 10, 10, 8)
+        self.res_lay = res_lay
 
         _res_tag = "QLabel { font-weight: bold; color: #a6e3a1; font-family: 'Consolas', monospace; }"
-        self.lbl_res_angle = QLabel("—")
-        self.lbl_res_best  = QLabel("—")
-        self.lbl_res_avg   = QLabel("—")
-        self.lbl_res_min   = QLabel("—")
-        self.lbl_res_alt   = QLabel("—")
-        self.lbl_res_hang  = QLabel("—")
 
-        for _lbl in (self.lbl_res_angle, self.lbl_res_best, self.lbl_res_avg, self.lbl_res_min, self.lbl_res_alt, self.lbl_res_hang):
-            _lbl.setStyleSheet(_res_tag)
+        self.lbl_res_angle       = QLabel("—")
+        self.lbl_res_azimuth     = QLabel("—")
+        self.lbl_res_apogee      = QLabel("—")
+        self.lbl_res_hdist       = QLabel("—")
+        self.lbl_res_hang        = QLabel("—")
+        self.lbl_res_score       = QLabel("—")
 
-        res_lay.addRow("Optimal Angle:", self.lbl_res_angle)
-        res_lay.addRow("Best Score:", self.lbl_res_best)
-        res_lay.addRow("MC Avg Score:", self.lbl_res_avg)
-        res_lay.addRow("MC Min Score:", self.lbl_res_min)
-        res_lay.addRow("MC Avg Alt:", self.lbl_res_alt)
-        res_lay.addRow("MC Avg Hang:", self.lbl_res_hang)
+        self.lbl_res_mc_avg_apo  = QLabel("—")
+        self.lbl_res_mc_min_apo  = QLabel("—")
+        self.lbl_res_mc_avg_hdist= QLabel("—")
+        self.lbl_res_mc_max_hdist= QLabel("—")
+        self.lbl_res_mc_avg_score= QLabel("—")
+        self.lbl_res_mc_min_score= QLabel("—")
+        self.lbl_res_mc_avg_hang = QLabel("—")
+        self.lbl_res_mc_min_hang = QLabel("—")
+
+        self.res_labels = {
+            "angle":       (QLabel("Angle (deg):"), self.lbl_res_angle),
+            "azimuth":     (QLabel("Azimuth (deg):"), self.lbl_res_azimuth),
+            "apogee":      (QLabel("Apogee (m):"), self.lbl_res_apogee),
+            "hdist":       (QLabel("H-dist (m):"), self.lbl_res_hdist),
+            "hang":        (QLabel("Hang time (s):"), self.lbl_res_hang),
+            "score":       (QLabel("Score (pts):"), self.lbl_res_score),
+            "mc_avg_apo":  (QLabel("MC Avg Apogee (m):"), self.lbl_res_mc_avg_apo),
+            "mc_min_apo":  (QLabel("MC Min Apogee (m):"), self.lbl_res_mc_min_apo),
+            "mc_avg_hdist":(QLabel("MC Avg H-dist (m):"), self.lbl_res_mc_avg_hdist),
+            "mc_max_hdist":(QLabel("MC Max H-dist (m):"), self.lbl_res_mc_max_hdist),
+            "mc_avg_score":(QLabel("MC Avg Score (pts):"), self.lbl_res_mc_avg_score),
+            "mc_min_score":(QLabel("MC Min Score (pts):"), self.lbl_res_mc_min_score),
+            "mc_avg_hang": (QLabel("MC Avg Hang time (s):"), self.lbl_res_mc_avg_hang),
+            "mc_min_hang": (QLabel("MC Min Hang time (s):"), self.lbl_res_mc_min_hang),
+        }
+
+        for key, (lbl_title, lbl_val) in self.res_labels.items():
+            lbl_val.setStyleSheet(_res_tag)
+            res_lay.addRow(lbl_title, lbl_val)
 
         lay.addWidget(self._results_grp)
 
@@ -2938,6 +2959,31 @@ class AppWindow(QMainWindow):
             self.motor_label.setText(f"{name}  (error)")
             self.set_status(f"Motor load error: {exc}", "#f38ba8")
 
+    def _update_results_layout(self, mode: str) -> None:
+        """Dynamically shows/hides result rows based on the active mode."""
+        for key, (lbl_title, lbl_val) in self.res_labels.items():
+            lbl_val.setText("-")
+            lbl_title.setVisible(False)
+            lbl_val.setVisible(False)
+
+        is_free = "free" in mode.lower() or "自由" in mode
+        if is_free:
+            keys = ["apogee", "hdist", "hang", "mc_avg_apo", "mc_min_apo", "mc_avg_hdist", "mc_max_hdist"]
+        elif mode == "定点滞空":
+            keys = ["angle", "azimuth", "score", "hdist", "hang", "mc_avg_score", "mc_min_score"]
+        elif mode == "高度":
+            keys = ["angle", "azimuth", "apogee", "hdist", "mc_avg_apo", "mc_min_apo", "mc_max_hdist"]
+        elif mode == "有翼":
+            keys = ["angle", "azimuth", "hang", "hdist", "mc_avg_hang", "mc_min_hang", "mc_max_hdist"]
+        else:
+            keys = []
+
+        for key in keys:
+            if key in self.res_labels:
+                lbl_title, lbl_val = self.res_labels[key]
+                lbl_title.setVisible(True)
+                lbl_val.setVisible(True)
+
     def _on_mode_changed(self, mode: str) -> None:
         is_free = "free" in mode.lower() or "自由" in mode
         self.rmax_input.setEnabled(not is_free)
@@ -2949,6 +2995,8 @@ class AppWindow(QMainWindow):
             self.rmax_input.setValue(50.0)
         elif mode in ("高度", "有翼"):
             self.rmax_input.setValue(250.0)
+
+        self._update_results_layout(mode)
 
     def _on_about(self) -> None:
         QMessageBox.information(
