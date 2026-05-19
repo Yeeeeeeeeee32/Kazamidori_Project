@@ -2860,11 +2860,15 @@ class AppWindow(QMainWindow):
 
             # Allow minor floating point deviations
             current_val = widget.value()
-            orig_val = orig.get(orig_key, 0.0) * scale
-            if abs(current_val - orig_val) > 1e-4:
+            orig_val = orig.get(orig_key)
+            if orig_val is None:
                 label.setStyleSheet("color: #ff5555; font-weight: bold;")
             else:
-                label.setStyleSheet("")
+                orig_val *= scale
+                if abs(current_val - orig_val) > 1e-4:
+                    label.setStyleSheet("color: #ff5555; font-weight: bold;")
+                else:
+                    label.setStyleSheet("")
 
         md = self._manual_dialog
         _check_and_style(self.af_mass_input,      md.lbl_mass,      "mass")
@@ -2889,6 +2893,9 @@ class AppWindow(QMainWindow):
             val = orig.get(orig_key)
             if val is not None:
                 widget.setValue(val * scale)
+            else:
+                # Silently fail -> instead reset to special blank value gracefully
+                widget.setValue(-9999.0)
 
         _set(self.af_mass_input,      "mass")
         _set(self.af_cg_input,        "cg")

@@ -377,12 +377,12 @@ class AppState(QObject):
         self._fin_tip_chord    = _f("fin_tip_chord")     # m
         self._fin_span         = _f("fin_span")          # m
         self._fin_position     = _f("fin_position")      # m from nose
-        self._motor_cg         = _f("motor_cg")          # m from nose
-        self._motor_dry_mass   = _f("motor_dry_mass")    # kg
+        self._motor_cg         = None                    # m from nose
+        self._motor_dry_mass   = None                    # kg
         self._parachute_cd     = None                    # dimensionless
         self._parachute_area   = None                    # m²
         self._parachute_lag    = None                    # s
-        self._backfire_delay   = _f("backfire_delay")    # s
+        self._backfire_delay   = None                    # s
 
         # Launch settings — pre-filled with safe operational defaults so the
         # RUN button interlock does NOT wait for these to be entered.

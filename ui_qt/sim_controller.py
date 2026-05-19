@@ -576,50 +576,50 @@ class SimController(QObject):
         is_free = "free" in mode.lower() or "自由" in mode
 
         def set_val(lbl, val, fmt, suffix=""):
-            if val is not None:
+            if val is not None and val != "N/A":
                 lbl.setText(f"{val:{fmt}}{suffix}")
             else:
-                lbl.setText("-")
+                lbl.setText("N/A" if val == "N/A" else "-")
 
         if is_free:
-            set_val(w.lbl_res_apogee, nominal_data.get("apogee_m"), ".1f")
-            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
-            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f")
+            set_val(w.lbl_res_apogee, nominal_data.get("apogee_m"), ".1f", " m")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f", " m")
+            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f", " s")
 
-            set_val(w.lbl_res_mc_avg_apo, mc_data.get("mc_avg_apogee"), ".1f")
-            set_val(w.lbl_res_mc_min_apo, mc_data.get("mc_min_apogee"), ".1f")
-            set_val(w.lbl_res_mc_avg_hdist, mc_data.get("mc_avg_hdist"), ".1f")
-            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist"), ".1f")
+            set_val(w.lbl_res_mc_avg_apo, mc_data.get("mc_avg_apogee", "N/A"), ".1f", " m")
+            set_val(w.lbl_res_mc_min_apo, mc_data.get("mc_min_apogee", "N/A"), ".1f", " m")
+            set_val(w.lbl_res_mc_avg_hdist, mc_data.get("mc_avg_hdist", "N/A"), ".1f", " m")
+            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist", "N/A"), ".1f", " m")
 
         elif mode == "定点滞空":
-            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f")
-            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f")
+            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f", " °")
+            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f", " °")
             set_val(w.lbl_res_score, nominal_data.get("score", mc_data.get("score")), ".2f")
-            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
-            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f", " m")
+            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f", " s")
 
-            set_val(w.lbl_res_mc_avg_score, mc_data.get("mc_avg_score"), ".2f")
-            set_val(w.lbl_res_mc_min_score, mc_data.get("mc_min_score"), ".2f")
+            set_val(w.lbl_res_mc_avg_score, mc_data.get("mc_avg_score", "N/A"), ".2f")
+            set_val(w.lbl_res_mc_min_score, mc_data.get("mc_min_score", "N/A"), ".2f")
 
         elif mode == "高度":
-            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f")
-            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f")
-            set_val(w.lbl_res_apogee, nominal_data.get("apogee_m"), ".1f")
-            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
+            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f", " °")
+            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f", " °")
+            set_val(w.lbl_res_apogee, nominal_data.get("apogee_m"), ".1f", " m")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f", " m")
 
-            set_val(w.lbl_res_mc_avg_apo, mc_data.get("mc_avg_apogee"), ".1f")
-            set_val(w.lbl_res_mc_min_apo, mc_data.get("mc_min_apogee"), ".1f")
-            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist"), ".1f")
+            set_val(w.lbl_res_mc_avg_apo, mc_data.get("mc_avg_apogee", "N/A"), ".1f", " m")
+            set_val(w.lbl_res_mc_min_apo, mc_data.get("mc_min_apogee", "N/A"), ".1f", " m")
+            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist", "N/A"), ".1f", " m")
 
         elif mode == "有翼":
-            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f")
-            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f")
-            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f")
-            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
+            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f", " °")
+            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f", " °")
+            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f", " s")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f", " m")
 
-            set_val(w.lbl_res_mc_avg_hang, mc_data.get("mc_avg_hang_time", mc_data.get("mc_avg_hang")), ".1f")
-            set_val(w.lbl_res_mc_min_hang, mc_data.get("mc_min_hang_time", mc_data.get("mc_min_hang")), ".1f")
-            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist"), ".1f")
+            set_val(w.lbl_res_mc_avg_hang, mc_data.get("mc_avg_hang_time", mc_data.get("mc_avg_hang", "N/A")), ".1f", " s")
+            set_val(w.lbl_res_mc_min_hang, mc_data.get("mc_min_hang_time", mc_data.get("mc_min_hang", "N/A")), ".1f", " s")
+            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist", "N/A"), ".1f", " m")
 
     @Slot(dict)
     def _on_nominal_done(self, payload: dict) -> None:
@@ -1224,12 +1224,23 @@ class SimController(QObject):
         s.fin_tip_chord   = af["fin_tip"]
         s.fin_span        = af["fin_span"]
         s.fin_position    = af["fin_pos"]
-        s.motor_cg        = af["motor_pos"]
-        s.motor_dry_mass  = af["motor_dry_mass"]
         # s.backfire_delay  = af["backfire_delay"]  # Operational input only
+
+        # Conditionally warn if unread parameters are present
+        if (cfg.get("parachute", {}).get("cd", 0) > 0 or
+            af.get("motor_dry_mass", 0) > 0 or
+            af.get("motor_pos", 0) != 0 or
+            af.get("backfire_delay", 0) > 0):
+            QMessageBox.warning(
+                self._window,
+                "一部のパラメータ未読込",
+                "一部のパラメータ（パラシュート、モーター等）は読み込まれませんでした。手動で設定してください。"
+            )
 
         # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
         s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
+
+        s.original_rocket_config = dict(af)
 
         name = _os.path.basename(path)
         w = self._window
