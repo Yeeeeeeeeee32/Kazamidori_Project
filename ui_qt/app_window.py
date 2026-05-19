@@ -1595,7 +1595,8 @@ class AppWindow(QMainWindow):
         mode_lay.addRow("Target Radius:", self.rmax_input)
 
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-        self._on_mode_changed("自由")
+        # Initial _on_mode_changed call is deferred until after self.res_labels
+        # is built below — _update_results_layout depends on that dict.
 
         lay.addWidget(mode_grp)
 
@@ -1655,6 +1656,10 @@ class AppWindow(QMainWindow):
         for key, (lbl_title, lbl_val) in self.res_labels.items():
             lbl_val.setStyleSheet(_res_tag)
             res_lay.addRow(lbl_title, lbl_val)
+
+        # res_labels is now populated, so the initial mode-driven layout pass
+        # can safely run.
+        self._on_mode_changed("自由")
 
         lay.addWidget(self._results_grp)
 
