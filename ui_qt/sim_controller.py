@@ -1004,7 +1004,7 @@ class SimController(QObject):
             "para_cd":        s.parachute_cd,              # parachute Cd (for CdS product)
             "para_area":      s.parachute_area,            # m²
             "para_lag":       s.parachute_lag,         # s
-            "backfire_delay": s.backfire_delay,        # s
+            "backfire_delay": None if s.backfire_delay == -9999.0 else s.backfire_delay,        # s
             # ── Motor thrust curve — persisted by AppWindow._on_load_motor() ──
             "target_radius":  s.target_radius,              # m  (rmax_input spinbox)
             **({
@@ -1142,7 +1142,7 @@ class SimController(QObject):
         s.fin_position    = af["fin_pos"]             # m from nose
         s.motor_cg        = af["motor_pos"]           # m from nose
         s.motor_dry_mass  = af["motor_dry_mass"]      # kg
-        s.backfire_delay  = af["backfire_delay"]      # s
+        # s.backfire_delay  = af["backfire_delay"]      # s (Operational input only, do not overwrite on load)
 
         # ── Parachute: JSON is SI; push directly into AppState ────────────────
         s.parachute_cd   = par["cd"]                  # dimensionless
@@ -1226,7 +1226,7 @@ class SimController(QObject):
         s.fin_position    = af["fin_pos"]
         s.motor_cg        = af["motor_pos"]
         s.motor_dry_mass  = af["motor_dry_mass"]
-        s.backfire_delay  = af["backfire_delay"]
+        # s.backfire_delay  = af["backfire_delay"]  # Operational input only
 
         # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
         s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
