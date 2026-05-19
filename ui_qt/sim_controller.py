@@ -1401,7 +1401,7 @@ class SimController(QObject):
 
     @Slot(float, float)
     def _on_map_coordinates_picked(self, lat: float, lon: float) -> None:
-        """Handle 'Ctrl + Click' on the 2D Folium Map View."""
+        """Handle 'Shift + Drag' launch site relocation from the Map View."""
         import math
 
         def get_distance(lat1, lon1, lat2, lon2):
