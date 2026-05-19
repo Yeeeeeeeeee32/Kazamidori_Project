@@ -1044,12 +1044,11 @@ def _style_2d(ax, fig: Optional[Figure] = None, bg: str = "#0d0d1a") -> None:
 # ── 3-D rendering helpers ─────────────────────────────────────────────────────
 
 def _equalise_3d_axes(ax) -> None:
-    limits  = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+    limits  = np.array([ax.get_xlim3d(), ax.get_ylim3d()])
     centers = limits.mean(axis=1)
     max_r   = max((limits[:, 1] - limits[:, 0]).max() / 2.0, 1.0)
     ax.set_xlim3d(centers[0] - max_r, centers[0] + max_r)
     ax.set_ylim3d(centers[1] - max_r, centers[1] + max_r)
-    ax.set_zlim3d(max(0.0, centers[2] - max_r), centers[2] + max_r)
 
 
 def _make_altitude_lc(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> object:
@@ -2218,10 +2217,17 @@ class AppWindow(QMainWindow):
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.88, borderpad=0.6)
 
-        pad = max(abs(tx).max() * 0.12, abs(ty).max() * 0.12, 10.0)
-        ax.set_xlim3d(tx.min() - pad, tx.max() + pad)
-        ax.set_ylim3d(ty.min() - pad, ty.max() + pad)
-        ax.set_zlim3d(0.0, max(tz.max() * 1.12, 10.0))
+        tx_min, tx_max = float(tx.min()), float(tx.max())
+        ty_min, ty_max = float(ty.min()), float(ty.max())
+        tz_min, tz_max = float(tz.min()), float(tz.max())
+
+        pad_x = max((tx_max - tx_min) * 0.15, 10.0)
+        pad_y = max((ty_max - ty_min) * 0.15, 10.0)
+        pad_z = max((tz_max - tz_min) * 0.15, 10.0)
+
+        ax.set_xlim3d(tx_min - pad_x, tx_max + pad_x)
+        ax.set_ylim3d(ty_min - pad_y, ty_max + pad_y)
+        ax.set_zlim3d(max(0.0, tz_min), max(tz_max + pad_z, 10.0))
         _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
         _spd  = getattr(s, "surf_wind_speed", getattr(s, "wind_speed", 0.0))
         _dir  = getattr(s, "surf_wind_dir",   getattr(s, "wind_dir",   0.0))
