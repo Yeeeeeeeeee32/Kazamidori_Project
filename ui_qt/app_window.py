@@ -46,7 +46,7 @@ from ui_qt.map_view import MapView
 
 
 # ── Constants ───────────────────────────────────────────────────────────────
-DEFAULT_AZIMUTH: int = 45
+DEFAULT_AZIMUTH: int = -90
 AZIMUTH_STEP: int = 3
 MARKER_SIZE: int = 50
 SCROLL_STEP: int = 5
@@ -946,11 +946,11 @@ class _MplCanvas(FigureCanvasQTAgg):
 class _AzimCanvas(FigureCanvasQTAgg):
     """3-D profile canvas: mouse-wheel adjusts the linked azimuth QSlider (±3° per notch) or scrubs animation."""
 
-    def __init__(self, fig: Figure, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, fig: Figure, app_state: 'AppState', parent: Optional[QWidget] = None) -> None:
         FigureCanvasQTAgg.__init__(self, fig)
         if parent is not None:
             self.setParent(parent)
-        self._current_time_idx = 0
+        self.app_state = app_state
         self._marker_artist = None
         self._traj_x = None
         self._traj_y = None
@@ -958,23 +958,23 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_t = None
         self._time_label = None
 
-    def wheelEvent(self, event) -> None:
-        from PySide6.QtCore import Qt
-        if event.modifiers() & Qt.ShiftModifier:
-            if self._traj_t is not None and len(self._traj_t) > 0:
-                delta = event.angleDelta().y()
-                step = SCROLL_STEP if delta > 0 else -SCROLL_STEP
-                self._current_time_idx = max(0, min(len(self._traj_t) - 1, self._current_time_idx + step))
-                self._update_marker()
-                event.accept()
-                return
+        self.mpl_connect('scroll_event', self._on_scroll)
 
+    def _on_scroll(self, event) -> None:
+        if event.key == 'shift':
+            if self._traj_t is not None and len(self._traj_t) > 0:
+                step = SCROLL_STEP if event.step > 0 else -SCROLL_STEP
+
+                new_idx = max(0, min(len(self._traj_t) - 1, self.app_state.current_playback_index + step))
+                self.app_state.current_playback_index = new_idx
+                self._update_marker()
+            return
+
+        # If shift is not held, let's update the azimuth
         sl = getattr(self, '_azim_slider', None)
         if sl is not None:
-            delta = event.angleDelta().y()
-            step = AZIMUTH_STEP if delta > 0 else -AZIMUTH_STEP
+            step = AZIMUTH_STEP if event.step > 0 else -AZIMUTH_STEP
             sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
-        event.accept()
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
         """Set the trajectory arrays and reset the time index.
@@ -990,7 +990,7 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_y = y
         self._traj_z = z
         self._traj_t = t
-        self._current_time_idx = 0
+        self.app_state.current_playback_index = 0
 
         if self._marker_artist:
             try:
@@ -1003,8 +1003,9 @@ class _AzimCanvas(FigureCanvasQTAgg):
             except:
                 pass
 
-        # Draw the marker point
-        self._marker_artist = ax.scatter([x[0]], [y[0]], [z[0]], color='red', s=MARKER_SIZE, zorder=10)
+        # Draw the marker point using plot for faster rendering on update
+        self._marker_artist, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='yellow', zorder=100)
+
         # Use text2D on the axis to place it at the top-left
         self._time_label = ax.text2D(0.05, 0.95, f"T+ {t[0]:.1f}s | Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
         self.draw_idle()
@@ -1012,8 +1013,9 @@ class _AzimCanvas(FigureCanvasQTAgg):
     def _update_marker(self) -> None:
         """Update the position of the 3D marker and the time label based on current index."""
         if self._marker_artist and self._traj_x is not None:
-            idx = self._current_time_idx
-            self._marker_artist._offsets3d = ([self._traj_x[idx]], [self._traj_y[idx]], [self._traj_z[idx]])
+            idx = self.app_state.current_playback_index
+            self._marker_artist.set_data([self._traj_x[idx]], [self._traj_y[idx]])
+            self._marker_artist.set_3d_properties([self._traj_z[idx]])
             if self._time_label:
                 self._time_label.set_text(f"T+ {self._traj_t[idx]:.1f}s | Alt: {self._traj_z[idx]:.1f}m")
             self.draw_idle()
@@ -1044,12 +1046,11 @@ def _style_2d(ax, fig: Optional[Figure] = None, bg: str = "#0d0d1a") -> None:
 # ── 3-D rendering helpers ─────────────────────────────────────────────────────
 
 def _equalise_3d_axes(ax) -> None:
-    limits  = np.array([ax.get_xlim3d(), ax.get_ylim3d(), ax.get_zlim3d()])
+    limits  = np.array([ax.get_xlim3d(), ax.get_ylim3d()])
     centers = limits.mean(axis=1)
     max_r   = max((limits[:, 1] - limits[:, 0]).max() / 2.0, 1.0)
     ax.set_xlim3d(centers[0] - max_r, centers[0] + max_r)
     ax.set_ylim3d(centers[1] - max_r, centers[1] + max_r)
-    ax.set_zlim3d(max(0.0, centers[2] - max_r), centers[2] + max_r)
 
 
 def _make_altitude_lc(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> object:
@@ -1281,7 +1282,7 @@ class AppWindow(QMainWindow):
     def _build_figures(self) -> None:
         self.profile_fig    = Figure(figsize=(5, 5), facecolor="#1e1e2e")
         self.profile_ax     = self.profile_fig.add_subplot(111, projection="3d")
-        self.profile_canvas = _AzimCanvas(self.profile_fig)
+        self.profile_canvas = _AzimCanvas(self.profile_fig, self.state)
         # Disable the default Matplotlib click-drag rotation; azimuth is
         # controlled exclusively by the QSlider + wheel event below.
         try:
@@ -1508,8 +1509,8 @@ class AppWindow(QMainWindow):
         azim_lbl.setFixedWidth(48)
 
         self._azim_slider = QSlider(Qt.Orientation.Horizontal, azim_row)
-        self._azim_slider.setMinimum(0)
-        self._azim_slider.setMaximum(90)
+        self._azim_slider.setMinimum(-180)
+        self._azim_slider.setMaximum(180)
         self._azim_slider.setValue(DEFAULT_AZIMUTH)
         self._azim_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self._azim_slider.setStyleSheet(
@@ -1600,7 +1601,8 @@ class AppWindow(QMainWindow):
         mode_lay.addRow("Target Radius:", self.rmax_input)
 
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-        self._on_mode_changed("自由")
+        # Initial _on_mode_changed call is deferred until after self.res_labels
+        # is built below — _update_results_layout depends on that dict.
 
         lay.addWidget(mode_grp)
 
@@ -1613,32 +1615,57 @@ class AppWindow(QMainWindow):
         lay.addWidget(self._go_nogo_label)
 
 
-        # ── Results Panel (Hidden by Default) ─────────────────────────────────
-        self._results_grp = QGroupBox("Optimization Results", container)
-        self._results_grp.setVisible(False)
+        # ── Results Panel ─────────────────────────────────────────────────────
+        self._results_grp = QGroupBox("Simulation Results", container)
         self._results_grp.setStyleSheet("QGroupBox { border: 1px solid #7eb3ff; margin-top: 1ex; font-weight: bold; } QGroupBox::title { subcontrol-origin: margin; left: 8px; color: #7eb3ff; }")
 
         res_lay = QFormLayout(self._results_grp)
         res_lay.setSpacing(4)
         res_lay.setContentsMargins(10, 10, 10, 8)
+        self.res_lay = res_lay
 
         _res_tag = "QLabel { font-weight: bold; color: #a6e3a1; font-family: 'Consolas', monospace; }"
-        self.lbl_res_angle = QLabel("—")
-        self.lbl_res_best  = QLabel("—")
-        self.lbl_res_avg   = QLabel("—")
-        self.lbl_res_min   = QLabel("—")
-        self.lbl_res_alt   = QLabel("—")
-        self.lbl_res_hang  = QLabel("—")
 
-        for _lbl in (self.lbl_res_angle, self.lbl_res_best, self.lbl_res_avg, self.lbl_res_min, self.lbl_res_alt, self.lbl_res_hang):
-            _lbl.setStyleSheet(_res_tag)
+        self.lbl_res_angle       = QLabel("—")
+        self.lbl_res_azimuth     = QLabel("—")
+        self.lbl_res_apogee      = QLabel("—")
+        self.lbl_res_hdist       = QLabel("—")
+        self.lbl_res_hang        = QLabel("—")
+        self.lbl_res_score       = QLabel("—")
 
-        res_lay.addRow("Optimal Angle:", self.lbl_res_angle)
-        res_lay.addRow("Best Score:", self.lbl_res_best)
-        res_lay.addRow("MC Avg Score:", self.lbl_res_avg)
-        res_lay.addRow("MC Min Score:", self.lbl_res_min)
-        res_lay.addRow("MC Avg Alt:", self.lbl_res_alt)
-        res_lay.addRow("MC Avg Hang:", self.lbl_res_hang)
+        self.lbl_res_mc_avg_apo  = QLabel("—")
+        self.lbl_res_mc_min_apo  = QLabel("—")
+        self.lbl_res_mc_avg_hdist= QLabel("—")
+        self.lbl_res_mc_max_hdist= QLabel("—")
+        self.lbl_res_mc_avg_score= QLabel("—")
+        self.lbl_res_mc_min_score= QLabel("—")
+        self.lbl_res_mc_avg_hang = QLabel("—")
+        self.lbl_res_mc_min_hang = QLabel("—")
+
+        self.res_labels = {
+            "angle":       (QLabel("Angle (deg):"), self.lbl_res_angle),
+            "azimuth":     (QLabel("Azimuth (deg):"), self.lbl_res_azimuth),
+            "apogee":      (QLabel("Apogee (m):"), self.lbl_res_apogee),
+            "hdist":       (QLabel("H-dist (m):"), self.lbl_res_hdist),
+            "hang":        (QLabel("Hang time (s):"), self.lbl_res_hang),
+            "score":       (QLabel("Score (pts):"), self.lbl_res_score),
+            "mc_avg_apo":  (QLabel("MC Avg Apogee (m):"), self.lbl_res_mc_avg_apo),
+            "mc_min_apo":  (QLabel("MC Min Apogee (m):"), self.lbl_res_mc_min_apo),
+            "mc_avg_hdist":(QLabel("MC Avg H-dist (m):"), self.lbl_res_mc_avg_hdist),
+            "mc_max_hdist":(QLabel("MC Max H-dist (m):"), self.lbl_res_mc_max_hdist),
+            "mc_avg_score":(QLabel("MC Avg Score (pts):"), self.lbl_res_mc_avg_score),
+            "mc_min_score":(QLabel("MC Min Score (pts):"), self.lbl_res_mc_min_score),
+            "mc_avg_hang": (QLabel("MC Avg Hang time (s):"), self.lbl_res_mc_avg_hang),
+            "mc_min_hang": (QLabel("MC Min Hang time (s):"), self.lbl_res_mc_min_hang),
+        }
+
+        for key, (lbl_title, lbl_val) in self.res_labels.items():
+            lbl_val.setStyleSheet(_res_tag)
+            res_lay.addRow(lbl_title, lbl_val)
+
+        # res_labels is now populated, so the initial mode-driven layout pass
+        # can safely run.
+        self._on_mode_changed("自由")
 
         lay.addWidget(self._results_grp)
 
@@ -2027,7 +2054,7 @@ class AppWindow(QMainWindow):
         ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
         ax.set_zlabel("Alt  (m)",   color="#6c7086", fontsize=8, labelpad=4)
         azim = getattr(self, '_azim_slider', None)
-        ax.view_init(elev=22, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
+        ax.view_init(elev=25, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
         if res is not None:
             _equalise_3d_axes(ax)
 
@@ -2222,10 +2249,17 @@ class AppWindow(QMainWindow):
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.88, borderpad=0.6)
 
-        pad = max(abs(tx).max() * 0.12, abs(ty).max() * 0.12, 10.0)
-        ax.set_xlim3d(tx.min() - pad, tx.max() + pad)
-        ax.set_ylim3d(ty.min() - pad, ty.max() + pad)
-        ax.set_zlim3d(0.0, max(tz.max() * 1.12, 10.0))
+        tx_min, tx_max = float(tx.min()), float(tx.max())
+        ty_min, ty_max = float(ty.min()), float(ty.max())
+        tz_min, tz_max = float(tz.min()), float(tz.max())
+
+        pad_x = max((tx_max - tx_min) * 0.15, 10.0)
+        pad_y = max((ty_max - ty_min) * 0.15, 10.0)
+        pad_z = max((tz_max - tz_min) * 0.15, 10.0)
+
+        ax.set_xlim3d(tx_min - pad_x, tx_max + pad_x)
+        ax.set_ylim3d(ty_min - pad_y, ty_max + pad_y)
+        ax.set_zlim3d(max(0.0, tz_min), max(tz_max + pad_z, 10.0))
         _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
         _spd  = getattr(s, "surf_wind_speed", getattr(s, "wind_speed", 0.0))
         _dir  = getattr(s, "surf_wind_dir",   getattr(s, "wind_dir",   0.0))
@@ -2328,7 +2362,7 @@ class AppWindow(QMainWindow):
                     # ZOH Fallback if deque is empty: draw horizontal line at last known speed
                     fallback_speed = speeds[i] if i < len(speeds) else 0.0
                     ax_p.axhline(fallback_speed, color=col, lw=1.4, alpha=0.85)
-                    ax_p.scatter([0.0], [fallback_speed], color=col, s=28, zorder=5)
+                    ax_p.plot([0.0], [fallback_speed], linestyle='', marker='o', color=col, markersize=5, zorder=5)
                     ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
                     continue
 
@@ -2340,7 +2374,8 @@ class AppWindow(QMainWindow):
                     ys.append(ys[-1])
 
                 # Plot the continuous line connecting all historical data points
-                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85)
+                # Task 1: The Line Layer
+                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85, linestyle='-', marker='')
 
                 # Add proxy artist for legend
                 ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
@@ -2349,16 +2384,19 @@ class AppWindow(QMainWindow):
                 # (exclude the synthesized ZOH points where t == 0.0 unless it genuinely is the fetch time)
                 fetch_xs = []
                 fetch_ys = []
-                # We filter by finding points where t is not exactly 0.0 (unless it's the very first point)
-                # But actually, looking at `update_wind_history`, `pts` only contains actual received
-                # points relative to `now`. ZOH at `0.0` is only appended to `xs` / `ys` locally for plotting the line!
-                # So `pts` itself ONLY has the actively fetched points.
+                # Filter to only keep timestamps where the speed value actually changed,
+                # as `pts` contains 1Hz samples that may just be repeats.
+                last_val = None
                 for p in pts:
-                    fetch_xs.append(p[0])
-                    fetch_ys.append(p[1])
+                    current_val = p[1]
+                    if current_val != last_val:
+                        fetch_xs.append(p[0])
+                        fetch_ys.append(p[1])
+                        last_val = current_val
 
                 if fetch_xs:
-                    ax_p.scatter(fetch_xs, fetch_ys, color=col, s=28, zorder=5)
+                    # Task 1: The Scatter/Dot Layer
+                    ax_p.plot(fetch_xs, fetch_ys, linestyle='', marker='o', color=col, markersize=5, zorder=5)
 
                 # 10-second rolling average horizontal dotted line
                 recent = [p[1] for p in pts if p[0] >= -10.0]
@@ -2706,7 +2744,7 @@ class AppWindow(QMainWindow):
 
     def _on_azim_changed(self, value: int) -> None:
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
-        self.profile_ax.view_init(elev=22, azim=value)
+        self.profile_ax.view_init(elev=25, azim=value)
         self.profile_canvas.draw_idle()
 
     def bind_app_state(self, state) -> None:
@@ -2937,6 +2975,31 @@ class AppWindow(QMainWindow):
             self.motor_label.setText(f"{name}  (error)")
             self.set_status(f"Motor load error: {exc}", "#f38ba8")
 
+    def _update_results_layout(self, mode: str) -> None:
+        """Dynamically shows/hides result rows based on the active mode."""
+        for key, (lbl_title, lbl_val) in self.res_labels.items():
+            lbl_val.setText("-")
+            lbl_title.setVisible(False)
+            lbl_val.setVisible(False)
+
+        is_free = "free" in mode.lower() or "自由" in mode
+        if is_free:
+            keys = ["apogee", "hdist", "hang", "mc_avg_apo", "mc_min_apo", "mc_avg_hdist", "mc_max_hdist"]
+        elif mode == "定点滞空":
+            keys = ["angle", "azimuth", "score", "hdist", "hang", "mc_avg_score", "mc_min_score"]
+        elif mode == "高度":
+            keys = ["angle", "azimuth", "apogee", "hdist", "mc_avg_apo", "mc_min_apo", "mc_max_hdist"]
+        elif mode == "有翼":
+            keys = ["angle", "azimuth", "hang", "hdist", "mc_avg_hang", "mc_min_hang", "mc_max_hdist"]
+        else:
+            keys = []
+
+        for key in keys:
+            if key in self.res_labels:
+                lbl_title, lbl_val = self.res_labels[key]
+                lbl_title.setVisible(True)
+                lbl_val.setVisible(True)
+
     def _on_mode_changed(self, mode: str) -> None:
         is_free = "free" in mode.lower() or "自由" in mode
         self.rmax_input.setEnabled(not is_free)
@@ -2948,6 +3011,8 @@ class AppWindow(QMainWindow):
             self.rmax_input.setValue(50.0)
         elif mode in ("高度", "有翼"):
             self.rmax_input.setValue(250.0)
+
+        self._update_results_layout(mode)
 
     def _on_about(self) -> None:
         QMessageBox.information(

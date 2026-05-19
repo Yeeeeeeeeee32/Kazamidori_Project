@@ -10,6 +10,7 @@ import matplotlib.patches as patches
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QStackedLayout, QHBoxLayout
 from PySide6.QtCore import Qt, Slot, Signal, QObject
 from ui_qt.app_state import AppState
+from utils.geo_math import offset_to_latlon
 
 def _safe_float(val, default=0.0) -> float:
     if val is None:
@@ -36,6 +37,8 @@ class MapView(QWidget):
         super().__init__(parent)
         self._state = app_state
         print(f"=== MapView.__init__ === Received State: id={id(self._state)}")
+        self._current_all_x = []
+        self._current_all_y = []
         self._build_ui()
 
         # Map interaction state
@@ -43,10 +46,16 @@ class MapView(QWidget):
         self._is_dragging = False
         self._ghost_marker = None
 
+        self._is_panning = False
+        self._pan_start = None
+        self._pan_xlim = None
+        self._pan_ylim = None
+
         # Connect Matplotlib events
         self.canvas.mpl_connect('button_press_event', self._on_button_press)
         self.canvas.mpl_connect('motion_notify_event', self._on_motion_notify)
         self.canvas.mpl_connect('button_release_event', self._on_button_release)
+        self.canvas.mpl_connect('scroll_event', self._on_mouse_scroll)
 
         if hasattr(app_state, 'is_calculating_changed'):
             app_state.is_calculating_changed.connect(self._on_calculating_changed)
@@ -234,13 +243,7 @@ class MapView(QWidget):
             all_x.append(impact_x)
             all_y.append(impact_y)
 
-            # Impact Scatter
-            if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
-                sx = scatter_x[:500]
-                sy = scatter_y[:500]
-                self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)
-                all_x.extend(sx)
-                all_y.extend(sy)
+
 
             # R90 Circle
             if r90 > 0:
@@ -284,6 +287,40 @@ class MapView(QWidget):
                         all_x.extend([p[0] for p in points])
                         all_y.extend([p[1] for p in points])
 
+            # Impact Scatter (Filtered by KDE contours)
+            if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
+                import numpy as np
+                from matplotlib.path import Path
+
+                sx_filtered = scatter_x
+                sy_filtered = scatter_y
+
+                # Check if we have KDE contours to filter by
+                if contours and getattr(self._state, 'show_kde', True):
+                    outer_contour = contours[0]
+                    if isinstance(outer_contour, dict) and 'points_m' in outer_contour:
+                        outer_points = outer_contour['points_m']
+                    else:
+                        outer_points = outer_contour
+
+                    if outer_points and len(outer_points) > 2:
+                        path = Path(outer_points)
+                        pts = np.column_stack((scatter_x, scatter_y))
+                        mask = path.contains_points(pts)
+                        # We want points OUTSIDE the outermost contour
+                        outside_mask = ~mask
+
+                        sx_filtered = np.array(scatter_x)[outside_mask].tolist()
+                        sy_filtered = np.array(scatter_y)[outside_mask].tolist()
+
+                sx = sx_filtered[:500]
+                sy = sy_filtered[:500]
+
+                if len(sx) > 0:
+                    self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)
+                    all_x.extend(sx)
+                    all_y.extend(sy)
+
             # Legend
             handles, labels = self.ax.get_legend_handles_labels()
             if handles:
@@ -292,84 +329,135 @@ class MapView(QWidget):
                 legend.set_zorder(20)
 
             # Explicit Manual Auto-Scaling
-            if all_x and all_y:
-                min_x, max_x = min(all_x), max(all_x)
-                min_y, max_y = min(all_y), max(all_y)
-
-                # Avoid singular bounds
-                if max_x == min_x:
-                    max_x += 100
-                    min_x -= 100
-                if max_y == min_y:
-                    max_y += 100
-                    min_y -= 100
-
-                dx = max_x - min_x
-                dy = max_y - min_y
-
-                # 15% margin
-                margin_x = dx * 0.15
-                margin_y = dy * 0.15
-
-                self.ax.set_xlim(min_x - margin_x, max_x + margin_x)
-                self.ax.set_ylim(min_y - margin_y, max_y + margin_y)
+            self._current_all_x = all_x
+            self._current_all_y = all_y
+            self._calculate_and_apply_bounds(self._current_all_x, self._current_all_y)
 
             self.figure.tight_layout()
             self.canvas.draw()
             print("=== MAP RENDER SUCCESSFULLY COMPLETED ===")
         except Exception as e:
+            import traceback
             print(f"=== MAP RENDER ERROR ===\n{traceback.format_exc()}")
+
+
+    def _calculate_and_apply_bounds(self, all_x, all_y):
+        if not all_x or not all_y:
+            return
+
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+
+        # Avoid singular bounds
+        if max_x == min_x:
+            max_x += 100
+            min_x -= 100
+        if max_y == min_y:
+            max_y += 100
+            min_y -= 100
+
+        dx = max_x - min_x
+        dy = max_y - min_y
+
+        # 10% margin
+        margin_x = dx * 0.10
+        margin_y = dy * 0.10
+
+        self.ax.set_xlim(min_x - margin_x, max_x + margin_x)
+        self.ax.set_ylim(min_y - margin_y, max_y + margin_y)
 
     def _on_button_press(self, event):
         if event.inaxes != self.ax: return
-        if event.key == 'control' and event.button == 1:
-            if event.xdata is not None and event.ydata is not None:
-                # Check if click is near origin (0, 0)
-                dist = math.hypot(event.xdata, event.ydata)
-                # Allowing some leeway to grab the launch site, e.g., within 10% of axis range or a fixed radius
-                # We will just assume if control is held, they want to drag it
-                self._drag_start = (event.xdata, event.ydata)
-                self._is_dragging = True
-
-                # Create a ghost marker
-                self._ghost_marker, = self.ax.plot([event.xdata], [event.ydata], marker='*', markersize=15,
-                                                  color='white', alpha=0.5, zorder=20)
-                self.canvas.draw_idle()
+        if event.button == 1:
+            if event.key == 'shift':
+                if event.xdata is not None and event.ydata is not None:
+                    self._drag_start = (event.xdata, event.ydata)
+                    self._is_dragging = True
+                    self._ghost_marker, = self.ax.plot([event.xdata], [event.ydata], marker='*', markersize=15,
+                                                      color='white', alpha=0.5, zorder=20)
+                    self.canvas.draw_idle()
+            elif event.key is None:
+                self._is_panning = True
+                self._pan_start = (event.x, event.y)
+                self._pan_xlim = self.ax.get_xlim()
+                self._pan_ylim = self.ax.get_ylim()
 
     def _on_motion_notify(self, event):
-        if not self._is_dragging: return
-        if event.inaxes != self.ax: return
-        if event.xdata is not None and event.ydata is not None:
-            if self._ghost_marker:
-                self._ghost_marker.set_data([event.xdata], [event.ydata])
-                self.canvas.draw_idle()
+        if self._is_dragging and event.inaxes == self.ax:
+            if event.xdata is not None and event.ydata is not None:
+                if self._ghost_marker:
+                    self._ghost_marker.set_data([event.xdata], [event.ydata])
+                    self.canvas.draw_idle()
+        elif self._is_panning:
+            if self._pan_start is None or self._pan_xlim is None or self._pan_ylim is None:
+                return
+
+            x0, y0 = self.ax.transData.inverted().transform(self._pan_start)
+            x1, y1 = self.ax.transData.inverted().transform((event.x, event.y))
+
+            dx_data = x1 - x0
+            dy_data = y1 - y0
+
+            new_xlim = (self._pan_xlim[0] - dx_data, self._pan_xlim[1] - dx_data)
+            new_ylim = (self._pan_ylim[0] - dy_data, self._pan_ylim[1] - dy_data)
+
+            self.ax.set_xlim(new_xlim)
+            self.ax.set_ylim(new_ylim)
+            self.canvas.draw_idle()
 
     def _on_button_release(self, event):
-        if not self._is_dragging: return
-        self._is_dragging = False
+        if self._is_dragging:
+            self._is_dragging = False
+            if self._ghost_marker:
+                self._ghost_marker.remove()
+                self._ghost_marker = None
 
-        if self._ghost_marker:
-            self._ghost_marker.remove()
-            self._ghost_marker = None
+            if event.xdata is not None and event.ydata is not None:
+                try:
+                    current_lat = float(self._state.launch_lat)
+                    current_lon = float(self._state.launch_lon)
 
-        if event.xdata is not None and event.ydata is not None and self._drag_start is not None:
-            dx = event.xdata - self._drag_start[0]
-            dy = event.ydata - self._drag_start[1]
+                    new_lat, new_lon = offset_to_latlon(current_lat, current_lon, event.xdata, event.ydata)
 
-            try:
-                current_lat = float(self._state.launch_lat)
-                current_lon = float(self._state.launch_lon)
+                    # Update AppState directly
+                    self._state.launch_lat = new_lat
+                    self._state.launch_lon = new_lon
 
-                delta_lat = dy / 111111.0
-                delta_lon = dx / (111111.0 * math.cos(math.radians(current_lat)))
+                    # Also emit signal just in case (SimController listens to it)
+                    self.coordinates_picked.emit(new_lat, new_lon)
+                except Exception as e:
+                    import traceback
+                    print(f"Error updating coordinates: {e}\n{traceback.format_exc()}")
+            self.canvas.draw_idle()
 
-                # Update AppState which will trigger UI updates and redraw
-                self._state.launch_lat = current_lat + delta_lat
-                self._state.launch_lon = current_lon + delta_lon
-            except Exception as e:
-                print(f"Error updating coordinates: {e}")
+        elif self._is_panning:
+            self._is_panning = False
 
-        self._drag_start = None
+    def _on_mouse_scroll(self, event):
+        if event.inaxes != self.ax: return
+        if event.xdata is None or event.ydata is None: return
+
+        base_scale = 1.2
+        if event.step > 0:
+            # zoom in
+            scale_factor = 1.0 / base_scale
+        elif event.step < 0:
+            # zoom out
+            scale_factor = base_scale
+        else:
+            scale_factor = 1.0
+
+        xlim = self.ax.get_xlim()
+        ylim = self.ax.get_ylim()
+
+        xdata = event.xdata
+        ydata = event.ydata
+
+        new_xlim = [xdata + (x - xdata) * scale_factor for x in xlim]
+        new_ylim = [ydata + (y - ydata) * scale_factor for y in ylim]
+
+        self.ax.set_xlim(new_xlim)
+        self.ax.set_ylim(new_ylim)
         self.canvas.draw_idle()
 
     def _render_map_tiles(self) -> None:
@@ -423,9 +511,14 @@ class MapView(QWidget):
             self.ax.imshow(np.array(img), extent=[-250, 250, -250, 250], zorder=-10, alpha=0.7)
 
         except Exception as e:
+            import traceback
+            print(f"=== MAP RENDER ERROR ===\n{traceback.format_exc()}")
             print(f"Error rendering offline map tiles: {e}")
 
     def _on_reset_view(self):
-        # Reset the view to autoscale based on all data
-        self.ax.autoscale()
+        # Reset the view to the dynamic bounds
+        if getattr(self, '_current_all_x', None) and getattr(self, '_current_all_y', None):
+            self._calculate_and_apply_bounds(self._current_all_x, self._current_all_y)
+        else:
+            self.ax.autoscale()
         self.canvas.draw()
