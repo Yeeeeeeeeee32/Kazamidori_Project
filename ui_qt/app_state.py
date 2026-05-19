@@ -374,9 +374,9 @@ class AppState(QObject):
         self._fin_position     = _f("fin_position")      # m from nose
         self._motor_cg         = _f("motor_cg")          # m from nose
         self._motor_dry_mass   = _f("motor_dry_mass")    # kg
-        self._parachute_cd     = _f("parachute_cd")      # dimensionless
-        self._parachute_area   = _f("parachute_area")    # m²
-        self._parachute_lag    = _f("parachute_lag")     # s
+        self._parachute_cd     = None                    # dimensionless
+        self._parachute_area   = None                    # m²
+        self._parachute_lag    = None                    # s
         self._backfire_delay   = _f("backfire_delay")    # s
 
         # Launch settings — pre-filled with safe operational defaults so the
