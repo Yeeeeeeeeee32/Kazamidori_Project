@@ -1007,7 +1007,12 @@ class SimController(QObject):
             )
             sig = getattr(s, f"{prop}_changed", None)
             if sig is not None:
-                sig.connect(lambda v, _sb=sb, _g=from_si: _sb.setValue(_g(v)))
+                def update_sb(v, _sb=sb, _g=from_si):
+                    if v is None:
+                        _sb.clear()
+                    else:
+                        _sb.setValue(_g(v))
+                sig.connect(update_sb)
 
         # af_radius_input shows body radius (m); AppState stores full diameter (m)
         _bind("af_mass_input",     "rocket_dry_mass", lambda v: float(v),      lambda v: float(v))
@@ -1152,7 +1157,6 @@ class SimController(QObject):
 
         s   = self._state
         af  = cfg["airframe"]
-        par = cfg["parachute"]
         moi = cfg["moi"]
 
         # ── Airframe geometry → AppState ───────────────────────────────────────
@@ -1176,11 +1180,6 @@ class SimController(QObject):
         s.motor_cg        = af["motor_pos"]
         s.motor_dry_mass  = af["motor_dry_mass"]
         s.backfire_delay  = af["backfire_delay"]
-
-        # ── Parachute → AppState ───────────────────────────────────────────────
-        s.parachute_cd   = par["cd"]
-        s.parachute_area = par["area"]
-        s.parachute_lag  = par["lag"]
 
         # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
         s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
