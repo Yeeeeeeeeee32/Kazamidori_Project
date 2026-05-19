@@ -2329,7 +2329,7 @@ class AppWindow(QMainWindow):
                     # ZOH Fallback if deque is empty: draw horizontal line at last known speed
                     fallback_speed = speeds[i] if i < len(speeds) else 0.0
                     ax_p.axhline(fallback_speed, color=col, lw=1.4, alpha=0.85)
-                    ax_p.scatter([0.0], [fallback_speed], color=col, s=28, zorder=5)
+                    ax_p.plot([0.0], [fallback_speed], linestyle='', marker='o', color=col, markersize=5, zorder=5)
                     ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
                     continue
 
@@ -2341,7 +2341,8 @@ class AppWindow(QMainWindow):
                     ys.append(ys[-1])
 
                 # Plot the continuous line connecting all historical data points
-                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85)
+                # Task 1: The Line Layer
+                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85, linestyle='-', marker='')
 
                 # Add proxy artist for legend
                 ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
@@ -2350,16 +2351,19 @@ class AppWindow(QMainWindow):
                 # (exclude the synthesized ZOH points where t == 0.0 unless it genuinely is the fetch time)
                 fetch_xs = []
                 fetch_ys = []
-                # We filter by finding points where t is not exactly 0.0 (unless it's the very first point)
-                # But actually, looking at `update_wind_history`, `pts` only contains actual received
-                # points relative to `now`. ZOH at `0.0` is only appended to `xs` / `ys` locally for plotting the line!
-                # So `pts` itself ONLY has the actively fetched points.
+                # Filter to only keep timestamps where the speed value actually changed,
+                # as `pts` contains 1Hz samples that may just be repeats.
+                last_val = None
                 for p in pts:
-                    fetch_xs.append(p[0])
-                    fetch_ys.append(p[1])
+                    current_val = p[1]
+                    if current_val != last_val:
+                        fetch_xs.append(p[0])
+                        fetch_ys.append(p[1])
+                        last_val = current_val
 
                 if fetch_xs:
-                    ax_p.scatter(fetch_xs, fetch_ys, color=col, s=28, zorder=5)
+                    # Task 1: The Scatter/Dot Layer
+                    ax_p.plot(fetch_xs, fetch_ys, linestyle='', marker='o', color=col, markersize=5, zorder=5)
 
                 # 10-second rolling average horizontal dotted line
                 recent = [p[1] for p in pts if p[0] >= -10.0]
