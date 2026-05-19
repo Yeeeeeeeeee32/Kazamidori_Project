@@ -1235,12 +1235,11 @@ class AppWindow(QMainWindow):
         self.af_backfire_input  = QDoubleSpinBox(self)
         self.af_backfire_input.setDecimals(2); self.af_backfire_input.setSingleStep(0.1)
         self.af_backfire_input.setSuffix(" s"); self.af_backfire_input.setRange(-9999.0, 10.0)
-        self.af_backfire_input.setSpecialValueText(""); self.af_backfire_input.setValue(-9999.0)
-        self.af_backfire_input.clear()
+        self.af_backfire_input.setSpecialValueText(" "); self.af_backfire_input.setValue(-9999.0)
         self.af_backfire_input.wheelEvent = lambda event: event.ignore()
         self._setup_splitter()
 
-        # self.af_backfire_input.valueChanged.connect(lambda v: self._mark_modified())
+        # Backfire delay explicitly isolated from the dirty/modified flag
         self.af_mass_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_cg_input.valueChanged.connect(lambda v: self._mark_modified())
         self.af_len_input.valueChanged.connect(lambda v: self._mark_modified())

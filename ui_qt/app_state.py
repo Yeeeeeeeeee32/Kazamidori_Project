@@ -377,7 +377,7 @@ class AppState(QObject):
         self._parachute_cd     = _f("parachute_cd")      # dimensionless
         self._parachute_area   = _f("parachute_area")    # m²
         self._parachute_lag    = _f("parachute_lag")     # s
-        self._backfire_delay   = _f("backfire_delay")    # s
+        self._backfire_delay   = None                    # s (Operational, initialized blank)
 
         # Launch settings — pre-filled with safe operational defaults so the
         # RUN button interlock does NOT wait for these to be entered.
@@ -1402,17 +1402,19 @@ class AppState(QObject):
             self.parachute_lag_changed.emit(value)
             self._check_readiness()
 
-    @Property(float, notify=backfire_delay_changed)
-    def backfire_delay(self) -> float:
+    @Property(object, notify=backfire_delay_changed)
+    def backfire_delay(self) -> Optional[float]:
         """Ejection charge fires this many seconds after motor burnout (maps to 'backfire_delay')."""
         return self._backfire_delay
 
     @backfire_delay.setter
-    def backfire_delay(self, value: float) -> None:
-        value = float(value)
+    def backfire_delay(self, value: Optional[float]) -> None:
+        if value is not None:
+            value = float(value)
         if self._backfire_delay != value:
             self._backfire_delay = value
-            self.backfire_delay_changed.emit(value)
+            # Fallback to -9999.0 for signals to match UI uninitialized value
+            self.backfire_delay_changed.emit(value if value is not None else -9999.0)
             self._check_readiness()
 
 
