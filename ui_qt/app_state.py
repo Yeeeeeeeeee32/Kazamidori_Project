@@ -82,6 +82,9 @@ class AppState(QObject):
     has_sim_result_changed = Signal(bool)
     phase1_result_changed  = Signal(object)
 
+    # ── 3D Playback ────────────────────────────────────────────────────────────
+    current_playback_index_changed = Signal(int)
+
     # ── External System Status ─────────────────────────────────────────────────
     koinobori_status_changed    = Signal(str)
     gpv_last_fetch_time_changed = Signal(str)
@@ -242,6 +245,8 @@ class AppState(QObject):
         self._launch_lat = _ff("launch_lat")    # decimal degrees
         self._launch_lon = _ff("launch_lon")    # decimal degrees
         self._magnetic_declination = 0.0
+
+        self._current_playback_index = 0
 
         # Rocket / flight parameters
         self._mass           = _ff("mass")           # kg   (legacy scalar; geometry detail below)
@@ -765,6 +770,17 @@ class AppState(QObject):
         if self._has_sim_result != value:
             self._has_sim_result = value
             self.has_sim_result_changed.emit(value)
+
+    @Property(int, notify=current_playback_index_changed)
+    def current_playback_index(self) -> int:
+        return self._current_playback_index
+
+    @current_playback_index.setter
+    def current_playback_index(self, value: int) -> None:
+        value = int(value)
+        if self._current_playback_index != value:
+            self._current_playback_index = value
+            self.current_playback_index_changed.emit(value)
 
     @Property(object, notify=phase1_result_changed)
     def phase1_result(self) -> Optional[dict]:
