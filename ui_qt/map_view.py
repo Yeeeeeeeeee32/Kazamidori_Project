@@ -234,13 +234,7 @@ class MapView(QWidget):
             all_x.append(impact_x)
             all_y.append(impact_y)
 
-            # Impact Scatter
-            if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
-                sx = scatter_x[:500]
-                sy = scatter_y[:500]
-                self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)
-                all_x.extend(sx)
-                all_y.extend(sy)
+
 
             # R90 Circle
             if r90 > 0:
@@ -283,6 +277,40 @@ class MapView(QWidget):
                         self.ax.add_patch(poly)
                         all_x.extend([p[0] for p in points])
                         all_y.extend([p[1] for p in points])
+
+            # Impact Scatter (Filtered by KDE contours)
+            if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
+                import numpy as np
+                from matplotlib.path import Path
+
+                sx_filtered = scatter_x
+                sy_filtered = scatter_y
+
+                # Check if we have KDE contours to filter by
+                if contours and getattr(self._state, 'show_kde', True):
+                    outer_contour = contours[0]
+                    if isinstance(outer_contour, dict) and 'points_m' in outer_contour:
+                        outer_points = outer_contour['points_m']
+                    else:
+                        outer_points = outer_contour
+
+                    if outer_points and len(outer_points) > 2:
+                        path = Path(outer_points)
+                        pts = np.column_stack((scatter_x, scatter_y))
+                        mask = path.contains_points(pts)
+                        # We want points OUTSIDE the outermost contour
+                        outside_mask = ~mask
+
+                        sx_filtered = np.array(scatter_x)[outside_mask].tolist()
+                        sy_filtered = np.array(scatter_y)[outside_mask].tolist()
+
+                sx = sx_filtered[:500]
+                sy = sy_filtered[:500]
+
+                if len(sx) > 0:
+                    self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)
+                    all_x.extend(sx)
+                    all_y.extend(sy)
 
             # Legend
             handles, labels = self.ax.get_legend_handles_labels()
