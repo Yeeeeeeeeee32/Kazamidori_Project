@@ -946,11 +946,11 @@ class _MplCanvas(FigureCanvasQTAgg):
 class _AzimCanvas(FigureCanvasQTAgg):
     """3-D profile canvas: mouse-wheel adjusts the linked azimuth QSlider (±3° per notch) or scrubs animation."""
 
-    def __init__(self, fig: Figure, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, fig: Figure, app_state: 'AppState', parent: Optional[QWidget] = None) -> None:
         FigureCanvasQTAgg.__init__(self, fig)
         if parent is not None:
             self.setParent(parent)
-        self._current_time_idx = 0
+        self.app_state = app_state
         self._marker_artist = None
         self._traj_x = None
         self._traj_y = None
@@ -958,23 +958,23 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_t = None
         self._time_label = None
 
-    def wheelEvent(self, event) -> None:
-        from PySide6.QtCore import Qt
-        if event.modifiers() & Qt.ShiftModifier:
-            if self._traj_t is not None and len(self._traj_t) > 0:
-                delta = event.angleDelta().y()
-                step = SCROLL_STEP if delta > 0 else -SCROLL_STEP
-                self._current_time_idx = max(0, min(len(self._traj_t) - 1, self._current_time_idx + step))
-                self._update_marker()
-                event.accept()
-                return
+        self.mpl_connect('scroll_event', self._on_scroll)
 
+    def _on_scroll(self, event) -> None:
+        if event.key == 'shift':
+            if self._traj_t is not None and len(self._traj_t) > 0:
+                step = SCROLL_STEP if event.step > 0 else -SCROLL_STEP
+
+                new_idx = max(0, min(len(self._traj_t) - 1, self.app_state.current_playback_index + step))
+                self.app_state.current_playback_index = new_idx
+                self._update_marker()
+            return
+
+        # If shift is not held, let's update the azimuth
         sl = getattr(self, '_azim_slider', None)
         if sl is not None:
-            delta = event.angleDelta().y()
-            step = AZIMUTH_STEP if delta > 0 else -AZIMUTH_STEP
+            step = AZIMUTH_STEP if event.step > 0 else -AZIMUTH_STEP
             sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
-        event.accept()
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
         """Set the trajectory arrays and reset the time index.
@@ -990,7 +990,7 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_y = y
         self._traj_z = z
         self._traj_t = t
-        self._current_time_idx = 0
+        self.app_state.current_playback_index = 0
 
         if self._marker_artist:
             try:
@@ -1003,8 +1003,9 @@ class _AzimCanvas(FigureCanvasQTAgg):
             except:
                 pass
 
-        # Draw the marker point
-        self._marker_artist = ax.scatter([x[0]], [y[0]], [z[0]], color='red', s=MARKER_SIZE, zorder=10)
+        # Draw the marker point using plot for faster rendering on update
+        self._marker_artist, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='yellow', zorder=100)
+
         # Use text2D on the axis to place it at the top-left
         self._time_label = ax.text2D(0.05, 0.95, f"T+ {t[0]:.1f}s | Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
         self.draw_idle()
@@ -1012,8 +1013,9 @@ class _AzimCanvas(FigureCanvasQTAgg):
     def _update_marker(self) -> None:
         """Update the position of the 3D marker and the time label based on current index."""
         if self._marker_artist and self._traj_x is not None:
-            idx = self._current_time_idx
-            self._marker_artist._offsets3d = ([self._traj_x[idx]], [self._traj_y[idx]], [self._traj_z[idx]])
+            idx = self.app_state.current_playback_index
+            self._marker_artist.set_data([self._traj_x[idx]], [self._traj_y[idx]])
+            self._marker_artist.set_3d_properties([self._traj_z[idx]])
             if self._time_label:
                 self._time_label.set_text(f"T+ {self._traj_t[idx]:.1f}s | Alt: {self._traj_z[idx]:.1f}m")
             self.draw_idle()
@@ -1281,8 +1283,13 @@ class AppWindow(QMainWindow):
     def _build_figures(self) -> None:
         self.profile_fig    = Figure(figsize=(5, 5), facecolor="#1e1e2e")
         self.profile_ax     = self.profile_fig.add_subplot(111, projection="3d")
-        self.profile_ax.view_init(elev=25, azim=DEFAULT_AZIMUTH)
-        self.profile_canvas = _AzimCanvas(self.profile_fig)
+        self.profile_canvas = _AzimCanvas(self.profile_fig, self.state)
+        # Disable the default Matplotlib click-drag rotation; azimuth is
+        # controlled exclusively by the QSlider + wheel event below.
+        try:
+            self.profile_ax.disable_mouse_rotation()
+        except AttributeError:
+            pass
 
         self.map_view = MapView(self.state, self)
 
