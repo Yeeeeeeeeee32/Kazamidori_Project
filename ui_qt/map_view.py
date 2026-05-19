@@ -36,6 +36,8 @@ class MapView(QWidget):
         super().__init__(parent)
         self._state = app_state
         print(f"=== MapView.__init__ === Received State: id={id(self._state)}")
+        self._current_all_x = []
+        self._current_all_y = []
         self._build_ui()
 
         # Map interaction state
@@ -292,33 +294,41 @@ class MapView(QWidget):
                 legend.set_zorder(20)
 
             # Explicit Manual Auto-Scaling
-            if all_x and all_y:
-                min_x, max_x = min(all_x), max(all_x)
-                min_y, max_y = min(all_y), max(all_y)
-
-                # Avoid singular bounds
-                if max_x == min_x:
-                    max_x += 100
-                    min_x -= 100
-                if max_y == min_y:
-                    max_y += 100
-                    min_y -= 100
-
-                dx = max_x - min_x
-                dy = max_y - min_y
-
-                # 15% margin
-                margin_x = dx * 0.15
-                margin_y = dy * 0.15
-
-                self.ax.set_xlim(min_x - margin_x, max_x + margin_x)
-                self.ax.set_ylim(min_y - margin_y, max_y + margin_y)
+            self._current_all_x = all_x
+            self._current_all_y = all_y
+            self._calculate_and_apply_bounds(self._current_all_x, self._current_all_y)
 
             self.figure.tight_layout()
             self.canvas.draw()
             print("=== MAP RENDER SUCCESSFULLY COMPLETED ===")
         except Exception as e:
             print(f"=== MAP RENDER ERROR ===\n{traceback.format_exc()}")
+
+
+    def _calculate_and_apply_bounds(self, all_x, all_y):
+        if not all_x or not all_y:
+            return
+
+        min_x, max_x = min(all_x), max(all_x)
+        min_y, max_y = min(all_y), max(all_y)
+
+        # Avoid singular bounds
+        if max_x == min_x:
+            max_x += 100
+            min_x -= 100
+        if max_y == min_y:
+            max_y += 100
+            min_y -= 100
+
+        dx = max_x - min_x
+        dy = max_y - min_y
+
+        # 10% margin
+        margin_x = dx * 0.10
+        margin_y = dy * 0.10
+
+        self.ax.set_xlim(min_x - margin_x, max_x + margin_x)
+        self.ax.set_ylim(min_y - margin_y, max_y + margin_y)
 
     def _on_button_press(self, event):
         if event.inaxes != self.ax: return
@@ -426,6 +436,9 @@ class MapView(QWidget):
             print(f"Error rendering offline map tiles: {e}")
 
     def _on_reset_view(self):
-        # Reset the view to autoscale based on all data
-        self.ax.autoscale()
+        # Reset the view to the dynamic bounds
+        if getattr(self, '_current_all_x', None) and getattr(self, '_current_all_y', None):
+            self._calculate_and_apply_bounds(self._current_all_x, self._current_all_y)
+        else:
+            self.ax.autoscale()
         self.canvas.draw()
