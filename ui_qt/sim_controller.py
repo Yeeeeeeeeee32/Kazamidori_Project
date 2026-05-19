@@ -567,6 +567,60 @@ class SimController(QObject):
     def _on_progress(self, value: int) -> None:
         self._window.set_progress(value)
 
+    def populate_results(self, nominal_data: dict, mc_data: dict) -> None:
+        """Populates the Simulation Results panel in AppWindow based on mode."""
+        w = self._window
+        w._results_grp.setVisible(True)
+
+        mode = self._state.flight_mode
+        is_free = "free" in mode.lower() or "自由" in mode
+
+        def set_val(lbl, val, fmt, suffix=""):
+            if val is not None:
+                lbl.setText(f"{val:{fmt}}{suffix}")
+            else:
+                lbl.setText("-")
+
+        if is_free:
+            set_val(w.lbl_res_apogee, nominal_data.get("apogee_m"), ".1f")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
+            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f")
+
+            set_val(w.lbl_res_mc_avg_apo, mc_data.get("mc_avg_apogee"), ".1f")
+            set_val(w.lbl_res_mc_min_apo, mc_data.get("mc_min_apogee"), ".1f")
+            set_val(w.lbl_res_mc_avg_hdist, mc_data.get("mc_avg_hdist"), ".1f")
+            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist"), ".1f")
+
+        elif mode == "定点滞空":
+            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f")
+            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f")
+            set_val(w.lbl_res_score, nominal_data.get("score", mc_data.get("score")), ".2f")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
+            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f")
+
+            set_val(w.lbl_res_mc_avg_score, mc_data.get("mc_avg_score"), ".2f")
+            set_val(w.lbl_res_mc_min_score, mc_data.get("mc_min_score"), ".2f")
+
+        elif mode == "高度":
+            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f")
+            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f")
+            set_val(w.lbl_res_apogee, nominal_data.get("apogee_m"), ".1f")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
+
+            set_val(w.lbl_res_mc_avg_apo, mc_data.get("mc_avg_apogee"), ".1f")
+            set_val(w.lbl_res_mc_min_apo, mc_data.get("mc_min_apogee"), ".1f")
+            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist"), ".1f")
+
+        elif mode == "有翼":
+            set_val(w.lbl_res_angle, nominal_data.get("elev", mc_data.get("elev")), ".1f")
+            set_val(w.lbl_res_azimuth, nominal_data.get("azi", mc_data.get("azi")), ".1f")
+            set_val(w.lbl_res_hang, nominal_data.get("hang_time"), ".1f")
+            set_val(w.lbl_res_hdist, nominal_data.get("horizontal_distance_m"), ".1f")
+
+            set_val(w.lbl_res_mc_avg_hang, mc_data.get("mc_avg_hang_time", mc_data.get("mc_avg_hang")), ".1f")
+            set_val(w.lbl_res_mc_min_hang, mc_data.get("mc_min_hang_time", mc_data.get("mc_min_hang")), ".1f")
+            set_val(w.lbl_res_mc_max_hdist, mc_data.get("mc_max_hdist"), ".1f")
+
     @Slot(dict)
     def _on_nominal_done(self, payload: dict) -> None:
         """Invoked on the GUI thread when the nominal single run completes.
@@ -596,6 +650,9 @@ class SimController(QObject):
         # nominal_needs_redraw; the latter triggers update_profile_plot.
         self._state.nominal_result = payload
         self._nominal_payload      = payload
+
+        # Update the UI with nominal data, leaving MC data as None (displays "-")
+        self.populate_results(payload, {})
 
         # Early warning: update GO/NO-GO indicator immediately after nominal run,
         # before the MC loop starts, so the operator never waits blindly.
@@ -689,18 +746,8 @@ class SimController(QObject):
             self._state.cached_mc_scatter = np.array(_scatter, dtype=float)
         self._state.kde_contours   = result.get("kde_contours", [])
 
-        # Update Results Panel if not Free mode
-        if not self._state.is_free_mode and "score" in result:
-            w = self._window
-            w.lbl_res_angle.setText(f"{result.get('elev', 0.0):.1f}° / {result.get('azi', 0.0):.1f}°")
-            w.lbl_res_best.setText(f"{result.get('score', 0.0):.2f}")
-            w.lbl_res_avg.setText(f"{result.get('mc_avg_score', 0.0):.2f}")
-            w.lbl_res_min.setText(f"{result.get('mc_min_score', 0.0):.2f}")
-            w.lbl_res_alt.setText(f"{result.get('mc_avg_alt', 0.0):.1f} m")
-            w.lbl_res_hang.setText(f"{result.get('mc_avg_hang_time', 0.0):.1f} s")
-            w._results_grp.setVisible(True)
-        else:
-            self._window._results_grp.setVisible(False)
+        # Update Results Panel using the new dynamic method
+        self.populate_results(self._nominal_payload or {}, result)
 
         # ── Refresh AppWindow coordinate labels ────────────────────────────────
         self._window.map_widget.update_landing(land_lat, land_lon)
@@ -1007,7 +1054,12 @@ class SimController(QObject):
             )
             sig = getattr(s, f"{prop}_changed", None)
             if sig is not None:
-                sig.connect(lambda v, _sb=sb, _g=from_si: _sb.setValue(_g(v)))
+                def update_sb(v, _sb=sb, _g=from_si):
+                    if v is None:
+                        _sb.clear()
+                    else:
+                        _sb.setValue(_g(v))
+                sig.connect(update_sb)
 
         # af_radius_input shows body radius (m); AppState stores full diameter (m)
         _bind("af_mass_input",     "rocket_dry_mass", lambda v: float(v),      lambda v: float(v))
@@ -1152,7 +1204,6 @@ class SimController(QObject):
 
         s   = self._state
         af  = cfg["airframe"]
-        par = cfg["parachute"]
         moi = cfg["moi"]
 
         # ── Airframe geometry → AppState ───────────────────────────────────────
@@ -1176,11 +1227,6 @@ class SimController(QObject):
         s.motor_cg        = af["motor_pos"]
         s.motor_dry_mass  = af["motor_dry_mass"]
         s.backfire_delay  = af["backfire_delay"]
-
-        # ── Parachute → AppState ───────────────────────────────────────────────
-        s.parachute_cd   = par["cd"]
-        s.parachute_area = par["area"]
-        s.parachute_lag  = par["lag"]
 
         # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
         s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
@@ -1402,7 +1448,7 @@ class SimController(QObject):
 
     @Slot(float, float)
     def _on_map_coordinates_picked(self, lat: float, lon: float) -> None:
-        """Handle 'Ctrl + Click' on the 2D Folium Map View."""
+        """Handle 'Shift + Drag' launch site relocation from the Map View."""
         import math
 
         def get_distance(lat1, lon1, lat2, lon2):
