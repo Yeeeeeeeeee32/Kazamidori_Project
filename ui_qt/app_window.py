@@ -46,7 +46,7 @@ from ui_qt.map_view import MapView
 
 
 # ── Constants ───────────────────────────────────────────────────────────────
-DEFAULT_AZIMUTH: int = 45
+DEFAULT_AZIMUTH: int = -90
 AZIMUTH_STEP: int = 3
 MARKER_SIZE: int = 50
 SCROLL_STEP: int = 5
@@ -1282,13 +1282,8 @@ class AppWindow(QMainWindow):
     def _build_figures(self) -> None:
         self.profile_fig    = Figure(figsize=(5, 5), facecolor="#1e1e2e")
         self.profile_ax     = self.profile_fig.add_subplot(111, projection="3d")
+        self.profile_ax.view_init(elev=25, azim=DEFAULT_AZIMUTH)
         self.profile_canvas = _AzimCanvas(self.profile_fig)
-        # Disable the default Matplotlib click-drag rotation; azimuth is
-        # controlled exclusively by the QSlider + wheel event below.
-        try:
-            self.profile_ax.disable_mouse_rotation()
-        except AttributeError:
-            pass
 
         self.map_view = MapView(self.state, self)
 
@@ -1509,8 +1504,8 @@ class AppWindow(QMainWindow):
         azim_lbl.setFixedWidth(48)
 
         self._azim_slider = QSlider(Qt.Orientation.Horizontal, azim_row)
-        self._azim_slider.setMinimum(0)
-        self._azim_slider.setMaximum(90)
+        self._azim_slider.setMinimum(-180)
+        self._azim_slider.setMaximum(180)
         self._azim_slider.setValue(DEFAULT_AZIMUTH)
         self._azim_slider.setTickPosition(QSlider.TickPosition.NoTicks)
         self._azim_slider.setStyleSheet(
@@ -2028,7 +2023,7 @@ class AppWindow(QMainWindow):
         ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
         ax.set_zlabel("Alt  (m)",   color="#6c7086", fontsize=8, labelpad=4)
         azim = getattr(self, '_azim_slider', None)
-        ax.view_init(elev=22, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
+        ax.view_init(elev=25, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
         if res is not None:
             _equalise_3d_axes(ax)
 
@@ -2707,7 +2702,7 @@ class AppWindow(QMainWindow):
 
     def _on_azim_changed(self, value: int) -> None:
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
-        self.profile_ax.view_init(elev=22, azim=value)
+        self.profile_ax.view_init(elev=25, azim=value)
         self.profile_canvas.draw_idle()
 
     def bind_app_state(self, state) -> None:
