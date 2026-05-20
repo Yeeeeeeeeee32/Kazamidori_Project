@@ -606,6 +606,14 @@ class AdvancedSettingsDialog(QDialog):
             | QDialogButtonBox.StandardButton.Cancel,
             Qt.Orientation.Horizontal,
         )
+        btn_ok = btns.button(QDialogButtonBox.StandardButton.Ok)
+        if btn_ok:
+            btn_ok.setToolTip("Save advanced settings")
+        btn_cancel = btns.button(QDialogButtonBox.StandardButton.Cancel)
+        if btn_cancel:
+            btn_cancel.setToolTip("Discard changes (Esc)")
+            btn_cancel.setShortcut("Esc")
+
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self._on_cancel)
 
@@ -924,6 +932,10 @@ class ManualSetupDialog(QDialog):
 
         # ── Close ─────────────────────────────────────────────────────────────
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btn_close = btns.button(QDialogButtonBox.StandardButton.Close)
+        if btn_close:
+            btn_close.setToolTip("Close dialog (Esc)")
+            btn_close.setShortcut("Esc")
         btns.rejected.connect(self.reject)
 
         root.addWidget(sa, stretch=1)
@@ -1700,7 +1712,7 @@ class AppWindow(QMainWindow):
         btn_rkt.setToolTip("Load an OpenRocket .rkt file")
         btn_rkt.clicked.connect(self.sig_load_rkt_clicked.emit)
 
-        self.rkt_label = QLabel("(no .rkt loaded)", w)
+        self.rkt_label = QLabel("No .rkt file loaded. Click 'Load .rkt File' to begin.", w)
         self.rkt_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.rkt_label.setStyleSheet(
             "color: #f9a86b; font-style: italic; font-size: 8pt; padding: 2px 4px;")
@@ -1714,7 +1726,7 @@ class AppWindow(QMainWindow):
         btn_motor.setToolTip("Load a custom motor thrust curve from a CSV file")
         btn_motor.clicked.connect(self._on_load_motor)
 
-        self.motor_label = QLabel("(no motor loaded)", w)
+        self.motor_label = QLabel("No motor loaded. Click 'Load Thrust Curve' to begin.", w)
         self.motor_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.motor_label.setStyleSheet(
             "color: #f9a86b; font-style: italic; font-size: 8pt; padding: 2px 4px;")
