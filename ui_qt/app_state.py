@@ -101,10 +101,7 @@ class AppState(QObject):
     phase2_active_changed = Signal(bool)
 
     # ── Real-time wind ─────────────────────────────────────────────────────────
-    surf_wind_speed_changed  = Signal(float)
-    surf_wind_dir_changed    = Signal(float)
-    upper_wind_speed_changed = Signal(float)
-    upper_wind_dir_changed   = Signal(float)
+    wind_profile_changed     = Signal(object)
     gust_speed_changed       = Signal(float)
 
     # ── Wind history ───────────────────────────────────────────────────────────
@@ -285,10 +282,10 @@ class AppState(QObject):
         self._show_apogee  = True
 
         # Real-time wind
-        self._surf_wind_speed  = 0.0
-        self._surf_wind_dir    = 0.0
-        self._upper_wind_speed = 0.0
-        self._upper_wind_dir   = 0.0
+        self._wind_profile = [
+            {"alt_m": 0.0, "speed_ms": 4.0, "dir_deg": 100.0},
+            {"alt_m": 500.0, "speed_ms": 8.0, "dir_deg": 90.0}
+        ]
         self._gust_speed       = 0.0
 
         # Unified simulation result (full worker payload dict)
@@ -871,49 +868,18 @@ class AppState(QObject):
 
     # ── Real-time wind ─────────────────────────────────────────────────────────
 
-    @Property(float, notify=surf_wind_speed_changed)
-    def surf_wind_speed(self) -> float:
-        return self._surf_wind_speed
 
-    @surf_wind_speed.setter
-    def surf_wind_speed(self, value: float) -> None:
-        value = float(value)
-        if self._surf_wind_speed != value:
-            self._surf_wind_speed = value
-            self.surf_wind_speed_changed.emit(value)
 
-    @Property(float, notify=surf_wind_dir_changed)
-    def surf_wind_dir(self) -> float:
-        return self._surf_wind_dir
 
-    @surf_wind_dir.setter
-    def surf_wind_dir(self, value: float) -> None:
-        value = float(value)
-        if self._surf_wind_dir != value:
-            self._surf_wind_dir = value
-            self.surf_wind_dir_changed.emit(value)
 
-    @Property(float, notify=upper_wind_speed_changed)
-    def upper_wind_speed(self) -> float:
-        return self._upper_wind_speed
+    @Property(object, notify=wind_profile_changed)
+    def wind_profile(self) -> list:
+        return self._wind_profile
 
-    @upper_wind_speed.setter
-    def upper_wind_speed(self, value: float) -> None:
-        value = float(value)
-        if self._upper_wind_speed != value:
-            self._upper_wind_speed = value
-            self.upper_wind_speed_changed.emit(value)
-
-    @Property(float, notify=upper_wind_dir_changed)
-    def upper_wind_dir(self) -> float:
-        return self._upper_wind_dir
-
-    @upper_wind_dir.setter
-    def upper_wind_dir(self, value: float) -> None:
-        value = float(value)
-        if self._upper_wind_dir != value:
-            self._upper_wind_dir = value
-            self.upper_wind_dir_changed.emit(value)
+    @wind_profile.setter
+    def wind_profile(self, value: list) -> None:
+        self._wind_profile = value
+        self.wind_profile_changed.emit(value)
 
     @Property(float, notify=gust_speed_changed)
     def gust_speed(self) -> float:
@@ -976,8 +942,7 @@ class AppState(QObject):
         self._wind_zoh[_SURFACE_ALT] = sample     # ZOH: persist last valid reading
         self.wind_history_updated.emit(self._wind_history)
         self.wind_updated.emit()          # lightweight ping for simple observers
-        self.surf_wind_speed = float(speed)
-        self.surf_wind_dir   = float(direction)
+
 
     def append_wind_nodes(self, nodes: list) -> None:
         """Append a full 5-altitude wind snapshot to the history.
