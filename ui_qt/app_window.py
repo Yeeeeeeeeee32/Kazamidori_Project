@@ -1004,7 +1004,7 @@ class AppWindow(QMainWindow):
         tb.addWidget(btn_stop)
         _vline()
 
-        self.btn_download_map = QPushButton("Download Map", tb)
+        self.btn_download_map = QPushButton("🗺️ Download Map", tb)
         self.btn_download_map.setObjectName("btn_download_map")
         self.btn_download_map.setToolTip("Download offline map tiles for current location")
         tb.addWidget(self.btn_download_map)
@@ -1145,6 +1145,7 @@ class AppWindow(QMainWindow):
 
         azim_lay.addWidget(azim_lbl)
         reset_btn = QPushButton("Reset True North", azim_row)
+        reset_btn.setToolTip("Reset the 3D map view to point North (Azimuth -90°)")
         reset_btn.setStyleSheet("padding: 2px 6px; font-size: 7pt;")
         reset_btn.clicked.connect(lambda: self._azim_slider.setValue(-90))
 
@@ -1321,9 +1322,11 @@ class AppWindow(QMainWindow):
         hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.wind_profile_table.itemChanged.connect(self._on_wind_table_changed)
 
-        btn_add_row = QPushButton("Add Row")
+        btn_add_row = QPushButton("➕ Add Row")
+        btn_add_row.setToolTip("Add a new altitude node to the wind profile")
         btn_add_row.clicked.connect(self._add_wind_row)
-        btn_del_row = QPushButton("Delete Row")
+        btn_del_row = QPushButton("➖ Delete Row")
+        btn_del_row.setToolTip("Remove the selected altitude node from the wind profile")
         btn_del_row.clicked.connect(self._delete_wind_row)
 
         row_btns = QHBoxLayout()
