@@ -1541,8 +1541,13 @@ class AppWindow(QMainWindow):
             lambda v: self._azim_val_lbl.setText(f"{v}°"))
 
         azim_lay.addWidget(azim_lbl)
+        reset_btn = QPushButton("Reset True North", azim_row)
+        reset_btn.setStyleSheet("padding: 2px 6px; font-size: 7pt;")
+        reset_btn.clicked.connect(lambda: self._azim_slider.setValue(-90))
+
         azim_lay.addWidget(self._azim_slider)
         azim_lay.addWidget(self._azim_val_lbl)
+        azim_lay.addWidget(reset_btn)
         lay.addWidget(azim_row)
 
         self.profile_canvas._azim_slider = self._azim_slider
@@ -2100,8 +2105,6 @@ class AppWindow(QMainWindow):
         ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.05), fontsize=7,
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.85, markerscale=1.5)
-        mode_str = getattr(self.state, "flight_mode", "Free")
-        ax.set_title(f"3D Flight Profile  |  Mode: {mode_str}", color="#a6adc8", fontsize=9, pad=6)
 
     def _draw_real_result(self, ax, res: dict) -> None:
         s = self.state
@@ -2113,6 +2116,12 @@ class AppWindow(QMainWindow):
 
         apex_z = float(res.get("apogee_m",
                                float(tz.max()) if len(tz) > 0 else 0.0))
+
+        if apex_z > 0:
+            ax.set_zlim3d(0, apex_z * 1.15)
+        else:
+            ax.set_zlim3d(0, 10)
+
         phases = res.get("phases")
         events = res.get("events")
 
@@ -2728,17 +2737,6 @@ class AppWindow(QMainWindow):
 
     def update_ellipse_layer(self, ellipse_data: dict | None) -> None:
         if self.state.simulation_result is not None:
-            s = self.state
-            _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
-            _spd  = getattr(s, "surf_wind_speed", getattr(s, "wind_speed", 0.0))
-            _dir  = getattr(s, "surf_wind_dir",   getattr(s, "wind_dir",   0.0))
-            _cep  = getattr(s, "landing_prob",    getattr(s, "cep_prob",   90))
-            self.profile_ax.set_title(
-                f"Mode: {_mode}   ·   "
-                f"Wind: {_spd:.1f} m/s @ {_dir:.0f}°   ·   "
-                f"CEP: {_cep} %",
-                color="#a6adc8", fontsize=9, pad=8,
-            )
             self.profile_canvas.draw_idle()
 
     def refresh_visuals(self) -> None:
