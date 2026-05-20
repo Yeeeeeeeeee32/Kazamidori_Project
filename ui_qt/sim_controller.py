@@ -294,15 +294,15 @@ class SimController(QObject):
             s._nose_length, s._fin_root_chord, s._fin_tip_chord, s._fin_span,
             s._fin_position, s._motor_cg, s._motor_dry_mass
         )):
-            missing.append("Rocket Geometry (Load Rocket JSON or .rkt)")
+            missing.append("Rocket Geometry (All fields in Airframe tab must be filled manually or loaded via JSON)")
 
         # Parachute Parameters
         if any(v is None for v in (s._parachute_cd, s._parachute_area, s._parachute_lag)):
-            missing.append("Parachute Parameters (Load Rocket JSON or Parachute JSON)")
+            missing.append("Parachute Parameters (All fields must be filled manually or loaded via JSON)")
 
         # Backfire Delay
         if s._backfire_delay is None:
-            missing.append("Backfire Delay")
+            missing.append("Backfire Delay (Must be filled manually)")
 
         print("=== COORDINATE FORENSICS ===")
         print(f"1. UI SpinBox LAT: {self._window.lat_input.value()} (Type: {type(self._window.lat_input.value())})")
@@ -339,7 +339,8 @@ class SimController(QObject):
             missing.append("Motor Thrust Curve (.csv)")
 
         if missing:
-            QMessageBox.warning(
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(
                 self._window,
                 "Missing Parameters",
                 "Cannot start simulation. Please provide the following missing data:\n  • " + "\n  • ".join(missing),
@@ -1047,19 +1048,41 @@ class SimController(QObject):
             sb = getattr(w, sb_name, None)
             if sb is None:
                 return
-            # Sentinel -9999.0 means the field is blank; do not push to AppState.
-            sb.valueChanged.connect(
-                lambda v, _p=prop, _f=to_si:
-                    None if v == -9999.0 else setattr(s, _p, _f(v))
-            )
-            sig = getattr(s, f"{prop}_changed", None)
-            if sig is not None:
-                def update_sb(v, _sb=sb, _g=from_si):
-                    if v is None:
-                        _sb.clear()
+
+            from PySide6.QtWidgets import QLineEdit, QDoubleSpinBox
+            if isinstance(sb, QLineEdit):
+                # Text input handling
+                def safe_set(v, _p=prop, _f=to_si):
+                    if v.strip() == "":
+                        setattr(s, _p, None)
                     else:
-                        _sb.setValue(_g(v))
-                sig.connect(update_sb)
+                        try:
+                            setattr(s, _p, _f(float(v)))
+                        except ValueError:
+                            pass
+                sb.textChanged.connect(safe_set)
+                sig = getattr(s, f"{prop}_changed", None)
+                if sig is not None:
+                    def update_sb(v, _sb=sb, _g=from_si):
+                        if v is None:
+                            _sb.setText("")
+                        else:
+                            _sb.setText(str(round(_g(v), 5)))
+                    sig.connect(update_sb)
+            else:
+                # Sentinel -9999.0 means the field is blank; do not push to AppState.
+                sb.valueChanged.connect(
+                    lambda v, _p=prop, _f=to_si:
+                        None if v == -9999.0 else setattr(s, _p, _f(v))
+                )
+                sig = getattr(s, f"{prop}_changed", None)
+                if sig is not None:
+                    def update_sb(v, _sb=sb, _g=from_si):
+                        if v is None:
+                            _sb.clear()
+                        else:
+                            _sb.setValue(_g(v))
+                    sig.connect(update_sb)
 
         # af_radius_input shows body radius (m); AppState stores full diameter (m)
         _bind("af_mass_input",     "rocket_dry_mass", lambda v: float(v),      lambda v: float(v))

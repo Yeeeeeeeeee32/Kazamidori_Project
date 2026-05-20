@@ -30,7 +30,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from PySide6.QtCore import Qt, QSize, QObject, Signal, Slot, QTimer
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import (    QLineEdit,
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox,
@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractButton,
 )
-from PySide6.QtGui import QAction, QColor
+from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
 
 
@@ -860,13 +860,13 @@ class ManualSetupDialog(QDialog):
         frm.setContentsMargins(2, 4, 2, 2)
 
         def _dsb(hi, dec, step, suffix):
-            sb = QDoubleSpinBox()
-            sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
-            sb.setRange(-9999.0, hi)
-            sb.setSpecialValueText("")
-            sb.setValue(-9999.0)
-            sb.wheelEvent = lambda event: event.ignore()
-            return sb
+            le = QLineEdit()
+            validator = QDoubleValidator(0.001, 1000.0, dec, le)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            le.setValidator(validator)
+            le.setPlaceholderText("入力必須")
+            le.setText("")
+            return le
 
         self.af_mass_input      = _dsb(50.0, 4, 0.001, " kg")
         self.af_cg_input        = _dsb( 5.0, 3, 0.001, " m")
@@ -1245,38 +1245,39 @@ class AppWindow(QMainWindow):
         self.af_motorpos_input  = self._manual_dialog.af_motorpos_input
         self.af_motormass_input = self._manual_dialog.af_motormass_input
         # Create backfire delay input directly on the main window
-        self.af_backfire_input  = QDoubleSpinBox(self)
-        self.af_backfire_input.setDecimals(2); self.af_backfire_input.setSingleStep(0.1)
-        self.af_backfire_input.setSuffix(" s"); self.af_backfire_input.setRange(-9999.0, 10.0)
-        self.af_backfire_input.setSpecialValueText(" "); self.af_backfire_input.setValue(-9999.0)
-        self.af_backfire_input.wheelEvent = lambda event: event.ignore()
+        self.af_backfire_input  = QLineEdit(self)
+        validator = QDoubleValidator(0.0, 10.0, 2, self.af_backfire_input)
+        validator.setNotation(QDoubleValidator.StandardNotation)
+        self.af_backfire_input.setValidator(validator)
+        self.af_backfire_input.setPlaceholderText("入力必須")
+        self.af_backfire_input.setText("")
         self._setup_splitter()
 
         # Backfire delay explicitly isolated from the dirty/modified flag
-        self.af_mass_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_cg_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_len_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_radius_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_nose_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_finroot_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_fintip_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_finspan_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_finpos_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_motorpos_input.valueChanged.connect(lambda v: self._mark_modified())
-        self.af_motormass_input.valueChanged.connect(lambda v: self._mark_modified())
+        self.af_mass_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_cg_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_len_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_radius_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_nose_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_finroot_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_fintip_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_finspan_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_finpos_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_motorpos_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_motormass_input.textChanged.connect(lambda v: self._mark_modified())
 
         # Phase 2 Tracker evaluation hooks
-        self.af_mass_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_cg_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_len_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_radius_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_nose_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_finroot_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_fintip_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_finspan_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_finpos_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_motorpos_input.valueChanged.connect(self._evaluate_config_deltas)
-        self.af_motormass_input.valueChanged.connect(self._evaluate_config_deltas)
+        self.af_mass_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_cg_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_len_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_radius_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_nose_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_finroot_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_fintip_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_finspan_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_finpos_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_motorpos_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_motormass_input.textChanged.connect(self._evaluate_config_deltas)
 
         self._bind_state()
 
@@ -1768,13 +1769,13 @@ class AppWindow(QMainWindow):
         frm_para.setContentsMargins(2, 4, 2, 2)
 
         def _psb(hi, dec, step, suffix):
-            sb = QDoubleSpinBox(grp_para)
-            sb.setDecimals(dec); sb.setSingleStep(step); sb.setSuffix(suffix)
-            sb.setRange(-9999.0, hi)
-            sb.setSpecialValueText("")
-            sb.setValue(-9999.0)
-            sb.wheelEvent = lambda event: event.ignore()
-            return sb
+            le = QLineEdit(grp_para)
+            validator = QDoubleValidator(0.001, 1000.0, dec, le)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            le.setValidator(validator)
+            le.setPlaceholderText("入力必須")
+            le.setText("")
+            return le
 
         self.para_cd_input   = _psb(2.00,  2, 0.01,  "")
         self.para_area_input = _psb(10.0,  4, 0.001, " m²")
@@ -2865,11 +2866,15 @@ class AppWindow(QMainWindow):
             return
 
         def _check_and_style(widget, label, orig_key, scale=1.0):
-            if widget.value() == -9999.0:
+            if widget.text().strip() == "":
                 return
 
             # Allow minor floating point deviations
-            current_val = widget.value()
+            try:
+                current_val = float(widget.text())
+            except ValueError:
+                return
+
             orig_val = orig.get(orig_key)
             if orig_val is None:
                 label.setStyleSheet("color: #ff5555; font-weight: bold;")
@@ -2902,10 +2907,10 @@ class AppWindow(QMainWindow):
         def _set(widget, orig_key, scale=1.0):
             val = orig.get(orig_key)
             if val is not None:
-                widget.setValue(val * scale)
+                widget.setText(str(val * scale))
             else:
                 # Silently fail -> instead reset to special blank value gracefully
-                widget.setValue(-9999.0)
+                widget.setText("")
 
         _set(self.af_mass_input,      "mass")
         _set(self.af_cg_input,        "cg")
