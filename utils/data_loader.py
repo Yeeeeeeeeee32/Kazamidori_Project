@@ -509,7 +509,16 @@ def _parse_rocksim_attached(
                 extracted["para_area_m2"] = area
 
         elif tag in ("Ring", "BodyTubeCoupler", "Coupler"):
-            r_out = _rkt_float(child, "DiaOuter", 0.0) / 2000.0
+            od_elem = child.find("OD")
+            if od_elem is not None and od_elem.text and od_elem.text.strip():
+                try:
+                    od_value = od_elem.text.strip()
+                    r_out = (float(od_value) / 1000.0) / 2.0
+                except ValueError:
+                    r_out = 0.0
+            else:
+                r_out = _rkt_float(child, "DiaOuter", 0.0) / 2000.0
+
             r_inn = _rkt_float(child, "DiaInner", 0.0) / 2000.0
             cg_m  = top_m + len_m / 2.0
             moi   = moi_hollow_cylinder(mass_kg, r_out,
@@ -597,7 +606,17 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
         top_m    = top_mm  / 1000.0
         len_m    = len_mm  / 1000.0
         mass_kg  = _rkt_mass_kg(child)
-        r_out    = _rkt_float(child, "DiaOuter", 0.0) / 2000.0
+
+        od_elem = child.find("OD")
+        if od_elem is not None and od_elem.text and od_elem.text.strip():
+            try:
+                od_value = od_elem.text.strip()
+                r_out = (float(od_value) / 1000.0) / 2.0
+            except ValueError:
+                r_out = 0.0
+        else:
+            r_out = _rkt_float(child, "DiaOuter", 0.0) / 2000.0
+
         r_inn    = _rkt_float(child, "DiaInner", 0.0) / 2000.0
 
         if child.tag == "NoseCone":
