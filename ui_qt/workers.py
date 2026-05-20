@@ -481,38 +481,8 @@ class SimulationWorker(QThread):
     def _build_wind_profiles(
         p: dict,
     ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-        """
-        Construct a smooth vertical wind profile from surface + upper obs.
-
-        Data sources
-        ------------
-        Surface (obs_alt = 3 m):
-            ``surf_spd`` / ``surf_dir`` — measured by the 自作風速計
-            (custom on-site anemometer).  This is the only data point treated
-            as ground truth; it anchors the profile at obs_alt.
-
-        Upper wind (GPV levels, default 500 m AGL):
-            ``up_spd`` / ``up_dir`` — fetched from the upper-wind API
-            (JMA MSM / GPV).  The altitude is configurable via ``upper_alt``.
-
-        The three-zone blending in create_wind_profile (surface ramp →
-        blend zone 0–100 m → pure GPV above 100 m) smoothly connects the
-        two independent data sources into a single continuous profile.
-        """
-        upper_alt: float = float(p.get("upper_alt", 500.0))
-
-        # Upper-wind levels: API-derived GPV data
-        gpv_levels = [
-            (upper_alt, float(p.get("up_spd", 8.0)), float(p.get("up_dir", 90.0))),
-        ]
-        return create_wind_profile(
-            gpv_levels=gpv_levels,
-            # Surface truth from the on-site anemometer (自作風速計)
-            obs_speed=float(p.get("surf_spd",  4.0)),
-            obs_dir=float(p.get("surf_dir",  100.0)),
-            obs_alt=3.0,
-            blend_alt=100.0,
-        )
+        wind_profile = p.get("wind_profile", [])
+        return create_wind_profile(wind_profile)
 
     @staticmethod
     def _build_sim_params(

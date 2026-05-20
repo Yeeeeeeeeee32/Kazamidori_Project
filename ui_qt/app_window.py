@@ -407,418 +407,6 @@ class CdCurvePreviewDialog(QDialog):
 
 # ── Advanced Settings Dialog ──────────────────────────────────────────────────
 
-class AdvancedSettingsDialog(QDialog):
-    """
-    Modal dialog for rarely-changed simulation parameters.
-
-    All input widgets are public attributes so AppWindow can expose them
-    directly on ``self`` for SimController compatibility.  Values are live
-    — they persist between dialog open/close cycles and are read by
-    SimController._collect_params() at run time.
-
-    The OK button simply closes the dialog (values already updated).
-    Cancel restores the snapshot taken when the dialog was last opened.
-    """
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Advanced Settings")
-        self.setMinimumWidth(440)
-        self.setModal(True)
-        self._snapshot: dict = {}
-        # Bi-directional binding to AppState — installed lazily via
-        # ``bind_app_state()`` so the dialog can be constructed before the
-        # global AppState exists.  None means "no binding active yet".
-        self._bound_state = None
-        self._build()
-
-    # ── Construction ──────────────────────────────────────────────────────────
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setSpacing(10)
-        root.setContentsMargins(14, 14, 14, 10)
-
-        # ── Wind group ────────────────────────────────────────────────────────
-        grp_wind = QGroupBox("Wind Parameters")
-        frm = QFormLayout(grp_wind)
-        frm.setSpacing(6)
-        frm.setContentsMargins(10, 12, 10, 8)
-
-        self.surf_spd_input = QDoubleSpinBox()
-        self.surf_spd_input.setRange(0, 50); self.surf_spd_input.setDecimals(1)
-        self.surf_spd_input.setValue(4.0);   self.surf_spd_input.setSuffix(" m/s")
-        self.surf_spd_input.wheelEvent = lambda event: event.ignore()
-
-        self.surf_dir_input = QDoubleSpinBox()
-        self.surf_dir_input.setRange(0, 360); self.surf_dir_input.setDecimals(1)
-        self.surf_dir_input.setValue(100.0);  self.surf_dir_input.setSuffix("°")
-        self.surf_dir_input.setWrapping(True)
-        self.surf_dir_input.wheelEvent = lambda event: event.ignore()
-
-        self.up_spd_input = QDoubleSpinBox()
-        self.up_spd_input.setRange(0, 100); self.up_spd_input.setDecimals(1)
-        self.up_spd_input.setValue(8.0);    self.up_spd_input.setSuffix(" m/s")
-        self.up_spd_input.wheelEvent = lambda event: event.ignore()
-
-        self.up_dir_input = QDoubleSpinBox()
-        self.up_dir_input.setRange(0, 360); self.up_dir_input.setDecimals(1)
-        self.up_dir_input.setValue(90.0);   self.up_dir_input.setSuffix("°")
-        self.up_dir_input.setWrapping(True)
-        self.up_dir_input.wheelEvent = lambda event: event.ignore()
-
-        frm.addRow("Surface Wind Speed (0 m):",   self.surf_spd_input)
-        frm.addRow("Surface Wind From  (0 m):",   self.surf_dir_input)
-        frm.addRow("Upper Wind Speed (500 m):",   self.up_spd_input)
-        frm.addRow("Upper Wind From  (500 m):",   self.up_dir_input)
-
-        # ── Monte Carlo group ─────────────────────────────────────────────────
-        grp_mc = QGroupBox("Monte Carlo / Statistics")
-        frm2 = QFormLayout(grp_mc)
-        frm2.setSpacing(6)
-        frm2.setContentsMargins(10, 12, 10, 8)
-
-        self.cep_prob_input = QSpinBox()
-        self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
-        self.cep_prob_input.setSuffix(" %")
-        self.cep_prob_input.wheelEvent = lambda event: event.ignore()
-
-        self.mc_runs_input = QSpinBox()
-        self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
-        self.mc_runs_input.setSingleStep(50)
-        self.mc_runs_input.wheelEvent = lambda event: event.ignore()
-
-        self.wind_unc_input = QDoubleSpinBox()
-        self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
-        self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
-        self.wind_unc_input.setSuffix("  (±ratio)")
-        self.wind_unc_input.wheelEvent = lambda event: event.ignore()
-
-        self.thrust_unc_input = QDoubleSpinBox()
-        self.thrust_unc_input.setRange(0, 1);  self.thrust_unc_input.setDecimals(2)
-        self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
-        self.thrust_unc_input.setSuffix("  (±ratio)")
-        self.thrust_unc_input.wheelEvent = lambda event: event.ignore()
-
-        frm2.addRow("CEP Probability:",    self.cep_prob_input)
-        frm2.addRow("MC Runs:",            self.mc_runs_input)
-        frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
-        frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
-
-        # ── Aerodynamics & Motor group ────────────────────────────────────────
-        # These four parameters were previously hard-coded inside core/.
-        # Exposing them lets the operator pick the correct drag model for
-        # boost vs coast and the correct propellant chemistry (default = BP).
-        grp_aero = QGroupBox("Aerodynamics & Motor")
-        frm3 = QFormLayout(grp_aero)
-        frm3.setSpacing(6)
-        frm3.setContentsMargins(10, 12, 10, 8)
-
-        self.power_on_cd_input = QDoubleSpinBox()
-        self.power_on_cd_input.setRange(0.0, 2.0)
-        self.power_on_cd_input.setDecimals(3)
-        self.power_on_cd_input.setSingleStep(0.01)
-        self.power_on_cd_input.setValue(0.45)
-        self.power_on_cd_input.wheelEvent = lambda event: event.ignore()
-
-        self.power_off_cd_input = QDoubleSpinBox()
-        self.power_off_cd_input.setRange(0.0, 2.0)
-        self.power_off_cd_input.setDecimals(3)
-        self.power_off_cd_input.setSingleStep(0.01)
-        self.power_off_cd_input.setValue(0.40)
-        self.power_off_cd_input.wheelEvent = lambda event: event.ignore()
-
-        self.motor_isp_input = QDoubleSpinBox()
-        self.motor_isp_input.setRange(40.0, 300.0)
-        self.motor_isp_input.setDecimals(1)
-        self.motor_isp_input.setSingleStep(1.0)
-        self.motor_isp_input.setValue(80.0)
-        self.motor_isp_input.setSuffix(" s")
-        self.motor_isp_input.wheelEvent = lambda event: event.ignore()
-
-        self.motor_propellant_density_input = QDoubleSpinBox()
-        self.motor_propellant_density_input.setRange(500.0, 2500.0)
-        self.motor_propellant_density_input.setDecimals(0)
-        self.motor_propellant_density_input.setSingleStep(10.0)
-        self.motor_propellant_density_input.setValue(1700.0)
-        self.motor_propellant_density_input.setSuffix(" kg/m³")
-        self.motor_propellant_density_input.wheelEvent = lambda event: event.ignore()
-
-        # ── Mach-dependent Cd curve rows (Phase C) ────────────────────────────
-        # Each row groups: [Load CSV] [Clear] [status label].
-        # Status label shows ``Curve Loaded`` (with point count) or
-        # ``Using Static Value`` and is the canonical readout of whether
-        # the curve overrides the scalar Cd above.
-        def _build_curve_row() -> tuple[QPushButton, QPushButton, QPushButton, QLabel, QWidget]:
-            host  = QWidget()
-            row   = QHBoxLayout(host)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            btn_load    = QPushButton("Load Cd Curve…")
-            btn_load.setToolTip("Load a Mach-dependent Cd curve from a CSV file")
-            btn_preview = QPushButton("Preview")
-            btn_preview.setToolTip("Preview the currently loaded Cd curve")
-            btn_clear   = QPushButton("Clear")
-            btn_clear.setToolTip("Clear the loaded Cd curve and fallback to the static scalar value")
-            lbl         = QLabel("Using Static Value")
-            lbl.setStyleSheet("color: #888888;")
-            row.addWidget(btn_load)
-            row.addWidget(btn_preview)
-            row.addWidget(btn_clear)
-            row.addWidget(lbl, 1)
-            return btn_load, btn_preview, btn_clear, lbl, host
-
-        (self.power_on_cd_curve_load_btn,
-         self.power_on_cd_curve_preview_btn,
-         self.power_on_cd_curve_clear_btn,
-         self.power_on_cd_curve_label,
-         _row_on)  = _build_curve_row()
-
-        (self.power_off_cd_curve_load_btn,
-         self.power_off_cd_curve_preview_btn,
-         self.power_off_cd_curve_clear_btn,
-         self.power_off_cd_curve_label,
-         _row_off) = _build_curve_row()
-
-        self.power_on_cd_curve_load_btn.clicked.connect(
-            lambda: self._on_load_cd_curve("power_on"))
-        self.power_on_cd_curve_preview_btn.clicked.connect(
-            lambda: self._on_preview_cd_curve("power_on"))
-        self.power_on_cd_curve_clear_btn.clicked.connect(
-            lambda: self._on_clear_cd_curve("power_on"))
-        self.power_off_cd_curve_load_btn.clicked.connect(
-            lambda: self._on_load_cd_curve("power_off"))
-        self.power_off_cd_curve_preview_btn.clicked.connect(
-            lambda: self._on_preview_cd_curve("power_off"))
-        self.power_off_cd_curve_clear_btn.clicked.connect(
-            lambda: self._on_clear_cd_curve("power_off"))
-
-        frm3.addRow("Power-On  Cd (boost):",  self.power_on_cd_input)
-        frm3.addRow("Power-On  Cd Curve:",    _row_on)
-        frm3.addRow("Power-Off Cd (coast):",  self.power_off_cd_input)
-        frm3.addRow("Power-Off Cd Curve:",    _row_off)
-        frm3.addRow("Motor Isp:",             self.motor_isp_input)
-        frm3.addRow("Propellant Density:",    self.motor_propellant_density_input)
-
-        # ── OK / Cancel ───────────────────────────────────────────────────────
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel,
-            Qt.Orientation.Horizontal,
-        )
-        btn_ok = btns.button(QDialogButtonBox.StandardButton.Ok)
-        if btn_ok:
-            btn_ok.setToolTip("Save advanced settings")
-        btn_cancel = btns.button(QDialogButtonBox.StandardButton.Cancel)
-        if btn_cancel:
-            btn_cancel.setToolTip("Discard changes (Esc)")
-            btn_cancel.setShortcut("Esc")
-
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self._on_cancel)
-
-        root.addWidget(grp_wind)
-        root.addWidget(grp_mc)
-        root.addWidget(grp_aero)
-        root.addWidget(btns)
-
-    # ── Cancel / snapshot helpers ─────────────────────────────────────────────
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self._snapshot = self._take_snapshot()
-
-    def _take_snapshot(self) -> dict:
-        return {
-            "surf_spd":      self.surf_spd_input.value(),
-            "surf_dir":      self.surf_dir_input.value(),
-            "up_spd":        self.up_spd_input.value(),
-            "up_dir":        self.up_dir_input.value(),
-            "cep_prob":      self.cep_prob_input.value(),
-            "mc_runs":       self.mc_runs_input.value(),
-            "wind_unc":      self.wind_unc_input.value(),
-            "thr_unc":       self.thrust_unc_input.value(),
-            "power_on_cd":   self.power_on_cd_input.value(),
-            "power_off_cd":  self.power_off_cd_input.value(),
-            "motor_isp":     self.motor_isp_input.value(),
-            "prop_density":  self.motor_propellant_density_input.value(),
-        }
-
-    def _on_cancel(self) -> None:
-        s = self._snapshot
-        self.surf_spd_input.setValue(s["surf_spd"])
-        self.surf_dir_input.setValue(s["surf_dir"])
-        self.up_spd_input.setValue(s["up_spd"])
-        self.up_dir_input.setValue(s["up_dir"])
-        self.cep_prob_input.setValue(s["cep_prob"])
-        self.mc_runs_input.setValue(s["mc_runs"])
-        self.wind_unc_input.setValue(s["wind_unc"])
-        self.thrust_unc_input.setValue(s["thr_unc"])
-        self.power_on_cd_input.setValue(s["power_on_cd"])
-        self.power_off_cd_input.setValue(s["power_off_cd"])
-        self.motor_isp_input.setValue(s["motor_isp"])
-        self.motor_propellant_density_input.setValue(s["prop_density"])
-        self.reject()
-
-    # ── AppState binding ─────────────────────────────────────────────────────
-
-    def bind_app_state(self, state) -> None:
-        """Establish bi-directional binding between the four advanced inputs
-        and the corresponding AppState properties.
-
-        Direction widget → state: the spinbox's ``valueChanged`` signal writes
-        through to the AppState property setter, which emits its own change
-        signal so other observers (workers, plot views) stay in sync.
-
-        Direction state → widget: the AppState change signal pushes the new
-        value back into the spinbox.  ``QSignalBlocker`` is used during the
-        push to avoid re-emitting ``valueChanged`` and creating a feedback loop.
-
-        Safe to call exactly once with a real ``AppState``; subsequent calls
-        are no-ops.  Idempotent re-binding is intentionally not supported in
-        Phase B (a single AppState lives for the whole session).
-        """
-        if state is None or self._bound_state is state:
-            return
-        self._bound_state = state
-
-        # Seed widgets with the current AppState values so the dialog opens
-        # showing the authoritative state, not the hard-coded spinbox defaults.
-        from PySide6.QtCore import QSignalBlocker
-        for widget, attr in (
-            (self.power_on_cd_input,              "power_on_cd"),
-            (self.power_off_cd_input,             "power_off_cd"),
-            (self.motor_isp_input,                "motor_isp"),
-            (self.motor_propellant_density_input, "motor_propellant_density"),
-        ):
-            with QSignalBlocker(widget):
-                widget.setValue(float(getattr(state, attr)))
-
-        # widget → state
-        self.power_on_cd_input.valueChanged.connect(
-            lambda v: setattr(state, "power_on_cd", float(v)))
-        self.power_off_cd_input.valueChanged.connect(
-            lambda v: setattr(state, "power_off_cd", float(v)))
-        self.motor_isp_input.valueChanged.connect(
-            lambda v: setattr(state, "motor_isp", float(v)))
-        self.motor_propellant_density_input.valueChanged.connect(
-            lambda v: setattr(state, "motor_propellant_density", float(v)))
-
-        # state → widget (guarded with QSignalBlocker to avoid loops)
-        def _push(widget, value):
-            if widget.value() != float(value):
-                with QSignalBlocker(widget):
-                    widget.setValue(float(value))
-
-        state.power_on_cd_changed.connect(
-            lambda v: _push(self.power_on_cd_input, v))
-        state.power_off_cd_changed.connect(
-            lambda v: _push(self.power_off_cd_input, v))
-        state.motor_isp_changed.connect(
-            lambda v: _push(self.motor_isp_input, v))
-        state.motor_propellant_density_changed.connect(
-            lambda v: _push(self.motor_propellant_density_input, v))
-
-        # ── Cd curve labels (Phase C) ────────────────────────────────────────
-        # The Load / Clear buttons mutate AppState directly; the labels are
-        # purely view-side reflections of the curve property.  Connecting
-        # here means the readout updates regardless of who triggered the
-        # change (UI button, programmatic load, deserialised session, …).
-        state.cd_curve_power_on_changed.connect(
-            lambda curve: self._refresh_curve_label(
-                self.power_on_cd_curve_label, curve))
-        state.cd_curve_power_off_changed.connect(
-            lambda curve: self._refresh_curve_label(
-                self.power_off_cd_curve_label, curve))
-        self._refresh_curve_label(
-            self.power_on_cd_curve_label,  state.cd_curve_power_on)
-        self._refresh_curve_label(
-            self.power_off_cd_curve_label, state.cd_curve_power_off)
-
-    # ── Cd curve handlers (Phase C) ──────────────────────────────────────────
-
-    @staticmethod
-    def _refresh_curve_label(label: QLabel, curve) -> None:
-        """Update *label* to reflect whether a Cd curve is currently loaded."""
-        if curve is not None and len(curve) >= 2:
-            label.setText(f"Curve Loaded ({len(curve)} pts)")
-            label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
-        else:
-            label.setText("Using Static Value")
-            label.setStyleSheet("color: #888888;")
-
-    def _on_load_cd_curve(self, which: str) -> None:
-        """Open a file dialog, parse the chosen CSV, and write the result back
-        into AppState's ``cd_curve_power_on`` / ``cd_curve_power_off``.
-
-        ``which`` is ``"power_on"`` or ``"power_off"``.  Errors are surfaced
-        through :class:`QMessageBox` warnings without raising, so a bad file
-        leaves the existing curve (or static-value fallback) untouched.
-        """
-        if self._bound_state is None:
-            QMessageBox.warning(
-                self, "Cd Curve Loader",
-                "AppState is not yet wired to this dialog. "
-                "The Cd curve cannot be stored.")
-            return
-
-        title = ("Load Power-On Cd Curve" if which == "power_on"
-                 else "Load Coast (Power-Off) Cd Curve")
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, title, "", "CSV files (*.csv);;All files (*.*)")
-        if not filepath:
-            return
-
-        try:
-            from utils.data_loader import parse_cd_curve_csv
-            curve = parse_cd_curve_csv(filepath)
-        except (OSError, ValueError) as exc:
-            QMessageBox.warning(
-                self, "Cd Curve Parse Error",
-                f"Failed to load Cd curve from:\n{filepath}\n\n{exc}")
-            return
-
-        attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
-        setattr(self._bound_state, attr, curve)
-
-    def _on_clear_cd_curve(self, which: str) -> None:
-        """Reset the chosen Cd curve to ``None`` so the simulation falls back
-        to the corresponding scalar (``power_on_cd`` / ``power_off_cd``)."""
-        if self._bound_state is None:
-            return
-        attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
-        setattr(self._bound_state, attr, None)
-
-    def _on_preview_cd_curve(self, which: str) -> None:
-        """Pop a Matplotlib preview of the currently-loaded Cd curve.
-
-        Shows an informational message box (rather than an error) when no
-        curve has been loaded — the scalar fallback is the *intended* state,
-        not a misconfiguration.
-        """
-        if self._bound_state is None:
-            QMessageBox.warning(
-                self, "Cd Curve Preview",
-                "AppState is not yet wired to this dialog.")
-            return
-
-        attr  = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
-        curve = getattr(self._bound_state, attr, None)
-
-        if curve is None or len(curve) < 2:
-            QMessageBox.information(
-                self, "Cd Curve Preview",
-                "No curve loaded. Using static scalar value.")
-            return
-
-        title = ("Power-On Cd Curve" if which == "power_on"
-                 else "Coast (Power-Off) Cd Curve")
-        # ``self`` parents the preview dialog so Qt destroys it automatically
-        # if the Advanced Settings dialog is closed while it is still open.
-        preview = CdCurvePreviewDialog(title, list(curve), parent=self)
-        preview.exec()
-
-
 # ── Manual rocket geometry dialog ─────────────────────────────────────────────
 
 class ManualSetupDialog(QDialog):
@@ -1235,21 +823,7 @@ class AppWindow(QMainWindow):
         self._build_tool_bar()
         self._build_status_bar()
 
-        # Create the persistent Advanced Settings dialog and expose its widgets
-        # at window level so SimController._collect_params() can read them without
-        # knowing where they live in the widget hierarchy.
-        self._adv_dialog = AdvancedSettingsDialog(self)
-        self.surf_spd_input     = self._adv_dialog.surf_spd_input
-        self.surf_dir_input     = self._adv_dialog.surf_dir_input
-        self.up_spd_input       = self._adv_dialog.up_spd_input
-        self.up_dir_input       = self._adv_dialog.up_dir_input
-        self.cep_prob_input     = self._adv_dialog.cep_prob_input
-        self.mc_runs_input      = self._adv_dialog.mc_runs_input
-        self.wind_unc_input     = self._adv_dialog.wind_unc_input
-        self.thrust_unc_input   = self._adv_dialog.thrust_unc_input
-        # Aliases used by _bind_state for the local reactive AppState
-        self.wind_speed_input   = self._adv_dialog.surf_spd_input
-        self.wind_dir_input     = self._adv_dialog.surf_dir_input
+
 
         # Create the persistent ManualSetupDialog and expose its airframe spinboxes
         # at window level so SimController._wire_airframe_spinboxes() can find them
@@ -1499,9 +1073,12 @@ class AppWindow(QMainWindow):
         self._top_splitter.addWidget(self._profile_panel)
         self._top_splitter.addWidget(self._map_panel)
 
+        self._adv_panel = self._build_simulation_header()
+
         self._right_splitter = QSplitter(Qt.Orientation.Vertical)
         self._right_splitter.setChildrenCollapsible(False)
         self._right_splitter.setHandleWidth(3)
+        self._right_splitter.addWidget(self._adv_panel)
         self._right_splitter.addWidget(self._top_splitter)
         self._right_splitter.addWidget(self._wind_panel)
 
@@ -1518,7 +1095,7 @@ class AppWindow(QMainWindow):
         # Main: params 300 | right rest
         self._main_splitter.setSizes([300, 1300])
         # Right vertical: top (3D+map) 60% | wind 40%
-        self._right_splitter.setSizes([560, 340])
+        self._right_splitter.setSizes([180, 500, 300])
         # Top horizontal: profile | map equal
         self._top_splitter.setSizes([650, 650])
 
@@ -1615,11 +1192,6 @@ class AppWindow(QMainWindow):
         lay.addWidget(tb, stretch=1)
 
         # ── Advanced Settings button ──────────────────────────────────────────
-        btn_adv = QPushButton("⚙  Advanced Settings…", container)
-        btn_adv.setObjectName("btn_adv_settings")
-        btn_adv.setToolTip("Configure Monte Carlo parameters and simulation limits")
-        btn_adv.clicked.connect(self._on_advanced_settings)
-        lay.addWidget(btn_adv)
 
         # ── Launch Mode (pinned above Run button) ─────────────────────────────
         mode_grp = QGroupBox("Launch Mode", container)
@@ -1722,6 +1294,224 @@ class AppWindow(QMainWindow):
         lay.addWidget(btn_run)
 
         return container
+
+
+    # ── Simulation Header (Wind, Monte Carlo, Aero) ───────────────────────────
+
+    def _build_simulation_header(self) -> QWidget:
+        container = QWidget()
+        # Ensure it doesn't take too much vertical space
+        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+
+        root = QHBoxLayout(container)
+        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 10)
+
+        # ── Wind group ────────────────────────────────────────────────────────
+        grp_wind = QGroupBox("Wind Profile")
+        frm_wind = QVBoxLayout(grp_wind)
+        frm_wind.setSpacing(6)
+        frm_wind.setContentsMargins(10, 12, 10, 8)
+
+        self.wind_profile_table = QTableWidget(0, 3)
+        self.wind_profile_table.setHorizontalHeaderLabels(["Altitude (m)", "Speed (m/s)", "Dir (°)"])
+        self.wind_profile_table.verticalHeader().setVisible(False)
+        self.wind_profile_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        hh = self.wind_profile_table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.wind_profile_table.itemChanged.connect(self._on_wind_table_changed)
+
+        btn_add_row = QPushButton("Add Row")
+        btn_add_row.clicked.connect(self._add_wind_row)
+        btn_del_row = QPushButton("Delete Row")
+        btn_del_row.clicked.connect(self._delete_wind_row)
+
+        row_btns = QHBoxLayout()
+        row_btns.addWidget(btn_add_row)
+        row_btns.addWidget(btn_del_row)
+
+        frm_wind.addWidget(self.wind_profile_table)
+        frm_wind.addLayout(row_btns)
+
+        # ── Monte Carlo group ─────────────────────────────────────────────────
+        grp_mc = QGroupBox("Monte Carlo / Statistics")
+        frm2 = QFormLayout(grp_mc)
+        frm2.setSpacing(6)
+        frm2.setContentsMargins(10, 12, 10, 8)
+
+        self.cep_prob_input = QSpinBox()
+        self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
+        self.cep_prob_input.setSuffix(" %")
+        self.cep_prob_input.wheelEvent = lambda event: event.ignore()
+
+        self.mc_runs_input = QSpinBox()
+        self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
+        self.mc_runs_input.setSingleStep(50)
+        self.mc_runs_input.wheelEvent = lambda event: event.ignore()
+
+        self.wind_unc_input = QDoubleSpinBox()
+        self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
+        self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
+        self.wind_unc_input.setSuffix("  (±ratio)")
+        self.wind_unc_input.wheelEvent = lambda event: event.ignore()
+
+        self.thrust_unc_input = QDoubleSpinBox()
+        self.thrust_unc_input.setRange(0, 1);  self.thrust_unc_input.setDecimals(2)
+        self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
+        self.thrust_unc_input.setSuffix("  (±ratio)")
+        self.thrust_unc_input.wheelEvent = lambda event: event.ignore()
+
+        frm2.addRow("CEP Probability:",    self.cep_prob_input)
+        frm2.addRow("MC Runs:",            self.mc_runs_input)
+        frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
+        frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
+
+        # ── Aerodynamics & Motor group ────────────────────────────────────────
+        grp_aero = QGroupBox("Aerodynamics & Motor")
+        frm3 = QFormLayout(grp_aero)
+        frm3.setSpacing(6)
+        frm3.setContentsMargins(10, 12, 10, 8)
+
+        self.power_on_cd_input = QDoubleSpinBox()
+        self.power_on_cd_input.setRange(0.0, 2.0)
+        self.power_on_cd_input.setDecimals(3)
+        self.power_on_cd_input.setSingleStep(0.01)
+        self.power_on_cd_input.setValue(0.45)
+        self.power_on_cd_input.wheelEvent = lambda event: event.ignore()
+
+        self.power_off_cd_input = QDoubleSpinBox()
+        self.power_off_cd_input.setRange(0.0, 2.0)
+        self.power_off_cd_input.setDecimals(3)
+        self.power_off_cd_input.setSingleStep(0.01)
+        self.power_off_cd_input.setValue(0.40)
+        self.power_off_cd_input.wheelEvent = lambda event: event.ignore()
+
+        self.motor_isp_input = QDoubleSpinBox()
+        self.motor_isp_input.setRange(40.0, 300.0)
+        self.motor_isp_input.setDecimals(1)
+        self.motor_isp_input.setSingleStep(1.0)
+        self.motor_isp_input.setValue(80.0)
+        self.motor_isp_input.setSuffix(" s")
+        self.motor_isp_input.wheelEvent = lambda event: event.ignore()
+
+        self.motor_propellant_density_input = QDoubleSpinBox()
+        self.motor_propellant_density_input.setRange(500.0, 2500.0)
+        self.motor_propellant_density_input.setDecimals(0)
+        self.motor_propellant_density_input.setSingleStep(10.0)
+        self.motor_propellant_density_input.setValue(1700.0)
+        self.motor_propellant_density_input.setSuffix(" kg/m³")
+        self.motor_propellant_density_input.wheelEvent = lambda event: event.ignore()
+
+        def _build_curve_row() -> tuple[QPushButton, QPushButton, QPushButton, QLabel, QWidget]:
+            host  = QWidget()
+            row   = QHBoxLayout(host)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            btn_load    = QPushButton("Load Cd Curve…")
+            btn_load.setToolTip("Load a Mach-dependent Cd curve from a CSV file")
+            btn_preview = QPushButton("Preview")
+            btn_preview.setToolTip("Preview the currently loaded Cd curve")
+            btn_clear   = QPushButton("Clear")
+            btn_clear.setToolTip("Clear the loaded Cd curve and fallback to the static scalar value")
+            lbl         = QLabel("Using Static Value")
+            lbl.setStyleSheet("color: #888888;")
+            row.addWidget(btn_load)
+            row.addWidget(btn_preview)
+            row.addWidget(btn_clear)
+            row.addWidget(lbl, 1)
+            return btn_load, btn_preview, btn_clear, lbl, host
+
+        (self.power_on_cd_curve_load_btn,
+         self.power_on_cd_curve_preview_btn,
+         self.power_on_cd_curve_clear_btn,
+         self.power_on_cd_curve_label,
+         _row_on)  = _build_curve_row()
+
+        (self.power_off_cd_curve_load_btn,
+         self.power_off_cd_curve_preview_btn,
+         self.power_off_cd_curve_clear_btn,
+         self.power_off_cd_curve_label,
+         _row_off) = _build_curve_row()
+
+        self.power_on_cd_curve_load_btn.clicked.connect(
+            lambda: self._on_load_cd_curve("power_on"))
+        self.power_on_cd_curve_preview_btn.clicked.connect(
+            lambda: self._on_preview_cd_curve("power_on"))
+        self.power_on_cd_curve_clear_btn.clicked.connect(
+            lambda: self._on_clear_cd_curve("power_on"))
+        self.power_off_cd_curve_load_btn.clicked.connect(
+            lambda: self._on_load_cd_curve("power_off"))
+        self.power_off_cd_curve_preview_btn.clicked.connect(
+            lambda: self._on_preview_cd_curve("power_off"))
+        self.power_off_cd_curve_clear_btn.clicked.connect(
+            lambda: self._on_clear_cd_curve("power_off"))
+
+        frm3.addRow("Power-On  Cd (boost):",  self.power_on_cd_input)
+        frm3.addRow("Power-On  Cd Curve:",    _row_on)
+        frm3.addRow("Power-Off Cd (coast):",  self.power_off_cd_input)
+        frm3.addRow("Power-Off Cd Curve:",    _row_off)
+        frm3.addRow("Motor Isp:",             self.motor_isp_input)
+        frm3.addRow("Propellant Density:",    self.motor_propellant_density_input)
+
+        root.addWidget(grp_wind)
+        root.addWidget(grp_mc)
+        root.addWidget(grp_aero)
+
+        return container
+
+
+    def _bind_wind_profile_table(self, state) -> None:
+        self._wind_table_updating = True
+        self.wind_profile_table.setRowCount(len(state.wind_profile))
+        for i, node in enumerate(state.wind_profile):
+            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
+            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
+            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
+        self._wind_table_updating = False
+
+        state.wind_profile_changed.connect(self._on_wind_state_changed)
+
+    def _on_wind_table_changed(self, item=None):
+        if getattr(self, '_wind_table_updating', False):
+            return
+        profile = []
+        for i in range(self.wind_profile_table.rowCount()):
+            try:
+                alt = float(self.wind_profile_table.item(i, 0).text() if self.wind_profile_table.item(i, 0) else 0)
+                spd = float(self.wind_profile_table.item(i, 1).text() if self.wind_profile_table.item(i, 1) else 0)
+                dir_deg = float(self.wind_profile_table.item(i, 2).text() if self.wind_profile_table.item(i, 2) else 0)
+                profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
+            except ValueError:
+                continue
+        self.state.wind_profile = profile
+
+    def _on_wind_state_changed(self, profile):
+        if getattr(self, '_wind_table_updating', False):
+            return
+        self._wind_table_updating = True
+        self.wind_profile_table.setRowCount(len(profile))
+        for i, node in enumerate(profile):
+            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
+            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
+            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
+        self._wind_table_updating = False
+
+    def _add_wind_row(self):
+        self._wind_table_updating = True
+        row_pos = self.wind_profile_table.rowCount()
+        self.wind_profile_table.insertRow(row_pos)
+        self.wind_profile_table.setItem(row_pos, 0, QTableWidgetItem("0.0"))
+        self.wind_profile_table.setItem(row_pos, 1, QTableWidgetItem("0.0"))
+        self.wind_profile_table.setItem(row_pos, 2, QTableWidgetItem("0.0"))
+        self._wind_table_updating = False
+        self._on_wind_table_changed()
+
+    def _delete_wind_row(self):
+        row = self.wind_profile_table.currentRow()
+        if row >= 0:
+            self.wind_profile_table.removeRow(row)
+            self._on_wind_table_changed()
+
 
     # ── Airframe tab ──────────────────────────────────────────────────────────
     # Contains: Load-JSON button, motor load + specs, 12 CGS airframe params.
@@ -2055,8 +1845,6 @@ class AppWindow(QMainWindow):
 
     def _bind_state(self) -> None:
         s = self.state
-        self.wind_speed_input.valueChanged.connect(lambda v: setattr(s, "wind_speed", v))
-        self.wind_dir_input.valueChanged.connect(  lambda v: setattr(s, "wind_dir",   v))
         self.cep_prob_input.valueChanged.connect(  lambda v: setattr(s, "cep_prob",   v))
         self.cep_prob_input.valueChanged.connect(lambda v: self.refresh_visuals())
         self.mode_combo.currentTextChanged.connect(
@@ -2314,8 +2102,8 @@ class AppWindow(QMainWindow):
         ax.set_ylim3d(ty_min - pad_y, ty_max + pad_y)
         ax.set_zlim3d(max(0.0, tz_min), max(tz_max + pad_z, 10.0))
         _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
-        _spd  = getattr(s, "surf_wind_speed", getattr(s, "wind_speed", 0.0))
-        _dir  = getattr(s, "surf_wind_dir",   getattr(s, "wind_dir",   0.0))
+        _spd  = s.wind_profile[0]["speed_ms"] if s.wind_profile else 0.0
+        _dir  = s.wind_profile[0]["dir_deg"] if s.wind_profile else 0.0
         _cep  = getattr(s, "landing_prob",    getattr(s, "cep_prob",   90))
         ax.set_title(
             f"Mode: {_mode}   ·   "
@@ -2357,22 +2145,10 @@ class AppWindow(QMainWindow):
         res   = self.state.simulation_result
         nodes = res.get("wind_nodes", []) if res is not None else []
 
-        # Fallback: synthesise a surface node from current spinbox values.
-        # ``self.state`` is the local lightweight AppState during __init__
-        # (exposes ``wind_speed`` / ``wind_dir``) and the global AppState
-        # after ``bind_app_state`` (exposes ``surf_wind_speed`` / ``surf_wind_dir``).
         if not nodes:
-            if hasattr(self.state, "surf_wind_speed"):
-                _spd = self.state.surf_wind_speed
-                _dir = self.state.surf_wind_dir
-            else:
-                _spd = self.state.wind_speed
-                _dir = self.state.wind_dir
-            nodes = [{
-                "alt_m":    3.0,
-                "speed_ms": _spd,
-                "dir_deg":  _dir,
-            }]
+            nodes = list(getattr(self.state, "wind_profile", []))
+            if not nodes:
+                nodes = [{"alt_m": 0.0, "speed_ms": 0.0, "dir_deg": 0.0}]
 
         slice5   = nodes[:5]
         max_spd  = max((float(n.get("speed_ms", 0.0)) for n in slice5), default=1.0)
@@ -2826,6 +2602,73 @@ class AppWindow(QMainWindow):
         self.profile_ax.view_init(elev=25, azim=value)
         self.profile_canvas.draw_idle()
 
+
+
+    def _on_load_cd_curve(self, which: str) -> None:
+        if getattr(self, "state", None) is None:
+            QMessageBox.warning(
+                self, "Cd Curve Loader",
+                "AppState is not yet wired. The Cd curve cannot be stored.")
+            return
+
+        title = ("Load Power-On Cd Curve" if which == "power_on"
+                 else "Load Coast (Power-Off) Cd Curve")
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, title, "", "CSV files (*.csv);;All files (*.*)")
+        if not filepath:
+            return
+
+        try:
+            from utils.data_loader import parse_cd_curve_csv
+            curve = parse_cd_curve_csv(filepath)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, "Cd Curve Parse Error",
+                f"Failed to load Cd curve from:
+{filepath}
+
+{exc}")
+            return
+
+        attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
+        setattr(self.state, attr, curve)
+
+    def _on_clear_cd_curve(self, which: str) -> None:
+        if getattr(self, "state", None) is None:
+            return
+        attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
+        setattr(self.state, attr, None)
+
+    def _on_preview_cd_curve(self, which: str) -> None:
+        if getattr(self, "state", None) is None:
+            QMessageBox.warning(
+                self, "Cd Curve Preview",
+                "AppState is not yet wired.")
+            return
+
+        attr  = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
+        curve = getattr(self.state, attr, None)
+
+        if curve is None or len(curve) < 2:
+            QMessageBox.information(
+                self, "Cd Curve Preview",
+                "No curve loaded. Using static scalar value.")
+            return
+
+        title = ("Power-On Cd Curve" if which == "power_on"
+                 else "Coast (Power-Off) Cd Curve")
+        preview = CdCurvePreviewDialog(title, list(curve), parent=self)
+        preview.exec()
+
+    @staticmethod
+    def _refresh_curve_label(label: QLabel, curve) -> None:
+        if curve is not None and len(curve) >= 2:
+            label.setText(f"Curve Loaded ({len(curve)} pts)")
+            label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+        else:
+            label.setText("Using Static Value")
+            label.setStyleSheet("color: #888888;")
+
     def bind_app_state(self, state) -> None:
         """Forward the global :class:`AppState` to nested dialogs that need it.
 
@@ -2841,7 +2684,75 @@ class AppWindow(QMainWindow):
         print(f"=== AppWindow.bind_app_state === Forwarding global State: id={id(state)}")
         self.state = state  # Overwrite with the true global instance
         self._app_state = state            # cached for the session menu slots
-        self._adv_dialog.bind_app_state(state)
+
+        # Bind advanced settings directly
+        from PySide6.QtCore import QSignalBlocker
+        for widget, attr in (
+            (self.power_on_cd_input,              "power_on_cd"),
+            (self.power_off_cd_input,             "power_off_cd"),
+            (self.motor_isp_input,                "motor_isp"),
+            (self.motor_propellant_density_input, "motor_propellant_density"),
+        ):
+            with QSignalBlocker(widget):
+                widget.setValue(float(getattr(state, attr)))
+
+        self.power_on_cd_input.valueChanged.connect(
+            lambda v: setattr(state, "power_on_cd", float(v)))
+        self.power_off_cd_input.valueChanged.connect(
+            lambda v: setattr(state, "power_off_cd", float(v)))
+        self.motor_isp_input.valueChanged.connect(
+            lambda v: setattr(state, "motor_isp", float(v)))
+        self.motor_propellant_density_input.valueChanged.connect(
+            lambda v: setattr(state, "motor_propellant_density", float(v)))
+
+        def _push(widget, value):
+            if widget.value() != float(value):
+                with QSignalBlocker(widget):
+                    widget.setValue(float(value))
+
+        state.power_on_cd_changed.connect(
+            lambda v: _push(self.power_on_cd_input, v))
+        state.power_off_cd_changed.connect(
+            lambda v: _push(self.power_off_cd_input, v))
+        state.motor_isp_changed.connect(
+            lambda v: _push(self.motor_isp_input, v))
+        state.motor_propellant_density_changed.connect(
+            lambda v: _push(self.motor_propellant_density_input, v))
+
+        state.cd_curve_power_on_changed.connect(
+            lambda curve: self._refresh_curve_label(
+                self.power_on_cd_curve_label, curve))
+        state.cd_curve_power_off_changed.connect(
+            lambda curve: self._refresh_curve_label(
+                self.power_off_cd_curve_label, curve))
+        self._refresh_curve_label(
+            self.power_on_cd_curve_label,  state.cd_curve_power_on)
+        self._refresh_curve_label(
+            self.power_off_cd_curve_label, state.cd_curve_power_off)
+
+        # We also need to bind MC inputs:
+        with QSignalBlocker(self.cep_prob_input):
+            self.cep_prob_input.setValue(state.landing_prob)
+        self.cep_prob_input.valueChanged.connect(lambda v: setattr(state, "landing_prob", int(v)))
+        state.landing_prob_changed.connect(lambda v: _push(self.cep_prob_input, v))
+
+        with QSignalBlocker(self.mc_runs_input):
+            self.mc_runs_input.setValue(state.mc_n_runs)
+        self.mc_runs_input.valueChanged.connect(lambda v: setattr(state, "mc_n_runs", int(v)))
+        state.mc_n_runs_changed.connect(lambda v: _push(self.mc_runs_input, v))
+
+        with QSignalBlocker(self.wind_unc_input):
+            self.wind_unc_input.setValue(float(state.wind_uncertainty) if state.wind_uncertainty is not None else 0.2)
+        self.wind_unc_input.valueChanged.connect(lambda v: setattr(state, "wind_uncertainty", float(v)))
+        state.wind_uncertainty_changed.connect(lambda v: _push(self.wind_unc_input, v))
+
+        with QSignalBlocker(self.thrust_unc_input):
+            self.thrust_unc_input.setValue(float(state.thrust_uncertainty) if state.thrust_uncertainty is not None else 0.05)
+        self.thrust_unc_input.valueChanged.connect(lambda v: setattr(state, "thrust_uncertainty", float(v)))
+        state.thrust_uncertainty_changed.connect(lambda v: _push(self.thrust_unc_input, v))
+
+        self._bind_wind_profile_table(state)
+
 
         if hasattr(state, 'launch_lat_changed'):
             try: state.launch_lat_changed.disconnect()

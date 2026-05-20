@@ -778,10 +778,10 @@ class SimController(QObject):
         if is_safe:
             # Lock the Phase A wind distribution so Phase B O(1) GO/NO-GO ticks
             # compare live wind against the exact baseline used in the MC run.
-            surf_spd = result.get("nominal_surf_spd",
-                                  self._window.surf_spd_input.value())
-            surf_dir = result.get("nominal_surf_dir",
-                                  self._window.surf_dir_input.value())
+            # Use surface (lowest) level from wind_profile as fallback
+            lowest_wind = sorted(self._state.wind_profile, key=lambda n: n["alt_m"])[0] if self._state.wind_profile else {"speed_ms": 0.0, "dir_deg": 0.0}
+            surf_spd = result.get("nominal_surf_spd", lowest_wind["speed_ms"])
+            surf_dir = result.get("nominal_surf_dir", lowest_wind["dir_deg"])
             wind_unc = float(self._window.wind_unc_input.value())
             mu_u = surf_spd * math.sin(math.radians(surf_dir))
             mu_v = surf_spd * math.cos(math.radians(surf_dir))
@@ -953,7 +953,8 @@ class SimController(QObject):
             )
         else:
             # No history yet — fall back to the current anemometer reading
-            _turb_mu    = float(s.surf_wind_speed)
+            lowest_wind = sorted(s.wind_profile, key=lambda n: n["alt_m"])[0] if s.wind_profile else {"speed_ms": 0.0, "dir_deg": 0.0}
+            _turb_mu    = lowest_wind["speed_ms"]
             _turb_sigma = 0.0
         # I = σ/μ  (dimensionless turbulence intensity)
         _turb_intensity = _turb_sigma / _turb_mu if _turb_mu > 0.1 else 0.0
@@ -969,11 +970,7 @@ class SimController(QObject):
             "elev":       s.launch_angle,   # degrees — AppState, default 85.0
             "rail":       s.launch_rail,    # m       — AppState, default 1.0
             "azim":       w.azim_input.value() if w.azim_input.value() != -9999.0 else 0.0,
-            "surf_spd":   w.surf_spd_input.value(),
-            "surf_dir":   w.surf_dir_input.value(),
-            "up_spd":     w.up_spd_input.value(),
-            "up_dir":     w.up_dir_input.value(),
-            "upper_alt":  500.0,
+            "wind_profile": s.wind_profile,
             "mc_runs":    w.mc_runs_input.value(),
             "wind_unc":   w.wind_unc_input.value(),
             "thrust_unc": w.thrust_unc_input.value(),
@@ -1356,85 +1353,18 @@ class SimController(QObject):
             "#a6e3a1",
         )
 
-    # ── Advanced Settings dialog ───────────────────────────────────────────────
-
-    @Slot()
-    def _on_advanced_settings_clicked(self) -> None:
-        """Populate the Advanced Settings dialog from AppState, then exec it.
-
-        Before exec(): push current AppState values into all dialog fields so the
-        operator always sees up-to-date numbers regardless of how state was last
-        changed (e.g. an external wind reading updated surf_wind_speed).
-
-        After OK: pull all field values back into AppState so _collect_params()
-        reads the freshly confirmed settings at the next Run click.
-
-        Cancel: AdvancedSettingsDialog._on_cancel() restores its internal snapshot
-        (taken at showEvent); AppState is never written, so it remains consistent.
-        """
-        dlg = getattr(self._window, '_adv_dialog', None)
-        if dlg is None:
-            return
-
-        s = self._state
-
-        # ── Populate dialog from AppState ──────────────────────────────────────
-        dlg.surf_spd_input.setValue(s.surf_wind_speed)
-        dlg.surf_dir_input.setValue(s.surf_wind_dir)
-        dlg.up_spd_input.setValue(s.upper_wind_speed)
-        dlg.up_dir_input.setValue(s.upper_wind_dir)
-        dlg.cep_prob_input.setValue(s.landing_prob)
-        dlg.mc_runs_input.setValue(s.mc_n_runs)
-        dlg.wind_unc_input.setValue(s.wind_uncertainty)
-        dlg.thrust_unc_input.setValue(s.thrust_uncertainty)
-
-        # ── Execute dialog ─────────────────────────────────────────────────────
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return   # Cancel — snapshot already restored by dialog itself
-
-        self._on_settings_confirmed(dlg)
-
-    def _on_settings_confirmed(self, dlg) -> None:
-        """Push accepted dialog values to AppState and trigger smart redraw.
-
-        Called after the Advanced Settings dialog is accepted.  No worker is
-        started — `_on_partial_redraw` only recomputes the CEP ellipse from the
-        already-cached MC scatter and repaints the overlay artists.
-        """
-        s = self._state
-        s.surf_wind_speed    = float(dlg.surf_spd_input.value())
-        s.surf_wind_dir      = float(dlg.surf_dir_input.value())
-        s.upper_wind_speed   = float(dlg.up_spd_input.value())
-        s.upper_wind_dir     = float(dlg.up_dir_input.value())
-        s.landing_prob       = int(dlg.cep_prob_input.value())
-        s.mc_n_runs          = int(dlg.mc_runs_input.value())
-        s.wind_uncertainty   = float(dlg.wind_unc_input.value())
-        s.thrust_uncertainty = float(dlg.thrust_unc_input.value())
-        s.cep_probability    = float(dlg.cep_prob_input.value())  # drives smart redraw
-
-        self._window.set_status(
-            f"Settings updated  ·  "
-            f"Surf {s.surf_wind_speed:.1f} m/s  ·  "
-            f"MC {s.mc_n_runs} runs  ·  "
-            f"Wind unc {s.wind_uncertainty:.2f}",
-            "#a6adc8",
-        )
-
-        self._on_partial_redraw()  # recompute ellipse + repaint, no simulation
-
     @Slot()
     def _on_wind_tick(self) -> None:
-        base_spd  = self._window.surf_spd_input.value()
-        base_dir  = self._window.surf_dir_input.value()
+        lowest_wind = sorted(self._state.wind_profile, key=lambda n: n["alt_m"])[0] if self._state.wind_profile else {"speed_ms": 0.0, "dir_deg": 0.0}
+        base_spd  = lowest_wind["speed_ms"]
+        base_dir  = lowest_wind["dir_deg"]
         speed     = max(0.0, base_spd + random.gauss(0.0, base_spd * 0.05 + 0.1))
         direction = (base_dir + random.gauss(0.0, 3.0)) % 360.0
 
         # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
         self._state.append_wind_reading(speed, direction)
 
-        # Keep upper-wind state current so PlotView spaghetti/quiver are calibrated.
-        self._state.upper_wind_speed = self._window.up_spd_input.value()
-        self._state.upper_wind_dir   = self._window.up_dir_input.value()
+
 
         # Keep the status-bar readout current.
         self._window.update_wind_readout(
