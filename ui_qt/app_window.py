@@ -1573,7 +1573,7 @@ class AppWindow(QMainWindow):
         container.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         lay = QVBoxLayout(container)
-        lay.setContentsMargins(0, 0, 0, 6)
+        lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(4)
 
         # ── Two-tab toolbox ───────────────────────────────────────────────────
@@ -1600,8 +1600,8 @@ class AppWindow(QMainWindow):
         mode_grp.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         mode_lay     = QFormLayout(mode_grp)
-        mode_lay.setSpacing(5)
-        mode_lay.setContentsMargins(2, 4, 2, 2)
+        mode_lay.setSpacing(4)
+        mode_lay.setContentsMargins(4, 4, 4, 4)
 
         self.mode_combo = QComboBox(mode_grp)
         self.mode_combo.addItems(self.OPERATION_MODES)
@@ -1709,8 +1709,8 @@ class AppWindow(QMainWindow):
     def _build_airframe_page(self) -> QScrollArea:
         w   = QWidget()
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(2, 2, 2, 2)
-        lay.setSpacing(6)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(4)
 
         # ── Model loading buttons ─────────────────────────────────────────────
         btn_rkt = QPushButton("📂  Load .rkt File", w)
@@ -1740,8 +1740,8 @@ class AppWindow(QMainWindow):
         # ── Motor specification summary (read-only) ───────────────────────────
         grp_motor     = QGroupBox("Motor Specifications", w)
         grp_motor_lay = QFormLayout(grp_motor)
-        grp_motor_lay.setSpacing(5)
-        grp_motor_lay.setContentsMargins(2, 4, 2, 2)
+        grp_motor_lay.setSpacing(4)
+        grp_motor_lay.setContentsMargins(4, 4, 4, 4)
 
         _tag = (
             "QLabel { color: #eef0f8; background: #12121e; font-weight: bold; "
@@ -1764,8 +1764,8 @@ class AppWindow(QMainWindow):
         # ── Recovery / Parachute parameters ──────────────────────────────────
         grp_para     = QGroupBox("Recovery / Parachute", w)
         frm_para     = QFormLayout(grp_para)
-        frm_para.setSpacing(5)
-        frm_para.setContentsMargins(2, 4, 2, 2)
+        frm_para.setSpacing(4)
+        frm_para.setContentsMargins(4, 4, 4, 4)
 
         def _psb(hi, dec, step, suffix):
             sb = QDoubleSpinBox(grp_para)
@@ -1789,8 +1789,11 @@ class AppWindow(QMainWindow):
         btn_para_json.clicked.connect(self.sig_load_para_json_clicked.emit)
         frm_para.addRow(btn_para_json)
 
-        lay.addWidget(btn_rkt)
-        lay.addWidget(self.rkt_label)
+        rkt_load_layout = QHBoxLayout()
+        rkt_load_layout.addWidget(btn_rkt)
+        rkt_load_layout.addWidget(self.rkt_label)
+        lay.addLayout(rkt_load_layout)
+
         lay.addWidget(btn_manual)
         lay.addWidget(btn_motor)
         lay.addWidget(self.motor_label)
@@ -1808,9 +1811,9 @@ class AppWindow(QMainWindow):
 
     def _build_launch_settings_page(self) -> QWidget:
         w   = QWidget()
-        frm = QFormLayout(w)
-        frm.setSpacing(6)
-        frm.setContentsMargins(8, 8, 8, 8)
+        lay = QVBoxLayout(w)
+        lay.setSpacing(4)
+        lay.setContentsMargins(4, 4, 4, 4)
 
         self.lat_input = QDoubleSpinBox(w)
         self.lat_input.setDecimals(6); self.lat_input.setSuffix("°")
@@ -1861,13 +1864,26 @@ class AppWindow(QMainWindow):
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
-        frm.addRow("Latitude:",         self.lat_input)
-        frm.addRow("Longitude:",        self.lon_input)
-        frm.addRow("",                  btn_gps)
-        frm.addRow(QLabel(""))
-        frm.addRow("Rail Elevation:",   self.elev_input)
-        frm.addRow("Rail Length [m]:",  self.rail_len_input)
-        frm.addRow("Rail Azimuth:",     self.azim_input)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("Lat:"))
+        row1.addWidget(self.lat_input)
+        row1.addWidget(QLabel("Lon:"))
+        row1.addWidget(self.lon_input)
+        lay.addLayout(row1)
+
+        lay.addWidget(btn_gps)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Elev:"))
+        row2.addWidget(self.elev_input)
+        row2.addWidget(QLabel("Len [m]:"))
+        row2.addWidget(self.rail_len_input)
+        row2.addWidget(QLabel("Azim:"))
+        row2.addWidget(self.azim_input)
+        lay.addLayout(row2)
+
+        lay.addWidget(btn_dl_map)
+
         return w
 
     # ── Map dock content ───────────────────────────────────────────────────────
