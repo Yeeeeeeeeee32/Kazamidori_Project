@@ -1887,24 +1887,17 @@ class AppWindow(QMainWindow):
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Lat:"))
-        row1.addWidget(self.lat_input)
-        row1.addWidget(QLabel("Lon:"))
-        row1.addWidget(self.lon_input)
-        lay.addLayout(row1)
+        form_lay = QFormLayout()
+        form_lay.setContentsMargins(0, 0, 0, 0)
+        form_lay.setSpacing(4)
+        form_lay.addRow("Latitude:", self.lat_input)
+        form_lay.addRow("Longitude:", self.lon_input)
+        form_lay.addRow("Rail Elevation:", self.elev_input)
+        form_lay.addRow("Rail Length:", self.rail_len_input)
+        form_lay.addRow("Rail Azimuth:", self.azim_input)
+        lay.addLayout(form_lay)
 
         lay.addWidget(btn_gps)
-
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Elev:"))
-        row2.addWidget(self.elev_input)
-        row2.addWidget(QLabel("Len [m]:"))
-        row2.addWidget(self.rail_len_input)
-        row2.addWidget(QLabel("Azim:"))
-        row2.addWidget(self.azim_input)
-        lay.addLayout(row2)
-
         lay.addWidget(btn_dl_map)
 
         return w
