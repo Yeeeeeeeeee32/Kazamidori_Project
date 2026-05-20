@@ -2417,7 +2417,7 @@ class AppWindow(QMainWindow):
 
                 if fetch_xs:
                     # Task 1: The Scatter/Dot Layer
-                    ax_p.plot(fetch_xs, fetch_ys, linestyle='', marker='o', color=col, markersize=5, zorder=5)
+                    ax_p.plot(fetch_xs[-1:], fetch_ys[-1:], linestyle='', marker='o', color=col, markersize=5, zorder=5)
 
                 # 10-second rolling average horizontal dotted line
                 recent = [p[1] for p in pts if p[0] >= -10.0]
