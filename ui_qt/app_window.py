@@ -1843,9 +1843,7 @@ class AppWindow(QMainWindow):
         self.lat_input.setSpecialValueText("")
         self.lat_input.setValue(35.42215789)
         self.lat_input.wheelEvent = lambda event: event.ignore()
-        self.lat_input.valueChanged.connect(
-            lambda v: self.map_widget.update_launch(v, self.lon_input.value())
-            if v != -9999.0 else None)
+        self.lat_input.valueChanged.connect(self._on_manual_coord_changed)
 
         self.lon_input = QDoubleSpinBox(w)
         self.lon_input.setDecimals(6); self.lon_input.setSuffix("°")
@@ -1853,9 +1851,7 @@ class AppWindow(QMainWindow):
         self.lon_input.setSpecialValueText("")
         self.lon_input.setValue(139.42268826)
         self.lon_input.wheelEvent = lambda event: event.ignore()
-        self.lon_input.valueChanged.connect(
-            lambda v: self.map_widget.update_launch(self.lat_input.value(), v)
-            if v != -9999.0 else None)
+        self.lon_input.valueChanged.connect(self._on_manual_coord_changed)
 
         self.elev_input = QDoubleSpinBox(w)
         self.elev_input.setRange(0.0, 90.0)
@@ -1878,17 +1874,22 @@ class AppWindow(QMainWindow):
         self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
-        btn_dl_map = QPushButton("🗺️  Download Offline Map", w)
-        btn_dl_map.setObjectName("btn_download_map")
-        btn_dl_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
+        self.btn_offline_map = QPushButton("🗺️  Download Offline Map", w)
+        self.btn_offline_map.setObjectName("btn_download_map")
+        self.btn_offline_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
+        btn_dl_map = self.btn_offline_map
 
         btn_gps = QPushButton("📍  Get Current Location", w)
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(btn_dl_map)
+        btn_row.addWidget(btn_gps)
+
         frm.addRow("Latitude:",         self.lat_input)
         frm.addRow("Longitude:",        self.lon_input)
-        frm.addRow("",                  btn_gps)
+        frm.addRow("",                  btn_row)
         frm.addRow(QLabel(""))
         frm.addRow("Rail Elevation:",   self.elev_input)
         frm.addRow("Rail Length [m]:",  self.rail_len_input)
@@ -2055,8 +2056,8 @@ class AppWindow(QMainWindow):
         self.mode_combo.currentTextChanged.connect(
             lambda v: setattr(s, "sim_mode", v))
 
-        self.lat_input.valueChanged.connect(lambda v: setattr(s, 'launch_lat', v))
-        self.lon_input.valueChanged.connect(lambda v: setattr(s, 'launch_lon', v))
+        self.lat_input.valueChanged.connect(lambda v: setattr(self.state, 'launch_lat', v))
+        self.lon_input.valueChanged.connect(lambda v: setattr(self.state, 'launch_lon', v))
 
         s.launch_lat = self.lat_input.value()
         s.launch_lon = self.lon_input.value()
@@ -2777,6 +2778,43 @@ class AppWindow(QMainWindow):
 
     # ── Action handlers ────────────────────────────────────────────────────────
 
+
+
+    def _on_manual_coord_changed(self, _v=None) -> None:
+        lat = self.lat_input.value()
+        lon = self.lon_input.value()
+
+        if lat == -9999.0 or lon == -9999.0:
+            return
+
+        old_lat = getattr(self.state, 'launch_lat', 0.0)
+        old_lon = getattr(self.state, 'launch_lon', 0.0)
+
+        self.state.launch_lat = lat
+        self.state.launch_lon = lon
+        self.map_widget.update_launch(lat, lon)
+        self.state.needs_redraw.emit()
+
+        # Check if coordinates moved significantly
+        if abs(lat - old_lat) > 0.0001 or abs(lon - old_lon) > 0.0001:
+            # Emit download map signal if we have the button
+            if hasattr(self, 'btn_download_map') and self.btn_download_map:
+                self.btn_download_map.clicked.emit()
+
+    def _on_state_lat_changed(self, value: float) -> None:
+        if self.lat_input.value() != value:
+            from PySide6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.lat_input):
+                self.lat_input.setValue(value)
+            self.map_widget.update_launch(value, self.lon_input.value())
+
+    def _on_state_lon_changed(self, value: float) -> None:
+        if self.lon_input.value() != value:
+            from PySide6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.lon_input):
+                self.lon_input.setValue(value)
+            self.map_widget.update_launch(self.lat_input.value(), value)
+
     def _on_azim_changed(self, value: int) -> None:
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
         self.profile_ax.view_init(elev=25, azim=value)
@@ -2798,6 +2836,19 @@ class AppWindow(QMainWindow):
         self.state = state  # Overwrite with the true global instance
         self._app_state = state            # cached for the session menu slots
         self._adv_dialog.bind_app_state(state)
+
+        if hasattr(state, 'launch_lat_changed'):
+            try: state.launch_lat_changed.disconnect()
+            except Exception: pass
+            state.launch_lat_changed.connect(self._on_state_lat_changed)
+        if hasattr(state, 'launch_lon_changed'):
+            try: state.launch_lon_changed.disconnect()
+            except Exception: pass
+            state.launch_lon_changed.connect(self._on_state_lon_changed)
+
+        # Re-inject current UI values to state
+        state.launch_lat = self.lat_input.value()
+        state.launch_lon = self.lon_input.value()
         if hasattr(self, 'map_view') and self.map_view:
             self.map_view.bind_app_state(state)
         if hasattr(self, 'profile_canvas') and self.profile_canvas:
