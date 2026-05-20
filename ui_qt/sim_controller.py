@@ -1228,16 +1228,36 @@ class SimController(QObject):
         s.fin_position    = af["fin_pos"]
         # s.backfire_delay  = af["backfire_delay"]  # Operational input only
 
-        # Conditionally warn if unread parameters are present
-        if (cfg.get("parachute", {}).get("cd", 0) > 0 or
-            af.get("motor_dry_mass", 0) > 0 or
-            af.get("motor_pos", 0) != 0 or
-            af.get("backfire_delay", 0) > 0):
-            QMessageBox.warning(
-                self._window,
-                "一部のパラメータ未読込",
-                "一部のパラメータ（パラシュート、モーター等）は読み込まれませんでした。手動で設定してください。"
-            )
+        missing_info = cfg.get("missing_info", {})
+        failed_fields = missing_info.get("failed_fields", [])
+        manual_fields = missing_info.get("manual_fields", [])
+
+        # Add manual fields that might have been detected globally but missed by specific tags
+        if (cfg.get("parachute", {}).get("cd", 0) > 0 and
+            "パラシュート関連パラメータ (Cd, Area, Lag)" not in manual_fields):
+            manual_fields.append("パラシュート関連パラメータ (Cd, Area, Lag)")
+        if ((af.get("motor_dry_mass", 0) > 0 or af.get("motor_pos", 0) != 0) and
+            "モーターパラメータ" not in manual_fields):
+            manual_fields.append("モーターパラメータ")
+        if (af.get("backfire_delay", 0) > 0 and
+            "バックファイア遅延 (Backfire Delay)" not in manual_fields):
+            manual_fields.append("バックファイア遅延 (Backfire Delay)")
+
+        if failed_fields or manual_fields:
+            msg = "ファイルの一部のデータ取得に失敗したか、または安全のため読み込みがブロックされました。\n"
+            msg += "以下の項目を確認し、手動設定（Manual Config）で正しい値を入力してください。\n"
+
+            if failed_fields:
+                msg += "\n【取得失敗 / 未対応の項目】\n"
+                for field in failed_fields:
+                    msg += f"・{field}\n"
+
+            if manual_fields:
+                msg += "\n【手動入力が必要な項目】\n"
+                for field in manual_fields:
+                    msg += f"・{field}\n"
+
+            QMessageBox.warning(self._window, "インポート警告", msg.strip())
 
         # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
         s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
