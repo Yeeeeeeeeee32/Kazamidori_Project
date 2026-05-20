@@ -469,6 +469,7 @@ class SimController(QObject):
         # Clear stale data from the previous run.
         self._nominal_payload                 = None
         self._state.simulation_result = None
+        self._state.current_playback_index = 0
         self._window.update_map_plot()
 
         self._worker = SimulationWorker(self._collect_params(), parent=self)
@@ -511,6 +512,7 @@ class SimController(QObject):
         # Clear stale data from the previous run.
         self._nominal_payload                 = None
         self._state.simulation_result = None
+        self._state.current_playback_index = 0
         self._window.update_map_plot()
 
         if self._state.is_free_mode:

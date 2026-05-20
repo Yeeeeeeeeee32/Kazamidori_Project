@@ -972,6 +972,10 @@ class _AzimCanvas(FigureCanvasQTAgg):
 
         self.mpl_connect('scroll_event', self._on_scroll)
 
+    def bind_app_state(self, state: 'AppState') -> None:
+        """Bind the global AppState dynamically."""
+        self.app_state = state
+
     def _on_scroll(self, event) -> None:
         if event.key == 'shift':
             if self._traj_t is not None and len(self._traj_t) > 0:
@@ -987,6 +991,15 @@ class _AzimCanvas(FigureCanvasQTAgg):
         if sl is not None:
             step = AZIMUTH_STEP if event.step > 0 else -AZIMUTH_STEP
             sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
+
+    def clear_trajectory(self) -> None:
+        """Clear all stored trajectory references to prevent crashes on axis clear."""
+        self._traj_x = None
+        self._traj_y = None
+        self._traj_z = None
+        self._traj_t = None
+        self._marker_artist = None
+        self._time_label = None
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
         """Set the trajectory arrays and reset the time index.
@@ -2057,6 +2070,7 @@ class AppWindow(QMainWindow):
     def update_profile_plot(self) -> None:
         ax = self.profile_ax
         ax.cla()
+        self.profile_canvas.clear_trajectory()
         _style_3d(ax, self.profile_fig)
 
         s   = self.state
@@ -2775,6 +2789,8 @@ class AppWindow(QMainWindow):
         self._adv_dialog.bind_app_state(state)
         if hasattr(self, 'map_view') and self.map_view:
             self.map_view.bind_app_state(state)
+        if hasattr(self, 'profile_canvas') and self.profile_canvas:
+            self.profile_canvas.bind_app_state(state)
 
     # ── Session persistence (Phase E) ────────────────────────────────────────
 
