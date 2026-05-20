@@ -1070,12 +1070,24 @@ def _style_2d(ax, fig: Optional[Figure] = None, bg: str = "#0d0d1a") -> None:
 
 # ── 3-D rendering helpers ─────────────────────────────────────────────────────
 
-def _equalise_3d_axes(ax) -> None:
-    limits  = np.array([ax.get_xlim3d(), ax.get_ylim3d()])
-    centers = limits.mean(axis=1)
-    max_r   = max((limits[:, 1] - limits[:, 0]).max() / 2.0, 1.0)
-    ax.set_xlim3d(centers[0] - max_r, centers[0] + max_r)
-    ax.set_ylim3d(centers[1] - max_r, centers[1] + max_r)
+def _equalise_3d_axes(ax, tx: np.ndarray, ty: np.ndarray, apogee_m: float) -> None:
+    if len(tx) == 0 or len(ty) == 0:
+        return
+    min_x, max_x = np.min(tx), np.max(tx)
+    min_y, max_y = np.min(ty), np.max(ty)
+
+    cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    dx, dy = max_x - min_x, max_y - min_y
+    max_r = max(dx, dy) / 2.0 * 1.15  # 15% padding
+    max_r = max(max_r, 1.0)
+
+    ax.set_xlim3d(cx - max_r, cx + max_r)
+    ax.set_ylim3d(cy - max_r, cy + max_r)
+
+    if apogee_m > 0:
+        ax.set_zlim3d(0, apogee_m * 1.15)
+    else:
+        ax.set_zlim3d(0, 10)
 
 
 def _make_altitude_lc(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> object:
@@ -2087,7 +2099,11 @@ class AppWindow(QMainWindow):
         azim = getattr(self, '_azim_slider', None)
         ax.view_init(elev=25, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
         if res is not None:
-            _equalise_3d_axes(ax)
+            tx = np.asarray(res.get("trajectory_x", [0.0]), dtype=float)
+            ty = np.asarray(res.get("trajectory_y", [0.0]), dtype=float)
+            tz = np.clip(np.asarray(res.get("trajectory_z", [0.0]), dtype=float), 0.0, None)
+            apogee_m = float(res.get("apogee_m", float(tz.max()) if len(tz) > 0 else 0.0))
+            _equalise_3d_axes(ax, tx, ty, apogee_m)
 
         # Draw Compass Rose in 3D
         cx, cy, cz = 0, 0, 0
@@ -2130,11 +2146,6 @@ class AppWindow(QMainWindow):
 
         apex_z = float(res.get("apogee_m",
                                float(tz.max()) if len(tz) > 0 else 0.0))
-
-        if apex_z > 0:
-            ax.set_zlim3d(0, apex_z * 1.15)
-        else:
-            ax.set_zlim3d(0, 10)
 
         phases = res.get("phases")
         events = res.get("events")
