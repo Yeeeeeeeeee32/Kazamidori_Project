@@ -458,6 +458,8 @@ def _parse_rocksim_attached(
     body_radius_m: float,
     components:    list,
     extracted:     dict,
+    failed_fields: list,
+    manual_fields: list,
 ) -> None:
     """Parse every element inside a <BodyTube>'s <AttachedParts>."""
     from core.geometry_math import (
@@ -507,6 +509,8 @@ def _parse_rocksim_attached(
             if extracted.get("para_area_m2") is None:   # first parachute wins
                 extracted["para_cd"]      = cd
                 extracted["para_area_m2"] = area
+            if "パラシュート関連パラメータ (Cd, Area, Lag)" not in manual_fields:
+                manual_fields.append("パラシュート関連パラメータ (Cd, Area, Lag)")
 
         elif tag in ("Ring", "BodyTubeCoupler", "Coupler"):
             od_elem = child.find("OD")
@@ -516,6 +520,8 @@ def _parse_rocksim_attached(
                     r_out = (float(od_value) / 1000.0) / 2.0
                 except ValueError:
                     r_out = 0.0
+                    if "機体外径 (OD)" not in failed_fields:
+                        failed_fields.append("機体外径 (OD)")
             else:
                 r_out = _rkt_float(child, "DiaOuter", 0.0) / 2000.0
 
@@ -539,6 +545,10 @@ def _parse_rocksim_attached(
             extracted["motor_pos_m"]       = cg_m
             extracted["motor_dry_mass_kg"] = dry_kg
             extracted["backfire_delay_s"]  = delay_s
+            if "モーターパラメータ" not in manual_fields:
+                manual_fields.append("モーターパラメータ")
+            if delay_s > 0.0 and "バックファイア遅延 (Backfire Delay)" not in manual_fields:
+                manual_fields.append("バックファイア遅延 (Backfire Delay)")
 
         elif tag in ("MassObject", "LaunchLug"):
             cg_m = top_m + len_m / 2.0
@@ -550,6 +560,8 @@ def _parse_rocksim_attached(
                 if mass_kg > extracted.get("motor_dry_mass_kg", 0.0):
                     extracted["motor_pos_m"]       = cg_m
                     extracted["motor_dry_mass_kg"] = mass_kg
+                    if "モーターパラメータ" not in manual_fields:
+                        manual_fields.append("モーターパラメータ")
 
 
 def _parse_rocksim_xml(root: _ET.Element) -> dict:
@@ -590,6 +602,9 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
         "para_lag_s":        0.5,
     }
 
+    failed_fields: list = []
+    manual_fields: list = []
+
     # ── Sequential traversal of top-level stage components ───────────────────
     # Components are stacked nose→tail; each starts where the previous ends.
     # Xb on Stage3Parts children is typically 0 and is intentionally ignored
@@ -614,6 +629,8 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
                 r_out = (float(od_value) / 1000.0) / 2.0
             except ValueError:
                 r_out = 0.0
+                if "機体外径 (OD)" not in failed_fields:
+                    failed_fields.append("機体外径 (OD)")
         else:
             r_out = _rkt_float(child, "DiaOuter", 0.0) / 2000.0
 
@@ -640,7 +657,7 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
             if attached is not None:
                 _parse_rocksim_attached(
                     attached, top_mm, extracted["body_radius_m"],
-                    components, extracted,
+                    components, extracted, failed_fields, manual_fields,
                 )
 
         cursor_mm = top_mm + len_mm
@@ -650,6 +667,8 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
     # ── MoI summation via geometry_math engine ────────────────────────────────
     valid      = [c for c in components if c.mass > 0.0]
     total_mass = sum(c.mass for c in valid)
+    if total_mass == 0.0:
+        failed_fields.append("機体構造質量")
     system_cg  = calculate_system_cg(valid) if valid else 0.0
     system_moi = calculate_total_moi(valid, system_cg) if valid else None
 
@@ -682,6 +701,10 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
             "iyy": system_moi.Iyy if system_moi else 0.0,
             "izz": system_moi.Izz if system_moi else 0.0,
         },
+        "missing_info": {
+            "failed_fields": failed_fields,
+            "manual_fields": manual_fields,
+        }
     }
 
 

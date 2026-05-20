@@ -972,6 +972,10 @@ class _AzimCanvas(FigureCanvasQTAgg):
 
         self.mpl_connect('scroll_event', self._on_scroll)
 
+    def bind_app_state(self, state: 'AppState') -> None:
+        """Bind the global AppState dynamically."""
+        self.app_state = state
+
     def _on_scroll(self, event) -> None:
         if event.key == 'shift':
             if self._traj_t is not None and len(self._traj_t) > 0:
@@ -987,6 +991,15 @@ class _AzimCanvas(FigureCanvasQTAgg):
         if sl is not None:
             step = AZIMUTH_STEP if event.step > 0 else -AZIMUTH_STEP
             sl.setValue(max(sl.minimum(), min(sl.maximum(), sl.value() + step)))
+
+    def clear_trajectory(self) -> None:
+        """Clear all stored trajectory references to prevent crashes on axis clear."""
+        self._traj_x = None
+        self._traj_y = None
+        self._traj_z = None
+        self._traj_t = None
+        self._marker_artist = None
+        self._time_label = None
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
         """Set the trajectory arrays and reset the time index.
@@ -1057,12 +1070,24 @@ def _style_2d(ax, fig: Optional[Figure] = None, bg: str = "#0d0d1a") -> None:
 
 # ── 3-D rendering helpers ─────────────────────────────────────────────────────
 
-def _equalise_3d_axes(ax) -> None:
-    limits  = np.array([ax.get_xlim3d(), ax.get_ylim3d()])
-    centers = limits.mean(axis=1)
-    max_r   = max((limits[:, 1] - limits[:, 0]).max() / 2.0, 1.0)
-    ax.set_xlim3d(centers[0] - max_r, centers[0] + max_r)
-    ax.set_ylim3d(centers[1] - max_r, centers[1] + max_r)
+def _equalise_3d_axes(ax, tx: np.ndarray, ty: np.ndarray, apogee_m: float) -> None:
+    if len(tx) == 0 or len(ty) == 0:
+        return
+    min_x, max_x = np.min(tx), np.max(tx)
+    min_y, max_y = np.min(ty), np.max(ty)
+
+    cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+    dx, dy = max_x - min_x, max_y - min_y
+    max_r = max(dx, dy) / 2.0 * 1.15  # 15% padding
+    max_r = max(max_r, 1.0)
+
+    ax.set_xlim3d(cx - max_r, cx + max_r)
+    ax.set_ylim3d(cy - max_r, cy + max_r)
+
+    if apogee_m > 0:
+        ax.set_zlim3d(0, apogee_m * 1.15)
+    else:
+        ax.set_zlim3d(0, 10)
 
 
 def _make_altitude_lc(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> object:
@@ -1821,9 +1846,7 @@ class AppWindow(QMainWindow):
         self.lat_input.setSpecialValueText("")
         self.lat_input.setValue(35.42215789)
         self.lat_input.wheelEvent = lambda event: event.ignore()
-        self.lat_input.valueChanged.connect(
-            lambda v: self.map_widget.update_launch(v, self.lon_input.value())
-            if v != -9999.0 else None)
+        self.lat_input.valueChanged.connect(self._on_manual_coord_changed)
 
         self.lon_input = QDoubleSpinBox(w)
         self.lon_input.setDecimals(6); self.lon_input.setSuffix("°")
@@ -1831,9 +1854,7 @@ class AppWindow(QMainWindow):
         self.lon_input.setSpecialValueText("")
         self.lon_input.setValue(139.42268826)
         self.lon_input.wheelEvent = lambda event: event.ignore()
-        self.lon_input.valueChanged.connect(
-            lambda v: self.map_widget.update_launch(self.lat_input.value(), v)
-            if v != -9999.0 else None)
+        self.lon_input.valueChanged.connect(self._on_manual_coord_changed)
 
         self.elev_input = QDoubleSpinBox(w)
         self.elev_input.setRange(0.0, 90.0)
@@ -1856,9 +1877,10 @@ class AppWindow(QMainWindow):
         self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
-        btn_dl_map = QPushButton("🗺️  Download Offline Map", w)
-        btn_dl_map.setObjectName("btn_download_map")
-        btn_dl_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
+        self.btn_offline_map = QPushButton("🗺️  Download Offline Map", w)
+        self.btn_offline_map.setObjectName("btn_download_map")
+        self.btn_offline_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
+        btn_dl_map = self.btn_offline_map
 
         btn_gps = QPushButton("📍  Get Current Location", w)
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
@@ -2046,8 +2068,8 @@ class AppWindow(QMainWindow):
         self.mode_combo.currentTextChanged.connect(
             lambda v: setattr(s, "sim_mode", v))
 
-        self.lat_input.valueChanged.connect(lambda v: setattr(s, 'launch_lat', v))
-        self.lon_input.valueChanged.connect(lambda v: setattr(s, 'launch_lon', v))
+        self.lat_input.valueChanged.connect(lambda v: setattr(self.state, 'launch_lat', v))
+        self.lon_input.valueChanged.connect(lambda v: setattr(self.state, 'launch_lon', v))
 
         s.launch_lat = self.lat_input.value()
         s.launch_lon = self.lon_input.value()
@@ -2073,6 +2095,7 @@ class AppWindow(QMainWindow):
     def update_profile_plot(self) -> None:
         ax = self.profile_ax
         ax.cla()
+        self.profile_canvas.clear_trajectory()
         _style_3d(ax, self.profile_fig)
 
         s   = self.state
@@ -2089,7 +2112,11 @@ class AppWindow(QMainWindow):
         azim = getattr(self, '_azim_slider', None)
         ax.view_init(elev=25, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
         if res is not None:
-            _equalise_3d_axes(ax)
+            tx = np.asarray(res.get("trajectory_x", [0.0]), dtype=float)
+            ty = np.asarray(res.get("trajectory_y", [0.0]), dtype=float)
+            tz = np.clip(np.asarray(res.get("trajectory_z", [0.0]), dtype=float), 0.0, None)
+            apogee_m = float(res.get("apogee_m", float(tz.max()) if len(tz) > 0 else 0.0))
+            _equalise_3d_axes(ax, tx, ty, apogee_m)
 
         # Draw Compass Rose in 3D
         cx, cy, cz = 0, 0, 0
@@ -2132,11 +2159,6 @@ class AppWindow(QMainWindow):
 
         apex_z = float(res.get("apogee_m",
                                float(tz.max()) if len(tz) > 0 else 0.0))
-
-        if apex_z > 0:
-            ax.set_zlim3d(0, apex_z * 1.15)
-        else:
-            ax.set_zlim3d(0, 10)
 
         phases = res.get("phases")
         events = res.get("events")
@@ -2768,6 +2790,43 @@ class AppWindow(QMainWindow):
 
     # ── Action handlers ────────────────────────────────────────────────────────
 
+
+
+    def _on_manual_coord_changed(self, _v=None) -> None:
+        lat = self.lat_input.value()
+        lon = self.lon_input.value()
+
+        if lat == -9999.0 or lon == -9999.0:
+            return
+
+        old_lat = getattr(self.state, 'launch_lat', 0.0)
+        old_lon = getattr(self.state, 'launch_lon', 0.0)
+
+        self.state.launch_lat = lat
+        self.state.launch_lon = lon
+        self.map_widget.update_launch(lat, lon)
+        self.state.needs_redraw.emit()
+
+        # Check if coordinates moved significantly
+        if abs(lat - old_lat) > 0.0001 or abs(lon - old_lon) > 0.0001:
+            # Emit download map signal if we have the button
+            if hasattr(self, 'btn_download_map') and self.btn_download_map:
+                self.btn_download_map.clicked.emit()
+
+    def _on_state_lat_changed(self, value: float) -> None:
+        if self.lat_input.value() != value:
+            from PySide6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.lat_input):
+                self.lat_input.setValue(value)
+            self.map_widget.update_launch(value, self.lon_input.value())
+
+    def _on_state_lon_changed(self, value: float) -> None:
+        if self.lon_input.value() != value:
+            from PySide6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.lon_input):
+                self.lon_input.setValue(value)
+            self.map_widget.update_launch(self.lat_input.value(), value)
+
     def _on_azim_changed(self, value: int) -> None:
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
         self.profile_ax.view_init(elev=25, azim=value)
@@ -2789,8 +2848,23 @@ class AppWindow(QMainWindow):
         self.state = state  # Overwrite with the true global instance
         self._app_state = state            # cached for the session menu slots
         self._adv_dialog.bind_app_state(state)
+
+        if hasattr(state, 'launch_lat_changed'):
+            try: state.launch_lat_changed.disconnect()
+            except Exception: pass
+            state.launch_lat_changed.connect(self._on_state_lat_changed)
+        if hasattr(state, 'launch_lon_changed'):
+            try: state.launch_lon_changed.disconnect()
+            except Exception: pass
+            state.launch_lon_changed.connect(self._on_state_lon_changed)
+
+        # Re-inject current UI values to state
+        state.launch_lat = self.lat_input.value()
+        state.launch_lon = self.lon_input.value()
         if hasattr(self, 'map_view') and self.map_view:
             self.map_view.bind_app_state(state)
+        if hasattr(self, 'profile_canvas') and self.profile_canvas:
+            self.profile_canvas.bind_app_state(state)
 
     # ── Session persistence (Phase E) ────────────────────────────────────────
 

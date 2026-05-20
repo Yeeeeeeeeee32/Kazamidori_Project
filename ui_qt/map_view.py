@@ -509,9 +509,15 @@ class MapView(QWidget):
             print(f"Error rendering offline map tiles: {e}")
 
     def _on_reset_view(self):
-        # Reset the view to the dynamic bounds
-        if getattr(self, '_current_all_x', None) and getattr(self, '_current_all_y', None):
-            self._calculate_and_apply_bounds(self._current_all_x, self._current_all_y)
-        else:
-            self.ax.autoscale()
-        self.canvas.draw()
+        # Reset the view to frame the Launch Site (0,0) and the Target Radius circle
+        target_radius = _safe_float(getattr(self._state, 'target_radius', 0.0))
+        # Use a default minimum of 100m to prevent collapsing view if target radius is 0
+        r_box = target_radius if target_radius > 0 else 100.0
+
+        # Add 10% padding for visual comfort
+        margin = r_box * 0.10
+        limit = r_box + margin
+
+        self.ax.set_xlim(-limit, limit)
+        self.ax.set_ylim(-limit, limit)
+        self.canvas.draw_idle()
