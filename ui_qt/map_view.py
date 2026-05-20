@@ -186,13 +186,6 @@ class MapView(QWidget):
             self.ax.set_ylabel("North (m)", color='#cdd6f4')
             self.ax.tick_params(colors='#cdd6f4')
 
-            try:
-                cur_lat = float(getattr(self._state, 'launch_lat', 0.0))
-                cur_lon = float(getattr(self._state, 'launch_lon', 0.0))
-                self.ax.set_title(f"Launch Site: {cur_lat:.5f}, {cur_lon:.5f}", color='#cdd6f4')
-            except Exception:
-                pass
-
             # Phase 4.1: Offline Map Raster Tile Engine
             self._render_map_tiles()
 
@@ -369,7 +362,7 @@ class MapView(QWidget):
     def _on_button_press(self, event):
         if event.inaxes != self.ax: return
         if event.button == 1:
-            if event.key == 'shift':
+            if event.key == 'control':
                 if event.xdata is not None and event.ydata is not None:
                     self._drag_start = (event.xdata, event.ydata)
                     self._is_dragging = True
