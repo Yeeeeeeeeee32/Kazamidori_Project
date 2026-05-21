@@ -1,23 +1,23 @@
-# Kazamidori Project - Codebase Health & Physics Integrity Audit
+# Codebase Health & Physics Integrity Audit Protocol
 
-This protocol defines the strict checks performed during a manual "Health Audit" of the Kazamidori Project codebase.
+This document outlines the strict checklist for the Kazamidori Project's codebase health and physics integrity audits.
+It must be executed manually when requested, or automatically before major pull requests.
 
 ## 1. Physics & Math Validation
-*   **Algorithms in `core/`**: Verify that physical models (e.g., rigid body mechanics, aerodynamics, coordinate transformations) are logically sound and mathematically correct.
-*   **Magic Numbers**: Scan formulas for undocumented or hardcoded numeric literals. All constants must be extracted to `core/constants.py` or defined explicitly with descriptive comments.
+- Check algorithms in `core/` for logical correctness.
+- Flag any magic numbers hidden in formulas. Ensure they are extracted into well-named constants.
 
 ## 2. Strict Unit Consistency
-*   **Explicit Naming**: Ensure all variable and parameter names carrying physical quantities include their units (e.g., `angle_deg`, `angle_rad`, `velocity_mps`, `mass_kg`).
-*   **Missing Conversions**: Check for logic passing degrees to trigonometric functions expecting radians (e.g., `math.cos()`, `math.sin()`) without explicit conversion (`math.radians()`), or vice-versa (`math.degrees()`).
+- Ensure explicit naming conventions (e.g., `angle_deg` vs `angle_rad`, `velocity_mps`, `mass_kg`).
+- Flag any missing conversions (e.g., passing degrees into `math.cos()` without `math.radians()`, or mismatched metric/imperial conversions).
+- Verify standard SI units are used natively within calculation contexts, unless explicitly dealing with UI inputs/outputs.
 
 ## 3. Coordinate System Integrity
-*   **Separation of WGS84 and ENU**: Ensure strict boundaries between Geodetic coordinates (Latitude/Longitude in WGS84) and Local Cartesian coordinates (East/North/Up in meters).
-*   **UI/Map Rendering**: Verify that the Matplotlib/PySide6 map views render **only** using ENU Cartesian coordinates. Lat/Lon should exclusively be used for data ingest, initial origin setup, or text annotations.
+- Verify strict separation between WGS84 (Latitude/Longitude) and local ENU (East/North/Up in meters).
+- Ensure the UI/Map strictly renders in ENU. Lat/Lon is only used for data loading, text display, or initial map center calibration.
+- Explicit checks for reverse coordinates or incorrectly swapped X/Y vs Lat/Lon parameters.
 
 ## 4. DRY Principle (Don't Repeat Yourself)
-*   **Duplicated Constants**: Identify constants defined in multiple places. Ensure single-source-of-truth from `core/constants.py`.
-*   **Redundant Helpers/Classes**: Find functions or classes duplicated across modules (e.g., math utilities in both `core/geometry_math.py` and `utils/geo_math.py` that perform identical tasks or violate the `core`/`utils` separation of concerns).
-*   **Dead Code**: Flag unused imports, unused local variables, or obsolete functions.
-
----
-*To execute this audit, the Lead QA agent will systematically scan the current working tree against these criteria and produce a Baseline Audit Report.*
+- Scan for duplicated constants across multiple files.
+- Identify overlapping helper functions or redundant class definitions (e.g., math utilities defined in both `core/` and `utils/`).
+- Flag unused imports or dead code across the repository.
