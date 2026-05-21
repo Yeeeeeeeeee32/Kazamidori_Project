@@ -719,42 +719,37 @@ class SimulationWorker(QThread):
         # ── ProcessPoolExecutor for CPU-bound Monte Carlo ─────────────────────
         # max_workers=os.cpu_count() fully utilizes available CPU cores,
         # completely bypassing the Python GIL for heavy RocketPy math.
+        from itertools import repeat
+
         with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            futures = []
             # Start random seed block to avoid generating exactly the same stream
             # of random numbers in each process if we were not passing seeds.
             base_seed = _random.randint(0, 2**31 - 1)
 
-            for i in range(n_total):
-                if self._stop_event.is_set():
-                    break
-
-                # Submit task
-                fut = executor.submit(
-                    _mc_worker_task,
-                    sim_params,
-                    wind_unc,
-                    gust_sigma,
-                    tu,
-                    raw_thrust,
-                    elev,
-                    azi,
-                    base_u,
-                    base_v,
-                    flight_mode,
-                    target_radius,
-                    base_seed + i,
-                    i + 1,
-                )
-                futures.append(fut)
+            chunksize = max(1, n_total // (os.cpu_count() * 4))
 
             # Gather results as they complete
-            for _done, fut in enumerate(as_completed(futures), start=1):
+            for _done, res in enumerate(executor.map(
+                _mc_worker_task,
+                repeat(sim_params, n_total),
+                repeat(wind_unc, n_total),
+                repeat(gust_sigma, n_total),
+                repeat(tu, n_total),
+                repeat(raw_thrust, n_total),
+                repeat(elev, n_total),
+                repeat(azi, n_total),
+                repeat(base_u, n_total),
+                repeat(base_v, n_total),
+                repeat(flight_mode, n_total),
+                repeat(target_radius, n_total),
+                range(base_seed, base_seed + n_total),
+                range(1, n_total + 1),
+                chunksize=chunksize
+            ), start=1):
                 if self._stop_event.is_set():
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
 
-                res = fut.result()
                 if res is not None:
                     scatter.append(res)
 
