@@ -2624,10 +2624,10 @@ class AppWindow(QMainWindow):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(
                 self, "Cd Curve Parse Error",
-                f"Failed to load Cd curve from:
+                f"""Failed to load Cd curve from:
 {filepath}
 
-{exc}")
+{exc}""")
             return
 
         attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"

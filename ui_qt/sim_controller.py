@@ -1355,23 +1355,22 @@ class SimController(QObject):
 
     @Slot()
     def _on_wind_tick(self) -> None:
-        lowest_wind = sorted(self._state.wind_profile, key=lambda n: n["alt_m"])[0] if self._state.wind_profile else {"speed_ms": 0.0, "dir_deg": 0.0}
-        base_spd  = lowest_wind["speed_ms"]
-        base_dir  = lowest_wind["dir_deg"]
+        # Surface and upper wind baselines now live on the global AppState
+        # directly (the AdvancedSettingsDialog spinboxes that used to source
+        # these have been removed, and ``state.wind_profile`` is not a property
+        # on the global AppState — only on the legacy local one).
+        base_spd  = float(getattr(self._state, "surf_wind_speed", 0.0) or 0.0)
+        base_dir  = float(getattr(self._state, "surf_wind_dir",   0.0) or 0.0)
+        up_spd    = float(getattr(self._state, "upper_wind_speed", 0.0) or 0.0)
+        up_dir    = float(getattr(self._state, "upper_wind_dir",   0.0) or 0.0)
         speed     = max(0.0, base_spd + random.gauss(0.0, base_spd * 0.05 + 0.1))
         direction = (base_dir + random.gauss(0.0, 3.0)) % 360.0
 
         # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
         self._state.append_wind_reading(speed, direction)
 
-
-
         # Keep the status-bar readout current.
-        self._window.update_wind_readout(
-            speed, direction,
-            self._window.up_spd_input.value(),
-            self._window.up_dir_input.value(),
-        )
+        self._window.update_wind_readout(speed, direction, up_spd, up_dir)
 
         # Phase 2 tolerance evaluation — no-op until phase2_active is True.
         self._state.check_tolerance(speed, direction)
