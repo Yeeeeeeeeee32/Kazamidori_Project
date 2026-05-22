@@ -1004,11 +1004,6 @@ class AppWindow(QMainWindow):
         tb.addWidget(btn_stop)
         _vline()
 
-        self.btn_download_map = QPushButton("🗺️ Download Map", tb)
-        self.btn_download_map.setObjectName("btn_download_map")
-        self.btn_download_map.setToolTip("Download offline map tiles for current location")
-        tb.addWidget(self.btn_download_map)
-
         spacer = QWidget(tb)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
@@ -1671,27 +1666,31 @@ class AppWindow(QMainWindow):
         self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
-        self.btn_offline_map = QPushButton("🗺️  Download Offline Map", w)
-        self.btn_offline_map.setObjectName("btn_download_map")
-        self.btn_offline_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
-        btn_dl_map = self.btn_offline_map
+        self.btn_download_map = QPushButton("🗺️  Download Offline Map", w)
+        self.btn_download_map.setObjectName("btn_download_map")
+        self.btn_download_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
 
         btn_gps = QPushButton("📍  Get Current Location", w)
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
-        form_lay = QFormLayout()
-        form_lay.setContentsMargins(0, 0, 0, 0)
-        form_lay.setSpacing(4)
-        form_lay.addRow("Latitude:", self.lat_input)
-        form_lay.addRow("Longitude:", self.lon_input)
-        form_lay.addRow("Rail Elevation:", self.elev_input)
-        form_lay.addRow("Rail Length:", self.rail_len_input)
-        form_lay.addRow("Rail Azimuth:", self.azim_input)
-        lay.addLayout(form_lay)
+        form_lay1 = QFormLayout()
+        form_lay1.setContentsMargins(0, 0, 0, 0)
+        form_lay1.setSpacing(4)
+        form_lay1.addRow("Latitude:", self.lat_input)
+        form_lay1.addRow("Longitude:", self.lon_input)
+        lay.addLayout(form_lay1)
 
         lay.addWidget(btn_gps)
-        lay.addWidget(btn_dl_map)
+        lay.addWidget(self.btn_download_map)
+
+        form_lay2 = QFormLayout()
+        form_lay2.setContentsMargins(0, 0, 0, 0)
+        form_lay2.setSpacing(4)
+        form_lay2.addRow("Rail Elevation:", self.elev_input)
+        form_lay2.addRow("Rail Length:", self.rail_len_input)
+        form_lay2.addRow("Rail Azimuth:", self.azim_input)
+        lay.addLayout(form_lay2)
 
         return w
 
