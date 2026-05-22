@@ -104,8 +104,8 @@ def _circle_points_m(
     """Return *n* (x, y) vertices approximating a circle in metric space."""
     step = 2.0 * math.pi / n
     return [
-        (cx + radius * math.cos(step * i),
-         cy + radius * math.sin(step * i))
+        (cx + radius * math.sin(step * i),
+         cy + radius * math.cos(step * i))
         for i in range(n)
     ]
 
@@ -306,7 +306,7 @@ def compute_error_ellipse(
     lam1      = float(eigvals[1])             # major-axis variance
     lam2      = float(eigvals[0])             # minor-axis variance
     major_vec = eigvecs[:, 1]
-    angle_rad = float(math.atan2(float(major_vec[1]), float(major_vec[0])))
+    angle_rad = float(math.atan2(float(major_vec[0]), float(major_vec[1])))
 
     k = chi2_scale(prob_pct)
     a = k * math.sqrt(max(lam1, 0.0))
@@ -410,7 +410,7 @@ def compute_cep_ellipse(
 
     a         = k * float(np.sqrt(max(float(eigvals[0]), 0.0)))   # semi-major
     b         = k * float(np.sqrt(max(float(eigvals[1]), 0.0)))   # semi-minor
-    angle_rad = float(np.arctan2(float(eigvecs[1, 0]), float(eigvecs[0, 0])))
+    angle_rad = float(np.arctan2(float(eigvecs[0, 0]), float(eigvecs[1, 0])))
     angle_deg = float(np.degrees(angle_rad))
 
     return {
@@ -471,7 +471,7 @@ def compute_cep_circle(scatter: list[tuple[float, float]], n: int = 36) -> "dict
     pts = []
     for i in range(n):
         ang = 2 * math.pi * i / n
-        pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+        pts.append((cx + r * math.sin(ang), cy + r * math.cos(ang)))
 
     return {
         "cx_m": cx,

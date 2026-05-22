@@ -81,8 +81,8 @@ def circle_polygon(
     coords = []
     for i in range(n):
         angle = math.pi * 2 * i / n
-        dx = radius_m * math.cos(angle)
-        dy = radius_m * math.sin(angle)
+        dx = radius_m * math.sin(angle)
+        dy = radius_m * math.cos(angle)
         d_lat = (dy / R_EARTH) * (180.0 / math.pi)
         d_lon = (dx / (R_EARTH * math.cos(math.pi * lat / 180.0))) * (180.0 / math.pi)
         coords.append((lat + d_lat, lon + d_lon))
@@ -114,8 +114,8 @@ def ellipse_polygon(
     ca, sa = math.cos(angle_rad), math.sin(angle_rad)
     for i in range(n):
         t  = 2.0 * math.pi * i / n
-        xe = a * math.cos(t) * ca - b * math.sin(t) * sa
-        ye = a * math.cos(t) * sa + b * math.sin(t) * ca
+        xe = b * math.sin(t) * ca + a * math.cos(t) * sa
+        ye = -b * math.sin(t) * sa + a * math.cos(t) * ca
         lat, lon = offset_to_latlon(ref_lat, ref_lon, cx + xe, cy + ye)
         coords.append((lat, lon))
     return coords

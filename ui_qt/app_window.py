@@ -714,8 +714,8 @@ def _draw_ellipse_3d(ax: object, *, cx: float, cy: float, a: float, b: float, an
         label: Legend label.
     """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
-    xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
-    ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
+    xe = b * np.sin(t) * np.cos(angle_rad) + a * np.cos(t) * np.sin(angle_rad)
+    ye = -b * np.sin(t) * np.sin(angle_rad) + a * np.cos(t) * np.cos(angle_rad)
     ax.plot(cx + xe, cy + ye, np.zeros(120),
             color=color, lw=lw, linestyle="--", alpha=0.90,
             label=label if label else "_nolegend_")
@@ -741,8 +741,8 @@ def _draw_ellipse_2d(ax: object, *, cx: float, cy: float, a: float, b: float, an
         The created Line2D artist.
     """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
-    xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
-    ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
+    xe = b * np.sin(t) * np.cos(angle_rad) + a * np.cos(t) * np.sin(angle_rad)
+    ye = -b * np.sin(t) * np.sin(angle_rad) + a * np.cos(t) * np.cos(angle_rad)
     (line,) = ax.plot(cx + xe, cy + ye,
                       color=color, lw=lw, linestyle="--", alpha=alpha,
                       label=label if label else "_nolegend_")
@@ -2532,10 +2532,10 @@ class AppWindow(QMainWindow):
         if ellipse and "a" in ellipse and "b" in ellipse:
             t   = np.linspace(0.0, 2.0 * np.pi, 120)
             ang = float(ellipse.get("angle_rad", 0.0))
-            xe  = (float(ellipse["a"]) * np.cos(t) * np.cos(ang)
-                   - float(ellipse["b"]) * np.sin(t) * np.sin(ang))
-            ye  = (float(ellipse["a"]) * np.cos(t) * np.sin(ang)
-                   + float(ellipse["b"]) * np.sin(t) * np.cos(ang))
+            xe  = (float(ellipse["b"]) * np.sin(t) * np.cos(ang)
+                   + float(ellipse["a"]) * np.cos(t) * np.sin(ang))
+            ye  = (-float(ellipse["b"]) * np.sin(t) * np.sin(ang)
+                   + float(ellipse["a"]) * np.cos(t) * np.cos(ang))
             (line,) = ax.plot(
                 float(ellipse["cx"]) + xe,
                 float(ellipse["cy"]) + ye,
