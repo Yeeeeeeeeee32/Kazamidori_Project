@@ -1,8 +1,5 @@
 import cProfile
 import pstats
-import random
-import multiprocessing as mp
-
 from ui_qt.workers import _mc_worker_task
 import random
 
@@ -33,27 +30,23 @@ sim_params = {
     "launch_lon": 135,
 }
 
-def do_work(i):
-    return _mc_worker_task(
-        sim_params,
-        wind_unc=0.2,
-        gust_sigma=1.0,
-        tu=0.05,
-        raw_thrust=sim_params["thrust_data"],
-        elev=sim_params["elev"],
-        azi=sim_params["azi"],
-        base_u=sim_params["wind_u_prof"],
-        base_v=sim_params["wind_v_prof"],
-        flight_mode="Altitude Competition",
-        target_radius=1000,
-        seed=i
-    )
-
 def run():
-    with mp.Pool(mp.cpu_count()) as pool:
-        pool.map(do_work, range(100))
+    for i in range(100):
+        _mc_worker_task(
+            sim_params,
+            wind_unc=0.2,
+            gust_sigma=1.0,
+            tu=0.05,
+            raw_thrust=sim_params["thrust_data"],
+            elev=sim_params["elev"],
+            azi=sim_params["azi"],
+            base_u=sim_params["wind_u_prof"],
+            base_v=sim_params["wind_v_prof"],
+            flight_mode="Altitude Competition",
+            target_radius=1000,
+            seed=i
+        )
 
-if __name__ == '__main__':
-    cProfile.run('run()', 'stats_mp')
-    p = pstats.Stats('stats_mp')
-    p.sort_stats('tottime').print_stats(15)
+cProfile.run('run()', 'stats_worker')
+p = pstats.Stats('stats_worker')
+p.sort_stats('tottime').print_stats(15)
