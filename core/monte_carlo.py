@@ -165,25 +165,39 @@ def _perturb_wind_profile(
     v_new: list[tuple[float, float]] = [None] * n  # type: ignore
     spd_out: list[tuple[float, float]] = [None] * n  # type: ignore
 
-    for i, ((alt_u, u_nom), (_, v_nom)) in enumerate(zip(u_prof, v_prof)):
-        # 1. Global (synoptic) rotation & scaling
-        u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
-        v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
+    if has_gust:
+        for i, ((alt_u, u_nom), (_, v_nom)) in enumerate(zip(u_prof, v_prof)):
+            # 1. Global (synoptic) rotation & scaling
+            u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
+            v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
 
-        # 2. Local (mesoscale) turbulence
-        local_spd = math_hypot(u_nom, v_nom)
-        sigma     = wu * max(local_spd, 1.0) * 0.30
-        u_val = u_g + rng_gauss(0.0, sigma)
-        v_val = v_g + rng_gauss(0.0, sigma)
+            # 2. Local (mesoscale) turbulence
+            local_spd = math_hypot(u_nom, v_nom)
+            sigma     = wu * max(local_spd, 1.0) * 0.30
 
-        # 3. Gust layer
-        if has_gust:
-            u_val += rng_gauss(0.0, gust_sigma)
-            v_val += rng_gauss(0.0, gust_sigma)
+            # Combine mesoscale and gust layers (both Gaussian) using sum of variances
+            total_sigma = math_hypot(sigma, gust_sigma)
+            u_val = u_g + rng_gauss(0.0, total_sigma)
+            v_val = v_g + rng_gauss(0.0, total_sigma)
 
-        u_new[i] = (alt_u, u_val)
-        v_new[i] = (alt_u, v_val)
-        spd_out[i] = (alt_u, math_hypot(u_val, v_val))
+            u_new[i] = (alt_u, u_val)
+            v_new[i] = (alt_u, v_val)
+            spd_out[i] = (alt_u, math_hypot(u_val, v_val))
+    else:
+        for i, ((alt_u, u_nom), (_, v_nom)) in enumerate(zip(u_prof, v_prof)):
+            # 1. Global (synoptic) rotation & scaling
+            u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
+            v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
+
+            # 2. Local (mesoscale) turbulence
+            local_spd = math_hypot(u_nom, v_nom)
+            sigma     = wu * max(local_spd, 1.0) * 0.30
+            u_val = u_g + rng_gauss(0.0, sigma)
+            v_val = v_g + rng_gauss(0.0, sigma)
+
+            u_new[i] = (alt_u, u_val)
+            v_new[i] = (alt_u, v_val)
+            spd_out[i] = (alt_u, math_hypot(u_val, v_val))
 
     return u_new, v_new, spd_out
 
