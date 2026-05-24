@@ -297,17 +297,26 @@ def optimize_launch_angle(
     import time
     _t_start = time.perf_counter()
 
+    from itertools import repeat
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = []
+        args_e = []
+        args_a = []
         for e_ in elev_grid:
             for a_ in azi_grid:
-                futures.append(executor.submit(_grid_search_worker, e_, a_, base_params))
+                args_e.append(e_)
+                args_a.append(a_)
 
-        for future in concurrent.futures.as_completed(futures):
+        chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
+        for e_, a_, res in executor.map(
+            _grid_search_worker,
+            args_e,
+            args_a,
+            repeat(base_params, N),
+            chunksize=chunksize
+        ):
             if stop_flag.is_set():
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise RuntimeError('cancelled')
-            e_, a_, res = future.result()
             done += 1
             if res['ok']:
                 score = objective(res, mc_r=None)
@@ -636,18 +645,27 @@ def run_phase1(
     _t_start = time.perf_counter()
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = []
+        args_e = []
+        args_a = []
+        args_p = []
         for e in elev_grid:
             for a in azi_grid:
                 p = p1_params_at_wind(base_params, mu_nom)
-                # _grid_search_worker handles simulate_once and discards the bulky trajectory
-                futures.append(executor.submit(_grid_search_worker, e, a, p))
+                args_e.append(e)
+                args_a.append(a)
+                args_p.append(p)
 
-        for future in concurrent.futures.as_completed(futures):
+        chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
+        for e_, a_, res in executor.map(
+            _grid_search_worker,
+            args_e,
+            args_a,
+            args_p,
+            chunksize=chunksize
+        ):
             if stop_flag.is_set():
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise RuntimeError('cancelled')
-            e_, a_, res = future.result()
             done += 1
             if res['ok']:
                 if not use_r_filter or res['r_horiz'] <= target_r:
