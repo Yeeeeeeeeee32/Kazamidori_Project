@@ -453,6 +453,7 @@ class ManualSetupDialog(QDialog):
             validator.setNotation(QDoubleValidator.StandardNotation)
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
+            le.setClearButtonEnabled(True)
             le.setText("")
             return le
 
@@ -1096,6 +1097,7 @@ class AppWindow(QMainWindow):
         validator.setNotation(QDoubleValidator.StandardNotation)
         self.af_backfire_input.setValidator(validator)
         self.af_backfire_input.setPlaceholderText("入力必須")
+        self.af_backfire_input.setClearButtonEnabled(True)
         self.af_backfire_input.setText("")
         self._setup_splitter()
 
@@ -1617,6 +1619,7 @@ class AppWindow(QMainWindow):
             validator.setNotation(QDoubleValidator.StandardNotation)
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
+            le.setClearButtonEnabled(True)
             le.setText("")
             return le
 
