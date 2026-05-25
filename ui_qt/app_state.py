@@ -102,6 +102,7 @@ class AppState(QObject):
 
     # ── Real-time wind ─────────────────────────────────────────────────────────
     wind_profile_changed     = Signal(object)
+    wind_profile_data_changed = Signal(object)
     gust_speed_changed       = Signal(float)
 
     # ── Wind history ───────────────────────────────────────────────────────────
@@ -880,6 +881,15 @@ class AppState(QObject):
     def wind_profile(self, value: list) -> None:
         self._wind_profile = value
         self.wind_profile_changed.emit(value)
+        self.wind_profile_data_changed.emit(value)
+
+    @Property(object, notify=wind_profile_data_changed)
+    def wind_profile_data(self) -> list:
+        return self._wind_profile
+
+    @wind_profile_data.setter
+    def wind_profile_data(self, value: list) -> None:
+        self.wind_profile = value
 
     @Property(float, notify=gust_speed_changed)
     def gust_speed(self) -> float:

@@ -94,41 +94,29 @@ _LevelLike = Union[WindLevel, tuple, list]
 # ── Vector conversion helpers ─────────────────────────────────────────────────
 
 def speed_dir_to_uv(speed: float, dir_deg: float) -> tuple[float, float]:
-    """Convert meteorological speed/direction to East/North vector components.
+    """Convert speed/direction to East/North vector components.
 
-    Meteorological convention: *dir_deg* is the direction FROM which the
-    wind blows (e.g. 270° = westerly wind, moves toward the east).
-
-    Args:
-        speed:    Wind speed (m/s); must be ≥ 0.
-        dir_deg:  Wind direction in degrees [0, 360).
-
-    Returns:
-        (u, v) — East (positive = eastward) and North (positive = northward)
-        components in m/s.
+    Rule 1 (Coordinates): ENU System. Y-axis is True North. X-axis is East. 
+    0° is North, increasing Clockwise.
+    wind_x = speed * sin(direction)
+    wind_y = speed * cos(direction)
     """
     rad = math.radians(dir_deg)
-    return (-speed * math.sin(rad),
-            -speed * math.cos(rad))
+    wind_x = speed * math.sin(rad)
+    wind_y = speed * math.cos(rad)
+    return (wind_x, wind_y)
 
 
 def uv_to_speed_dir(u: float, v: float) -> tuple[float, float]:
-    """Convert East/North vector components to meteorological speed/direction.
+    """Convert East/North vector components to speed/direction.
 
-    Safe for zero or near-zero vectors: returns (0.0, 0.0) rather than
-    raising ZeroDivisionError or producing NaN.
-
-    Args:
-        u:  East component (m/s, positive = eastward).
-        v:  North component (m/s, positive = northward).
-
-    Returns:
-        (speed, dir_deg) — speed in m/s, direction in degrees [0, 360).
+    Inverting Rule 1:
+    direction = atan2(wind_x, wind_y)
     """
     speed = math.hypot(u, v)
     if speed < 1e-9:
         return 0.0, 0.0
-    dir_deg = math.degrees(math.atan2(-u, -v)) % 360.0
+    dir_deg = math.degrees(math.atan2(u, v)) % 360.0
     return speed, dir_deg
 
 

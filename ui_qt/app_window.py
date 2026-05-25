@@ -36,7 +36,7 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, QSize, QObject, Signal, Slot, QTimer
 from PySide6.QtWidgets import (    QLineEdit,
     QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
+    QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QScrollArea,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox,
     QComboBox, QPushButton, QToolBar, QStatusBar,
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
@@ -567,27 +567,36 @@ class AdvancedSettingsDialog(QDialog):
         frm_wind.setSpacing(6)
         frm_wind.setContentsMargins(10, 12, 10, 8)
 
-        self.wind_profile_table = QTableWidget(0, 3)
-        self.wind_profile_table.setHorizontalHeaderLabels(["Altitude (m)", "Speed (m/s)", "Dir (°)"])
-        self.wind_profile_table.verticalHeader().setVisible(False)
-        self.wind_profile_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        hh = self.wind_profile_table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.wind_profile_table.itemChanged.connect(self._on_wind_table_changed)
+        self.wind_grid = QGridLayout()
+        self.wind_grid.setContentsMargins(0, 0, 0, 0)
+        self.wind_grid.setSpacing(8)
 
-        btn_add_row = QPushButton("➕ Add Row")
-        btn_add_row.setToolTip("Add a new altitude node to the wind profile")
-        btn_add_row.clicked.connect(self._add_wind_row)
-        btn_del_row = QPushButton("➖ Delete Row")
-        btn_del_row.setToolTip("Remove the selected altitude node from the wind profile")
-        btn_del_row.clicked.connect(self._delete_wind_row)
+        self.wind_grid.addWidget(QLabel("Altitude (m)"), 0, 0)
+        self.wind_grid.addWidget(QLabel("Speed (m/s)"), 0, 1)
+        self.wind_grid.addWidget(QLabel("Dir (°)"), 0, 2)
 
-        row_btns = QHBoxLayout()
-        row_btns.addWidget(btn_add_row)
-        row_btns.addWidget(btn_del_row)
+        self.wind_inputs = []
+        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
 
-        frm_wind.addWidget(self.wind_profile_table)
-        frm_wind.addLayout(row_btns)
+        for i, alt in enumerate(alts):
+            row = i + 1
+            alt_lbl = QLabel(f"{alt}")
+            
+            spd_edit = QLineEdit()
+            spd_edit.setValidator(QDoubleValidator())
+            spd_edit.textChanged.connect(self._on_wind_grid_changed)
+            
+            dir_edit = QLineEdit()
+            dir_edit.setValidator(QDoubleValidator())
+            dir_edit.textChanged.connect(self._on_wind_grid_changed)
+            
+            self.wind_grid.addWidget(alt_lbl, row, 0)
+            self.wind_grid.addWidget(spd_edit, row, 1)
+            self.wind_grid.addWidget(dir_edit, row, 2)
+            
+            self.wind_inputs.append((alt, spd_edit, dir_edit))
+
+        frm_wind.addLayout(self.wind_grid)
         tabs.addItem(grp_wind, "🌬️ Wind Profile")
 
         # ── Monte Carlo group ─────────────────────────────────────────────────
@@ -710,24 +719,24 @@ class AdvancedSettingsDialog(QDialog):
     def _bind_wind_profile_table(self, state) -> None:
         self.state = state
         self._wind_table_updating = True
-        self.wind_profile_table.setRowCount(len(state.wind_profile))
-        for i, node in enumerate(state.wind_profile):
-            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
-            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
-            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
+        
+        state_map = {float(n.get("alt_m", 0)): n for n in state.wind_profile}
+        for alt, spd_edit, dir_edit in self.wind_inputs:
+            node = state_map.get(alt, {"speed_ms": 0.0, "dir_deg": 0.0})
+            spd_edit.setText(str(node.get("speed_ms", 0.0)))
+            dir_edit.setText(str(node.get("dir_deg", 0.0)))
+            
         self._wind_table_updating = False
-
         state.wind_profile_changed.connect(self._on_wind_state_changed)
 
-    def _on_wind_table_changed(self, item=None):
+    def _on_wind_grid_changed(self):
         if getattr(self, '_wind_table_updating', False):
             return
         profile = []
-        for i in range(self.wind_profile_table.rowCount()):
+        for alt, spd_edit, dir_edit in self.wind_inputs:
             try:
-                alt = float(self.wind_profile_table.item(i, 0).text() if self.wind_profile_table.item(i, 0) else 0)
-                spd = float(self.wind_profile_table.item(i, 1).text() if self.wind_profile_table.item(i, 1) else 0)
-                dir_deg = float(self.wind_profile_table.item(i, 2).text() if self.wind_profile_table.item(i, 2) else 0)
+                spd = float(spd_edit.text() or 0.0)
+                dir_deg = float(dir_edit.text() or 0.0)
                 profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
             except ValueError:
                 continue
@@ -737,28 +746,12 @@ class AdvancedSettingsDialog(QDialog):
         if getattr(self, '_wind_table_updating', False):
             return
         self._wind_table_updating = True
-        self.wind_profile_table.setRowCount(len(profile))
-        for i, node in enumerate(profile):
-            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
-            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
-            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
+        state_map = {float(n.get("alt_m", 0)): n for n in profile}
+        for alt, spd_edit, dir_edit in self.wind_inputs:
+            node = state_map.get(alt, {"speed_ms": 0.0, "dir_deg": 0.0})
+            spd_edit.setText(str(node.get("speed_ms", 0.0)))
+            dir_edit.setText(str(node.get("dir_deg", 0.0)))
         self._wind_table_updating = False
-
-    def _add_wind_row(self):
-        self._wind_table_updating = True
-        row_pos = self.wind_profile_table.rowCount()
-        self.wind_profile_table.insertRow(row_pos)
-        self.wind_profile_table.setItem(row_pos, 0, QTableWidgetItem("0.0"))
-        self.wind_profile_table.setItem(row_pos, 1, QTableWidgetItem("0.0"))
-        self.wind_profile_table.setItem(row_pos, 2, QTableWidgetItem("0.0"))
-        self._wind_table_updating = False
-        self._on_wind_table_changed()
-
-    def _delete_wind_row(self):
-        row = self.wind_profile_table.currentRow()
-        if row >= 0:
-            self.wind_profile_table.removeRow(row)
-            self._on_wind_table_changed()
 
 
 class _MplCanvas(FigureCanvasQTAgg):
@@ -1066,7 +1059,7 @@ class AppWindow(QMainWindow):
         self.power_off_cd_curve_preview_btn = self._adv_dialog.power_off_cd_curve_preview_btn
         self.power_off_cd_curve_clear_btn = self._adv_dialog.power_off_cd_curve_clear_btn
         self.power_off_cd_curve_label = self._adv_dialog.power_off_cd_curve_label
-        self.wind_profile_table = self._adv_dialog.wind_profile_table
+
 
         self.power_on_cd_curve_load_btn.clicked.connect(lambda: self._on_load_cd_curve("power_on"))
         self.power_on_cd_curve_preview_btn.clicked.connect(lambda: self._on_preview_cd_curve("power_on"))
