@@ -69,6 +69,7 @@ from typing import Any
 
 import numpy as np
 from rocketpy import Environment, SolidMotor, Rocket, Flight
+from scipy.interpolate import CubicSpline
 
 from .constants import G0, RHO_0
 
@@ -355,14 +356,23 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         # for those two variables (equivalent to ``standard_atmosphere`` plus
         # custom wind).  The previous hard-coded ``temperature=300`` flattened
         # the entire column to 26.85 °C and corrupted high-altitude density.
+
+        u_alts = [pt[0] for pt in wind_u_prof]
+        u_vals = [pt[1] for pt in wind_u_prof]
+        v_alts = [pt[0] for pt in wind_v_prof]
+        v_vals = [pt[1] for pt in wind_v_prof]
+
+        u_spline = CubicSpline(u_alts, u_vals, bc_type='natural')
+        v_spline = CubicSpline(v_alts, v_vals, bc_type='natural')
+
         env = Environment(
             latitude=launch_lat, longitude=launch_lon, elevation=0)
         env.set_atmospheric_model(
             type="custom_atmosphere",
             pressure=None,
             temperature=None,
-            wind_u=wind_u_prof,
-            wind_v=wind_v_prof,
+            wind_u=lambda h: float(u_spline(h)),
+            wind_v=lambda h: float(v_spline(h)),
         )
 
         def _build_rocket() -> tuple:

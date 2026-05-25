@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (    QLineEdit,
     QMessageBox, QToolBox, QSplitter, QSlider,
     QDialog, QDialogButtonBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractButton,
+    QAbstractButton, QGridLayout
 )
 from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
@@ -556,7 +556,7 @@ class AdvancedSettingsDialog(QDialog):
 
         # ── Wind group ────────────────────────────────────────────────────────
         grp_wind = QWidget()
-        frm_wind = QVBoxLayout(grp_wind)
+        frm_wind = QGridLayout(grp_wind)
         frm_wind.setSpacing(6)
         frm_wind.setContentsMargins(10, 12, 10, 8)
 
@@ -725,6 +725,7 @@ class AdvancedSettingsDialog(QDialog):
     def _on_wind_grid_changed(self):
         if getattr(self, '_wind_table_updating', False):
             return
+        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
         profile = []
         for alt, spd_edit, dir_edit in self.wind_inputs:
             try:
@@ -732,11 +733,11 @@ class AdvancedSettingsDialog(QDialog):
                 dir_deg = float(dir_edit.text() or 0.0)
                 profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
             except ValueError:
-                continue
-        self.state.wind_profile = profile
+                profile.append({"alt_m": alt, "speed_ms": 0.0, "dir_deg": 0.0})
+        self.state.wind_profile_data = profile
 
     def _on_wind_state_changed(self, profile):
-        if getattr(self, '_wind_table_updating', False):
+        if getattr(self, '_wind_grid_updating', False):
             return
         self._wind_table_updating = True
         state_map = {float(n.get("alt_m", 0)): n for n in profile}
@@ -2793,12 +2794,14 @@ class AppWindow(QMainWindow):
 
         # We also need to bind MC inputs:
         with QSignalBlocker(self.cep_prob_input):
-            self.cep_prob_input.setValue(state.landing_prob)
+            if state.landing_prob is not None:
+                self.cep_prob_input.setValue(state.landing_prob)
         self.cep_prob_input.valueChanged.connect(lambda v: setattr(state, "landing_prob", int(v)))
         state.landing_prob_changed.connect(lambda v: _push(self.cep_prob_input, v))
 
         with QSignalBlocker(self.mc_runs_input):
-            self.mc_runs_input.setValue(state.mc_n_runs)
+            if state.mc_n_runs is not None:
+                self.mc_runs_input.setValue(state.mc_n_runs)
         self.mc_runs_input.valueChanged.connect(lambda v: setattr(state, "mc_n_runs", int(v)))
         state.mc_n_runs_changed.connect(lambda v: _push(self.mc_runs_input, v))
 

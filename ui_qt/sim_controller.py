@@ -799,8 +799,8 @@ class SimController(QObject):
         if is_safe:
             # Lock the Phase A wind distribution so Phase B O(1) GO/NO-GO ticks
             # compare live wind against the exact baseline used in the MC run.
-            # Use surface (lowest) level from wind_profile as fallback
-            lowest_wind = sorted(self._state.wind_profile, key=lambda n: n["alt_m"])[0] if self._state.wind_profile else {"speed_ms": 0.0, "dir_deg": 0.0}
+            # Use surface (lowest) level from wind_profile_data as fallback
+            lowest_wind = sorted(self._state.wind_profile_data, key=lambda n: n["alt_m"])[0] if self._state.wind_profile_data else {"speed_ms": 0.0, "dir_deg": 0.0}
             surf_spd = result.get("nominal_surf_spd", lowest_wind["speed_ms"])
             surf_dir = result.get("nominal_surf_dir", lowest_wind["dir_deg"])
             wind_unc = float(self._window.wind_unc_input.value())
@@ -974,7 +974,7 @@ class SimController(QObject):
             )
         else:
             # No history yet — fall back to the current anemometer reading
-            lowest_wind = sorted(s.wind_profile, key=lambda n: n["alt_m"])[0] if s.wind_profile else {"speed_ms": 0.0, "dir_deg": 0.0}
+            lowest_wind = sorted(s.wind_profile_data, key=lambda n: n["alt_m"])[0] if s.wind_profile_data else {"speed_ms": 0.0, "dir_deg": 0.0}
             _turb_mu    = lowest_wind["speed_ms"]
             _turb_sigma = 0.0
         # I = σ/μ  (dimensionless turbulence intensity)
@@ -998,7 +998,7 @@ class SimController(QObject):
             "elev":       s.launch_angle,   # degrees — AppState, default 85.0
             "rail":       s.launch_rail,    # m       — AppState, default 1.0
             "azim":       w.azim_input.value() if w.azim_input.value() != -9999.0 else 0.0,
-            "wind_profile": s.wind_profile,
+            "wind_profile_data": s.wind_profile_data,
             "mc_runs":    w.mc_runs_input.value(),
             "wind_unc":   w.wind_unc_input.value(),
             "thrust_unc": w.thrust_unc_input.value(),

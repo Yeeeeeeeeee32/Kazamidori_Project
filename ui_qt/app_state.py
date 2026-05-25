@@ -289,6 +289,13 @@ class AppState(QObject):
             {"alt_m": 0.0, "speed_ms": 4.0, "dir_deg": 100.0},
             {"alt_m": 500.0, "speed_ms": 8.0, "dir_deg": 90.0}
         ]
+        self._wind_profile_data = [
+            {"alt_m": 3.0, "speed_ms": 0.0, "dir_deg": 0.0},
+            {"alt_m": 10.0, "speed_ms": 0.0, "dir_deg": 0.0},
+            {"alt_m": 150.0, "speed_ms": 0.0, "dir_deg": 0.0},
+            {"alt_m": 300.0, "speed_ms": 0.0, "dir_deg": 0.0},
+            {"alt_m": 600.0, "speed_ms": 0.0, "dir_deg": 0.0},
+        ]
         self._gust_speed       = 0.0
 
         # Unified simulation result (full worker payload dict)
@@ -902,6 +909,15 @@ class AppState(QObject):
     @wind_profile_data.setter
     def wind_profile_data(self, value: list) -> None:
         self.wind_profile = value
+
+    @Property(object, notify=wind_profile_data_changed)
+    def wind_profile_data(self) -> list:
+        return self._wind_profile_data
+
+    @wind_profile_data.setter
+    def wind_profile_data(self, value: list) -> None:
+        self._wind_profile_data = value
+        self.wind_profile_data_changed.emit(value)
 
     @Property(float, notify=gust_speed_changed)
     def gust_speed(self) -> float:
