@@ -28,11 +28,7 @@ import sys
 # so silent "window disappears" failures become diagnosable in stderr.
 faulthandler.enable()
 
-from PySide6.QtWidgets import QApplication
-
-from ui_qt.app_state import AppState
-from ui_qt.app_window import AppWindow, GLOBAL_QSS
-from ui_qt.sim_controller import SimController
+# GUI imports are moved inside __main__ to prevent child processes from importing them
 
 DEFAULT_CONFIG: dict = {
     "wind_uncertainty":   0.20,
@@ -45,6 +41,14 @@ DEFAULT_CONFIG: dict = {
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    from PySide6.QtWidgets import QApplication
+    from ui_qt.app_state import AppState
+    from ui_qt.app_window import AppWindow, GLOBAL_QSS
+    from ui_qt.sim_controller import SimController
+    from core.pool_manager import get_global_pool
+
+    # Initialize the global process pool in the main thread to avoid Windows spawn issues
+    get_global_pool()
     def global_excepthook(exc_type, exc_value, exc_traceback):
         import traceback
         import sys
