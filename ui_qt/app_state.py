@@ -42,6 +42,7 @@ class AppState(QObject):
     # ── Simulation configuration ───────────────────────────────────────────────
     wind_uncertainty_changed   = Signal(float)
     magnetic_declination_changed = Signal(float)
+    offline_map_extent_changed = Signal(list)
     thrust_uncertainty_changed = Signal(float)
     landing_prob_changed       = Signal(int)
     mc_n_runs_changed          = Signal(int)
@@ -193,7 +194,7 @@ class AppState(QObject):
     fin_tip_chord_changed   = Signal(float)   # fin tip chord (m)
     fin_span_changed        = Signal(float)   # fin semi-span (m)
     fin_position_changed    = Signal(float)   # fin leading-edge position from nose (m)
-    motor_cg_changed        = Signal(float)   # motor CG from nose (m)
+    motor_cg_pos_changed    = Signal(float)   # motor CG from nose (m)
     motor_dry_mass_changed  = Signal(float)   # motor dry mass (kg)
     parachute_cd_changed    = Signal(float)   # parachute drag coefficient (dimensionless)
     parachute_area_changed  = Signal(float)   # parachute reference area (m²)
@@ -243,6 +244,7 @@ class AppState(QObject):
         self._launch_lat = _ff("launch_lat")    # decimal degrees
         self._launch_lon = _ff("launch_lon")    # decimal degrees
         self._magnetic_declination = 0.0
+        self._offline_map_extent = [-250.0, 250.0, -250.0, 250.0]
 
         self._current_playback_index = 0
 
@@ -382,7 +384,7 @@ class AppState(QObject):
         self._fin_tip_chord    = _f("fin_tip_chord")     # m
         self._fin_span         = _f("fin_span")          # m
         self._fin_position     = _f("fin_position")      # m from nose
-        self._motor_cg         = None                    # m from nose
+        self._motor_cg_pos     = None                    # m from nose
         self._motor_dry_mass   = None                    # kg
         self._parachute_cd     = None                    # dimensionless
         self._parachute_area   = None                    # m²
@@ -442,7 +444,7 @@ class AppState(QObject):
             self._fin_tip_chord,
             self._fin_span,
             self._fin_position,
-            self._motor_cg,
+            self._motor_cg_pos,
             self._motor_dry_mass,
             self._parachute_cd,
             self._parachute_area,
@@ -553,6 +555,16 @@ class AppState(QObject):
         if self._magnetic_declination != value:
             self._magnetic_declination = value
             self.magnetic_declination_changed.emit(value)
+
+    @Property(list, notify=offline_map_extent_changed)
+    def offline_map_extent(self) -> list:
+        return self._offline_map_extent
+
+    @offline_map_extent.setter
+    def offline_map_extent(self, value: list) -> None:
+        if self._offline_map_extent != value:
+            self._offline_map_extent = value
+            self.offline_map_extent_changed.emit(value)
 
     @Property(float, notify=launch_lat_changed)
     def launch_lat(self) -> float:
@@ -888,6 +900,15 @@ class AppState(QObject):
     def wind_profile(self, value: list) -> None:
         self._wind_profile = value
         self.wind_profile_changed.emit(value)
+        self.wind_profile_data_changed.emit(value)
+
+    @Property(object, notify=wind_profile_data_changed)
+    def wind_profile_data(self) -> list:
+        return self._wind_profile
+
+    @wind_profile_data.setter
+    def wind_profile_data(self, value: list) -> None:
+        self.wind_profile = value
 
     @Property(object, notify=wind_profile_data_changed)
     def wind_profile_data(self) -> list:
@@ -1335,17 +1356,17 @@ class AppState(QObject):
             self.fin_position_changed.emit(value)
             self._check_readiness()
 
-    @Property(float, notify=motor_cg_changed)
-    def motor_cg(self) -> float:
+    @Property(float, notify=motor_cg_pos_changed)
+    def motor_cg_pos(self) -> float:
         """Motor centre of gravity from nose in m (maps to 'motor_pos')."""
-        return self._motor_cg
+        return self._motor_cg_pos
 
-    @motor_cg.setter
-    def motor_cg(self, value: float) -> None:
+    @motor_cg_pos.setter
+    def motor_cg_pos(self, value: float) -> None:
         value = float(value)
-        if self._motor_cg != value:
-            self._motor_cg = value
-            self.motor_cg_changed.emit(value)
+        if self._motor_cg_pos != value:
+            self._motor_cg_pos = value
+            self.motor_cg_pos_changed.emit(value)
             self._check_readiness()
 
     @Property(float, notify=motor_dry_mass_changed)

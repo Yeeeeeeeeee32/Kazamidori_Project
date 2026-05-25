@@ -170,16 +170,18 @@ def _perturb_wind_profile(
         u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
         v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
 
-        # 2. Local (mesoscale) turbulence
+        # 2. Local (mesoscale) turbulence & 3. Gust layer
         local_spd = math_hypot(u_nom, v_nom)
         sigma     = wu * max(local_spd, 1.0) * 0.30
-        u_val = u_g + rng_gauss(0.0, sigma)
-        v_val = v_g + rng_gauss(0.0, sigma)
 
-        # 3. Gust layer
-        if has_gust:
-            u_val += rng_gauss(0.0, gust_sigma)
-            v_val += rng_gauss(0.0, gust_sigma)
+        # Optimization: Combining two independent normally distributed variables
+        # N(0, sigma^2) + N(0, gust_sigma^2) is mathematically equivalent to
+        # N(0, sigma^2 + gust_sigma^2). We use math.hypot to calculate the
+        # combined standard deviation: sqrt(sigma^2 + gust_sigma^2).
+        # This halves the expensive rng.gauss calls per loop iteration.
+        total_sigma = math_hypot(sigma, gust_sigma) if has_gust else sigma
+        u_val = u_g + rng_gauss(0.0, total_sigma)
+        v_val = v_g + rng_gauss(0.0, total_sigma)
 
         u_new[i] = (alt_u, u_val)
         v_new[i] = (alt_u, v_val)
@@ -306,7 +308,8 @@ def compute_error_ellipse(
     lam1      = float(eigvals[1])             # major-axis variance
     lam2      = float(eigvals[0])             # minor-axis variance
     major_vec = eigvecs[:, 1]
-    angle_rad = float(math.atan2(float(major_vec[0]), float(major_vec[1])))
+    # ENU座標系のため atan2(y, x) -> atan2(North, East) に修正
+    angle_rad = float(math.atan2(float(major_vec[1]), float(major_vec[0])))
 
     k = chi2_scale(prob_pct)
     a = k * math.sqrt(max(lam1, 0.0))
@@ -410,7 +413,8 @@ def compute_cep_ellipse(
 
     a         = k * float(np.sqrt(max(float(eigvals[0]), 0.0)))   # semi-major
     b         = k * float(np.sqrt(max(float(eigvals[1]), 0.0)))   # semi-minor
-    angle_rad = float(np.arctan2(float(eigvecs[0, 0]), float(eigvecs[1, 0])))
+    # ENU座標系のため arctan2(y, x) -> arctan2(North, East) に修正
+    angle_rad = float(np.arctan2(float(eigvecs[1, 0]), float(eigvecs[0, 0])))
     angle_deg = float(np.degrees(angle_rad))
 
     return {

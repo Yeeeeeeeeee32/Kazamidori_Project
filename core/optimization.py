@@ -118,70 +118,24 @@ def build_perturbed_wind_prof(
     rng: _random_mod.Random,
     wu: float,
 ) -> tuple[list, list, float, float, list]:
-    """Build a stochastically perturbed wind profile for one MC trial.
-
-    Three-stage perturbation model:
-
-    1. *Anchor perturbation*: surface and upper-level speeds/directions are
-       drawn independently from Gaussians.  This explores different gross
-       wind scenarios during the optimisation phase.
-
-    2. *Hellmann rebuild*: a smooth vertical profile is constructed from the
-       perturbed anchors using the power-law model.
-
-    3. *Per-level turbulence*: independent Gaussian noise is added at every
-       altitude level, scaled proportionally to the *local* wind speed at
-       that altitude (minimum 1 m/s reference).  This ensures that
-       upper-level winds fluctuate in proportion to their own magnitude,
-       not the surface wind speed.
+    """Build a Monte-Carlo perturbed wind profile for Phase 1.
 
     Args:
-        params: Simulation params dict (must have surf_spd, up_spd,
-                surf_dir, up_dir).
-        rng:    Random instance (caller-owned so seeds are reproducible).
-        wu:     Wind-speed fractional uncertainty (e.g. 0.10 = ±10 %).
+        params: dict from ui_qt (must contain wind_u_prof, wind_v_prof).
+        rng:    seeded PRNG.
+        wu:     wind_uncertainty (fraction).
 
     Returns:
         (u_prof, v_prof, surf_spd, up_spd, spd_profile)
-        where spd_profile is [(alt_m, speed_m_s), …] for spaghetti plots.
     """
-    base_surf = max(params['surf_spd'], 0.1)
-    base_up   = max(params['up_spd'],   0.1)
-    dir_sigma = wu * 60.0
+    base_u = params.get('wind_u_prof', [(0, 0.0)])
+    base_v = params.get('wind_v_prof', [(0, 0.0)])
 
-    # Cache methods for hot loop
-    rng_gauss = rng.gauss
-    math_hypot = math.hypot
+    # 0 gust intensity for optimization MC (phase 1)
+    u_prof, v_prof, spd_prof = _perturb_wind_profile(base_u, base_v, rng, wu, gust_intensity=0.0)
 
-    # Stage 1: perturb anchor speeds and directions
-    surf_spd = max(0.0, rng_gauss(params['surf_spd'], wu * base_surf))
-    up_spd   = max(0.0, rng_gauss(params['up_spd'],   wu * base_up))
-    surf_dir = params['surf_dir'] + rng_gauss(0.0, dir_sigma)
-    up_dir   = params['up_dir']   + rng_gauss(0.0, dir_sigma)
-
-    # Stage 2: rebuild smooth Hellmann profile from perturbed anchors
-    u_prof, v_prof = build_wind_profile(
-        surf_spd, surf_dir, OBS_ALT, up_spd, up_dir, BLEND_ALT)
-
-    # Stage 3: per-level turbulence noise scaled to local wind speed
-    if wu > 1e-9:
-        n = len(u_prof)
-        u_new: list[tuple[float, float]] = [None] * n  # type: ignore
-        v_new: list[tuple[float, float]] = [None] * n  # type: ignore
-        spd_prof: list[tuple[float, float]] = [None] * n  # type: ignore
-
-        for i, ((z_u, u), (_, v)) in enumerate(zip(u_prof, v_prof)):
-            local_spd = math_hypot(u, v)
-            sigma = wu * max(local_spd, 1.0) * 0.30
-            un = u + rng_gauss(0.0, sigma)
-            vn = v + rng_gauss(0.0, sigma)
-            u_new[i] = (z_u, un)
-            v_new[i] = (z_u, vn)
-            spd_prof[i] = (z_u, math_hypot(un, vn))
-        u_prof, v_prof = u_new, v_new
-    else:
-        spd_prof = [(z_u, math_hypot(u, v))
-                    for (z_u, u), (_, v) in zip(u_prof, v_prof)]
+    surf_spd = math.hypot(u_prof[0][1], v_prof[0][1]) if u_prof else 0.0
+    up_spd = math.hypot(u_prof[-1][1], v_prof[-1][1]) if u_prof else 0.0
 
     return u_prof, v_prof, surf_spd, up_spd, spd_prof
 
@@ -458,21 +412,19 @@ def _monte_carlo_r90(
 # ── Phase-1 helpers ───────────────────────────────────────────────────────────
 
 def p1_params_at_wind(base_params: dict, mu_surf: float) -> dict:
-    """Return a copy of base_params with the surface wind speed set to mu_surf.
+    """Return a params dict where the wind profile is scaled so surface speed = mu_surf."""
+    base_u = base_params.get('wind_u_prof', [(0, 0.0)])
+    base_v = base_params.get('wind_v_prof', [(0, 0.0)])
 
-    The upper-level wind speed is scaled proportionally.
-    """
-    ratio    = mu_surf / max(base_params['surf_spd'], 1e-6)
-    mu_upper = base_params['up_spd'] * ratio
-    u_prof, v_prof = build_wind_profile(
-        mu_surf, base_params['surf_dir'], OBS_ALT,
-        mu_upper, base_params['up_dir'], BLEND_ALT,
-    )
+    spd0 = math.hypot(base_u[0][1], base_v[0][1]) if base_u else 0.0
+    ratio = mu_surf / max(spd0, 1e-6)
+
+    u_prof = [(z, u * ratio) for z, u in base_u]
+    v_prof = [(z, v * ratio) for z, v in base_v]
+
     p = dict(base_params)
     p['wind_u_prof'] = u_prof
     p['wind_v_prof'] = v_prof
-    p['surf_spd']    = mu_surf
-    p['up_spd']      = mu_upper
     return p
 
 
@@ -491,23 +443,22 @@ def p1_mc_points(
     Returns list of (impact_x, impact_y) for successful runs only.
     """
     rng        = _random_mod.Random()
-    mu_nominal = max(base_params['surf_spd'], 1e-6)
     points: list[tuple[float, float]] = []
 
     for _ in range(n):
         if stop_flag is not None and stop_flag.is_set():
             break
-        surf_spd = max(0.0, rng.gauss(mu, sigma))
-        ratio    = surf_spd / mu_nominal
-        up_spd   = max(0.0, rng.gauss(base_params['up_spd'] * ratio, sigma * 0.5))
-        u_prof, v_prof = build_wind_profile(
-            surf_spd, base_params['surf_dir'], OBS_ALT,
-            up_spd,   base_params['up_dir'],   BLEND_ALT,
-        )
+        
+        # Scale the nominal profile to mu
+        p_scaled = p1_params_at_wind(base_params, mu)
+        
+        # Perturb with sigma as fraction of mu
+        wu = sigma / max(mu, 1e-6)
+        u_prof, v_prof, _, _, _ = build_perturbed_wind_prof(p_scaled, rng, wu)
+        
         p = dict(base_params)
         p['wind_u_prof'] = u_prof
         p['wind_v_prof'] = v_prof
-        p['surf_spd']    = surf_spd
         r = simulate_once(elev, azi, p)
         if r['ok']:
             points.append((r['impact_x'], r['impact_y']))
@@ -563,7 +514,7 @@ def p1_ellipse_breaches_circle(
     for i in range(n_pts):
         t  = 2.0 * math.pi * i / n_pts
         xe = a * math.cos(t) * ca - b * math.sin(t) * sa
-        ye = a * math.cos(t) * sa + b * math.sin(t) * ca
+        ye = a * math.cos(t) * sa + b * math.cos(t) * ca
         if math.hypot(cx + xe, cy + ye) > R:
             return True
     return False
@@ -628,7 +579,11 @@ def run_phase1(
     def prog(msg: str, frac: float) -> None:
         progress_cb(msg, frac)
 
-    mu_nom = base_params['surf_spd']
+    base_u = base_params.get('wind_u_prof', [(0, 0.0)])
+    base_v = base_params.get('wind_v_prof', [(0, 0.0)])
+    mu_nom = math.hypot(base_u[0][1], base_v[0][1]) if base_u else 0.0
+    wu = 0.08
+    sigma_nom = wu * max(mu_nom, 1.0)
 
     # ── Step 1: Grid search ───────────────────────────────────────────────────
     elev_grid    = list(range(60, 91, 6))   # 60, 66, …, 90

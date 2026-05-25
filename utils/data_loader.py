@@ -205,7 +205,7 @@ class AirframeConfigError(ValueError):
 _AIRFRAME_REQUIRED_KEYS: frozenset[str] = frozenset({
     "mass", "cg", "length", "radius", "nose_length",
     "fin_root", "fin_tip", "fin_span", "fin_pos",
-    "motor_pos", "motor_dry_mass", "backfire_delay",
+    "backfire_delay",
 })
 
 _PARACHUTE_REQUIRED_KEYS: frozenset[str] = frozenset({"cd", "area", "lag"})
@@ -542,8 +542,6 @@ def _parse_rocksim_attached(
             moi     = (moi_hollow_cylinder(dry_kg, r_mot, r_mot * 0.85, len_m)
                        if r_mot > 0.0 else moi_point_mass(dry_kg))
             components.append(Component("Motor", dry_kg, cg_m, moi))
-            extracted["motor_pos_m"]       = cg_m
-            extracted["motor_dry_mass_kg"] = dry_kg
             extracted["backfire_delay_s"]  = delay_s
             if "モーターパラメータ" not in manual_fields:
                 manual_fields.append("モーターパラメータ")
@@ -557,11 +555,7 @@ def _parse_rocksim_attached(
             # Heuristic: treat largest MassObject as motor placeholder when
             # no explicit <Motor> element is present.
             if tag == "MassObject":
-                if mass_kg > extracted.get("motor_dry_mass_kg", 0.0):
-                    extracted["motor_pos_m"]       = cg_m
-                    extracted["motor_dry_mass_kg"] = mass_kg
-                    if "モーターパラメータ" not in manual_fields:
-                        manual_fields.append("モーターパラメータ")
+                pass
 
 
 def _parse_rocksim_xml(root: _ET.Element) -> dict:
@@ -687,8 +681,8 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
             "fin_tip":        extracted["fin_tip_m"]         or _AIRFRAME_DEFAULTS["fin_tip"],
             "fin_span":       extracted["fin_span_m"]        or _AIRFRAME_DEFAULTS["fin_span"],
             "fin_pos":        extracted["fin_pos_m"]         or _AIRFRAME_DEFAULTS["fin_pos"],
-            "motor_pos":      extracted["motor_pos_m"]       or system_cg,
-            "motor_dry_mass": extracted["motor_dry_mass_kg"],
+            "motor_pos":      None,
+            "motor_dry_mass": None,
             "backfire_delay": extracted["backfire_delay_s"],
         },
         "parachute": {

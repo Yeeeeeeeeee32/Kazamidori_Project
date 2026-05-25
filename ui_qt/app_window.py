@@ -36,7 +36,7 @@ from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, QSize, QObject, Signal, Slot, QTimer
 from PySide6.QtWidgets import (    QLineEdit,
     QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QFormLayout, QScrollArea,
+    QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QScrollArea,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox,
     QComboBox, QPushButton, QToolBar, QStatusBar,
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
@@ -470,9 +470,6 @@ class ManualSetupDialog(QDialog):
         self.af_fintip_input    = _dsb( 1.0, 3, 0.001, " m")
         self.af_finspan_input   = _dsb( 1.0, 3, 0.001, " m")
         self.af_finpos_input    = _dsb( 5.0, 3, 0.001, " m")
-        self.af_motorpos_input  = _dsb( 5.0, 3, 0.001, " m")
-        self.af_motormass_input = _dsb( 5.0, 4, 0.001, " kg")
-
         self.lbl_mass      = QLabel("Mass [kg]:")
         self.lbl_cg        = QLabel("CG from Nose [m]:")
         self.lbl_len       = QLabel("Length [m]:")
@@ -482,8 +479,6 @@ class ManualSetupDialog(QDialog):
         self.lbl_fintip    = QLabel("Fin Tip Chord [m]:")
         self.lbl_finspan   = QLabel("Fin Semi-Span [m]:")
         self.lbl_finpos    = QLabel("Fin LE Position [m]:")
-        self.lbl_motorpos  = QLabel("Motor CG Pos. [m]:")
-        self.lbl_motormass = QLabel("Motor Dry Mass [kg]:")
 
         frm.addRow(self.lbl_mass,      self.af_mass_input)
         frm.addRow(self.lbl_cg,        self.af_cg_input)
@@ -494,8 +489,6 @@ class ManualSetupDialog(QDialog):
         frm.addRow(self.lbl_fintip,    self.af_fintip_input)
         frm.addRow(self.lbl_finspan,   self.af_finspan_input)
         frm.addRow(self.lbl_finpos,    self.af_finpos_input)
-        frm.addRow(self.lbl_motorpos,  self.af_motorpos_input)
-        frm.addRow(self.lbl_motormass, self.af_motormass_input)
 
 
         inner_lay.addWidget(grp)
@@ -567,33 +560,36 @@ class AdvancedSettingsDialog(QDialog):
         frm_wind.setSpacing(6)
         frm_wind.setContentsMargins(10, 12, 10, 8)
 
-        # Header row
-        frm_wind.addWidget(QLabel("Altitude"), 0, 0)
-        frm_wind.addWidget(QLabel("Speed (m/s)"), 0, 1)
-        frm_wind.addWidget(QLabel("Direction (°)"), 0, 2)
+        self.wind_grid = QGridLayout()
+        self.wind_grid.setContentsMargins(0, 0, 0, 0)
+        self.wind_grid.setSpacing(8)
 
+        self.wind_grid.addWidget(QLabel("Altitude (m)"), 0, 0)
+        self.wind_grid.addWidget(QLabel("Speed (m/s)"), 0, 1)
+        self.wind_grid.addWidget(QLabel("Dir (°)"), 0, 2)
+
+        self.wind_inputs = []
         alts = [3.0, 10.0, 150.0, 300.0, 600.0]
-        self.wind_speed_inputs = []
-        self.wind_dir_inputs = []
 
-        for row_idx, alt in enumerate(alts, start=1):
-            lbl = QLabel(f"{alt} m")
+        for i, alt in enumerate(alts):
+            row = i + 1
+            alt_lbl = QLabel(f"{alt}")
+            
+            spd_edit = QLineEdit()
+            spd_edit.setValidator(QDoubleValidator())
+            spd_edit.textChanged.connect(self._on_wind_grid_changed)
+            
+            dir_edit = QLineEdit()
+            dir_edit.setValidator(QDoubleValidator())
+            dir_edit.textChanged.connect(self._on_wind_grid_changed)
+            
+            self.wind_grid.addWidget(alt_lbl, row, 0)
+            self.wind_grid.addWidget(spd_edit, row, 1)
+            self.wind_grid.addWidget(dir_edit, row, 2)
+            
+            self.wind_inputs.append((alt, spd_edit, dir_edit))
 
-            spd_in = QLineEdit()
-            spd_in.setValidator(QDoubleValidator())
-            spd_in.editingFinished.connect(self._on_wind_grid_changed)
-
-            dir_in = QLineEdit()
-            dir_in.setValidator(QDoubleValidator())
-            dir_in.editingFinished.connect(self._on_wind_grid_changed)
-
-            frm_wind.addWidget(lbl, row_idx, 0)
-            frm_wind.addWidget(spd_in, row_idx, 1)
-            frm_wind.addWidget(dir_in, row_idx, 2)
-
-            self.wind_speed_inputs.append(spd_in)
-            self.wind_dir_inputs.append(dir_in)
-
+        frm_wind.addLayout(self.wind_grid)
         tabs.addItem(grp_wind, "🌬️ Wind Profile")
 
         # ── Monte Carlo group ─────────────────────────────────────────────────
@@ -715,23 +711,26 @@ class AdvancedSettingsDialog(QDialog):
 
     def _bind_wind_profile_table(self, state) -> None:
         self.state = state
+        self._wind_table_updating = True
+        
+        state_map = {float(n.get("alt_m", 0)): n for n in state.wind_profile}
+        for alt, spd_edit, dir_edit in self.wind_inputs:
+            node = state_map.get(alt, {"speed_ms": 0.0, "dir_deg": 0.0})
+            spd_edit.setText(str(node.get("speed_ms", 0.0)))
+            dir_edit.setText(str(node.get("dir_deg", 0.0)))
+            
+        self._wind_table_updating = False
+        state.wind_profile_changed.connect(self._on_wind_state_changed)
 
-        self._on_wind_state_changed(state.wind_profile_data)
-
-        state.wind_profile_data_changed.connect(self._on_wind_state_changed)
-
-    def _on_wind_grid_changed(self, _=None):
-        if getattr(self, '_wind_grid_updating', False):
+    def _on_wind_grid_changed(self):
+        if getattr(self, '_wind_table_updating', False):
             return
         alts = [3.0, 10.0, 150.0, 300.0, 600.0]
         profile = []
-        for i, alt in enumerate(alts):
+        for alt, spd_edit, dir_edit in self.wind_inputs:
             try:
-                spd_str = self.wind_speed_inputs[i].text()
-                dir_str = self.wind_dir_inputs[i].text()
-
-                spd = float(spd_str) if spd_str else 0.0
-                dir_deg = float(dir_str) if dir_str else 0.0
+                spd = float(spd_edit.text() or 0.0)
+                dir_deg = float(dir_edit.text() or 0.0)
                 profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
             except ValueError:
                 profile.append({"alt_m": alt, "speed_ms": 0.0, "dir_deg": 0.0})
@@ -740,21 +739,13 @@ class AdvancedSettingsDialog(QDialog):
     def _on_wind_state_changed(self, profile):
         if getattr(self, '_wind_grid_updating', False):
             return
-        self._wind_grid_updating = True
-
-        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
-        prof_map = {float(node.get("alt_m", 0)): node for node in profile}
-
-        for i, alt in enumerate(alts):
-            node = prof_map.get(alt, {"speed_ms": 0.0, "dir_deg": 0.0})
-
-            spd_val = float(node.get("speed_ms", 0.0))
-            dir_val = float(node.get("dir_deg", 0.0))
-
-            self.wind_speed_inputs[i].setText(str(spd_val))
-            self.wind_dir_inputs[i].setText(str(dir_val))
-
-        self._wind_grid_updating = False
+        self._wind_table_updating = True
+        state_map = {float(n.get("alt_m", 0)): n for n in profile}
+        for alt, spd_edit, dir_edit in self.wind_inputs:
+            node = state_map.get(alt, {"speed_ms": 0.0, "dir_deg": 0.0})
+            spd_edit.setText(str(node.get("speed_ms", 0.0)))
+            dir_edit.setText(str(node.get("dir_deg", 0.0)))
+        self._wind_table_updating = False
 
 
 class _MplCanvas(FigureCanvasQTAgg):
@@ -1063,6 +1054,7 @@ class AppWindow(QMainWindow):
         self.power_off_cd_curve_clear_btn = self._adv_dialog.power_off_cd_curve_clear_btn
         self.power_off_cd_curve_label = self._adv_dialog.power_off_cd_curve_label
 
+
         self.power_on_cd_curve_load_btn.clicked.connect(lambda: self._on_load_cd_curve("power_on"))
         self.power_on_cd_curve_preview_btn.clicked.connect(lambda: self._on_preview_cd_curve("power_on"))
         self.power_on_cd_curve_clear_btn.clicked.connect(lambda: self._on_clear_cd_curve("power_on"))
@@ -1089,8 +1081,6 @@ class AppWindow(QMainWindow):
         self.af_fintip_input    = self._manual_dialog.af_fintip_input
         self.af_finspan_input   = self._manual_dialog.af_finspan_input
         self.af_finpos_input    = self._manual_dialog.af_finpos_input
-        self.af_motorpos_input  = self._manual_dialog.af_motorpos_input
-        self.af_motormass_input = self._manual_dialog.af_motormass_input
         # Create backfire delay input directly on the main window
         self.af_backfire_input  = QLineEdit(self)
         validator = QDoubleValidator(0.0, 10.0, 2, self.af_backfire_input)
@@ -1111,8 +1101,7 @@ class AppWindow(QMainWindow):
         self.af_fintip_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_finspan_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_finpos_input.textChanged.connect(lambda v: self._mark_modified())
-        self.af_motorpos_input.textChanged.connect(lambda v: self._mark_modified())
-        self.af_motormass_input.textChanged.connect(lambda v: self._mark_modified())
+        # Note: motor_cg_input and motor_dry_mass_input are not part of the airframe config
 
         # Phase 2 Tracker evaluation hooks
         self.af_mass_input.textChanged.connect(self._evaluate_config_deltas)
@@ -1124,8 +1113,6 @@ class AppWindow(QMainWindow):
         self.af_fintip_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_finspan_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_finpos_input.textChanged.connect(self._evaluate_config_deltas)
-        self.af_motorpos_input.textChanged.connect(self._evaluate_config_deltas)
-        self.af_motormass_input.textChanged.connect(self._evaluate_config_deltas)
 
         self._bind_state()
 
@@ -1606,6 +1593,35 @@ class AppWindow(QMainWindow):
         grp_motor_lay.addRow("Max Thrust:",    self.lbl_max_thrust)
         grp_motor_lay.addRow("Burn Time:",     self.lbl_burn_time)
         grp_motor_lay.addRow("Total Impulse:", self.lbl_total_impulse)
+
+        self.motor_cg_input = QLineEdit(grp_motor)
+        validator_cg = QDoubleValidator(0.001, 1000.0, 3, self.motor_cg_input)
+        validator_cg.setNotation(QDoubleValidator.StandardNotation)
+        self.motor_cg_input.setValidator(validator_cg)
+        self.motor_cg_input.setPlaceholderText("入力必須")
+        self.motor_cg_input.setClearButtonEnabled(True)
+        self.motor_cg_input.setText("")
+        self.motor_cg_input.textChanged.connect(
+            lambda text: self.motor_cg_input.setStyleSheet(
+                "" if self.motor_cg_input.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
+
+        self.motor_dry_mass_input = QLineEdit(grp_motor)
+        validator_mass = QDoubleValidator(0.001, 1000.0, 4, self.motor_dry_mass_input)
+        validator_mass.setNotation(QDoubleValidator.StandardNotation)
+        self.motor_dry_mass_input.setValidator(validator_mass)
+        self.motor_dry_mass_input.setPlaceholderText("入力必須")
+        self.motor_dry_mass_input.setClearButtonEnabled(True)
+        self.motor_dry_mass_input.setText("")
+        self.motor_dry_mass_input.textChanged.connect(
+            lambda text: self.motor_dry_mass_input.setStyleSheet(
+                "" if self.motor_dry_mass_input.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
+
+        grp_motor_lay.addRow("Motor CG Pos. [m]:", self.motor_cg_input)
+        grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
         grp_motor_lay.addRow("Backfire Delay [s]:", self.af_backfire_input)
 
         # ── Recovery / Parachute parameters ──────────────────────────────────
@@ -2937,8 +2953,6 @@ class AppWindow(QMainWindow):
         _check_and_style(self.af_fintip_input,    md.lbl_fintip,    "fin_tip")
         _check_and_style(self.af_finspan_input,   md.lbl_finspan,   "fin_span")
         _check_and_style(self.af_finpos_input,    md.lbl_finpos,    "fin_pos")
-        _check_and_style(self.af_motorpos_input,  md.lbl_motorpos,  "motor_pos")
-        _check_and_style(self.af_motormass_input, md.lbl_motormass, "motor_dry_mass")
 
     def _on_manual_config_reset(self) -> None:
         """Reset values in ManualSetupDialog to match original_rocket_config."""
@@ -2963,8 +2977,6 @@ class AppWindow(QMainWindow):
         _set(self.af_fintip_input,    "fin_tip")
         _set(self.af_finspan_input,   "fin_span")
         _set(self.af_finpos_input,    "fin_pos")
-        _set(self.af_motorpos_input,  "motor_pos")
-        _set(self.af_motormass_input, "motor_dry_mass")
 
     def _on_run(self) -> None:
         self.set_status("Simulation running…", "#f9e2af")
