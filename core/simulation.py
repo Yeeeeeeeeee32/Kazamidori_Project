@@ -367,10 +367,23 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
 
         env = Environment(
             latitude=launch_lat, longitude=launch_lon, elevation=0)
+            
+        p0 = params.get('env_pressure', 101325.0)
+        t0 = params.get('env_temp', 15.0)
+        
+        # GPV Synthesis / Koinobori Baseline (Hybrid ISA Model)
+        # Using Koinobori's surface reading (p0, t0) and standard ISA lapse rates 
+        # for upper atmosphere approximation.
+        def _calc_temp(h):
+            return t0 + 273.15 - 0.0065 * h
+
+        def _calc_pres(h):
+            return p0 * (1 - 0.0065 * h / (t0 + 273.15)) ** 5.2561
+
         env.set_atmospheric_model(
             type="custom_atmosphere",
-            pressure=None,
-            temperature=None,
+            pressure=_calc_pres,
+            temperature=_calc_temp,
             wind_u=lambda h: float(u_spline(h)),
             wind_v=lambda h: float(v_spline(h)),
         )
@@ -464,9 +477,9 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
                 coordinate_system_orientation="nose_to_tail",
             )
             rk.add_motor(motor, position=motor_pos)
-            rk.add_nose(length=nose_len, kind="vonKarman", position=0.0)
+            rk.add_nose(length=nose_len, kind=params.get("nose_kind", "vonKarman"), position=0.0)
             rk.add_trapezoidal_fins(
-                n=4, root_chord=fin_root, tip_chord=fin_tip,
+                n=params.get("fin_count", 4), root_chord=fin_root, tip_chord=fin_tip,
                 span=fin_span, position=fin_pos,
             )
 

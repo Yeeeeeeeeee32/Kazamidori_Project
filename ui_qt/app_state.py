@@ -67,6 +67,12 @@ class AppState(QObject):
     power_off_cd_changed             = Signal(float)
     motor_isp_changed                = Signal(float)
     motor_propellant_density_changed = Signal(float)
+    fin_count_changed                = Signal(int)
+    nose_shape_changed               = Signal(str)
+    env_pressure_changed             = Signal(float)
+    env_temp_changed                 = Signal(float)
+    env_humidity_changed             = Signal(float)
+    hellmann_alpha_changed           = Signal(float)
 
     # ── Mach-dependent Cd curves (Phase C) ────────────────────────────────────
     # Each carries either ``None`` (fall back to the scalar above) or a
@@ -290,11 +296,11 @@ class AppState(QObject):
             {"alt_m": 500.0, "speed_ms": 8.0, "dir_deg": 90.0}
         ]
         self._wind_profile_data = [
-            {"alt_m": 3.0, "speed_ms": 0.0, "dir_deg": 0.0},
-            {"alt_m": 10.0, "speed_ms": 0.0, "dir_deg": 0.0},
-            {"alt_m": 150.0, "speed_ms": 0.0, "dir_deg": 0.0},
-            {"alt_m": 300.0, "speed_ms": 0.0, "dir_deg": 0.0},
-            {"alt_m": 600.0, "speed_ms": 0.0, "dir_deg": 0.0},
+            {"alt_m": 3.0, "speed_ms": 4.0, "dir_deg": 0.0},
+            {"alt_m": 10.0, "speed_ms": 8.0, "dir_deg": 0.0},
+            {"alt_m": 150.0, "speed_ms": 8.0, "dir_deg": 0.0},
+            {"alt_m": 300.0, "speed_ms": 8.0, "dir_deg": 0.0},
+            {"alt_m": 600.0, "speed_ms": 8.0, "dir_deg": 0.0},
         ]
         self._gust_speed       = 0.0
 
@@ -346,6 +352,12 @@ class AppState(QObject):
         self._power_off_cd:             float = 0.40
         self._motor_isp:                float = 80.0    # s     (Black Powder)
         self._motor_propellant_density: float = 1700.0  # kg/m³ (Black Powder)
+        self._fin_count:                int   = 4
+        self._nose_shape:               str   = "vonKarman"
+        self._env_pressure:             float = 101325.0
+        self._env_temp:                 float = 15.0
+        self._env_humidity:             float = 50.0
+        self._hellmann_alpha:           float = 0.14
 
         # Mach-dependent drag curves (Phase C).  ``None`` means "use the scalar
         # above"; once an operator loads a (Mach, Cd) CSV via the Advanced
@@ -663,6 +675,66 @@ class AppState(QObject):
         if self._motor_propellant_density != value:
             self._motor_propellant_density = value
             self.motor_propellant_density_changed.emit(value)
+
+    @Property(int, notify=fin_count_changed)
+    def fin_count(self) -> int:
+        return self._fin_count
+
+    @fin_count.setter
+    def fin_count(self, value: int) -> None:
+        if self._fin_count != value:
+            self._fin_count = value
+            self.fin_count_changed.emit(value)
+
+    @Property(str, notify=nose_shape_changed)
+    def nose_shape(self) -> str:
+        return self._nose_shape
+
+    @nose_shape.setter
+    def nose_shape(self, value: str) -> None:
+        if self._nose_shape != value:
+            self._nose_shape = value
+            self.nose_shape_changed.emit(value)
+
+    @Property(float, notify=env_pressure_changed)
+    def env_pressure(self) -> float:
+        return self._env_pressure
+
+    @env_pressure.setter
+    def env_pressure(self, value: float) -> None:
+        if self._env_pressure != value:
+            self._env_pressure = value
+            self.env_pressure_changed.emit(value)
+
+    @Property(float, notify=env_temp_changed)
+    def env_temp(self) -> float:
+        return self._env_temp
+
+    @env_temp.setter
+    def env_temp(self, value: float) -> None:
+        if self._env_temp != value:
+            self._env_temp = value
+            self.env_temp_changed.emit(value)
+
+    @Property(float, notify=env_humidity_changed)
+    def env_humidity(self) -> float:
+        return self._env_humidity
+
+    @env_humidity.setter
+    def env_humidity(self, value: float) -> None:
+        if self._env_humidity != value:
+            self._env_humidity = value
+            self.env_humidity_changed.emit(value)
+
+    @Property(float, notify=hellmann_alpha_changed)
+    def hellmann_alpha(self) -> float:
+        return self._hellmann_alpha
+
+    @hellmann_alpha.setter
+    def hellmann_alpha(self, value: float) -> None:
+        if self._hellmann_alpha != value:
+            self._hellmann_alpha = value
+            self.hellmann_alpha_changed.emit(value)
 
     # ── Mach-dependent Cd curves (Phase C) ───────────────────────────────────
 

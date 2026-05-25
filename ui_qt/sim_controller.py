@@ -1026,6 +1026,8 @@ class SimController(QObject):
             "fin_tip":        s.fin_tip_chord,         # m
             "fin_span":       s.fin_span,              # m
             "fin_pos":        s.fin_position,          # m from nose
+            "fin_count":      s.fin_count,             # int
+            "nose_kind":      s.nose_shape,            # str
             "motor_pos":      safe_motor_pos,          # m from nose
             "motor_dry_mass": safe_motor_dry_mass,     # kg
             "body_cd":        s.drag_coeff or 0.45,          # rocket airframe Cd (None→default)
@@ -1039,6 +1041,11 @@ class SimController(QObject):
                 "thrust_data":     w._motor_thrust_data,
                 "motor_burn_time": w._motor_burn_time,
             } if getattr(w, "_motor_thrust_data", None) else {}),
+            # ── Environmental factors ──────────────────────────────────────────
+            "hellmann_alpha": s.hellmann_alpha,
+            "env_pressure":   s.env_pressure,
+            "env_temp":       s.env_temp,
+            "env_humidity":   s.env_humidity,
         }
 
     @Slot(str)
@@ -1130,6 +1137,19 @@ class SimController(QObject):
         # Launch geometry — pre-filled defaults (85° / 1.0 m); never use -9999.0 sentinel
         _bind("elev_input",        "launch_angle",    lambda v: float(v),      lambda v: float(v))
         _bind("rail_len_input",    "launch_rail",     lambda v: float(v),      lambda v: float(v))
+
+        # ── Custom bindings for Fin Count and Nose Shape ──────────────────────
+        if hasattr(w, "af_fincount_input"):
+            w.af_fincount_input.valueChanged.connect(lambda v: setattr(s, "fin_count", int(v)))
+            s.fin_count_changed.connect(lambda v: w.af_fincount_input.setValue(int(v)) if v is not None else None)
+        
+        if hasattr(w, "af_noseshape_input"):
+            w.af_noseshape_input.currentTextChanged.connect(lambda v: setattr(s, "nose_shape", str(v)))
+            s.nose_shape_changed.connect(lambda v: w.af_noseshape_input.setCurrentText(str(v)) if v is not None else None)
+        
+        if hasattr(w, "hellmann_alpha_input"):
+            w.hellmann_alpha_input.valueChanged.connect(lambda v: setattr(s, "hellmann_alpha", float(v)))
+            s.hellmann_alpha_changed.connect(lambda v: w.hellmann_alpha_input.setValue(float(v)) if v is not None else None)
 
     # ── Airframe JSON loader ───────────────────────────────────────────────────
 
@@ -1383,19 +1403,30 @@ class SimController(QObject):
 
     @Slot()
     def _on_wind_tick(self) -> None:
-        # Surface and upper wind baselines now live on the global AppState
-        # directly (the AdvancedSettingsDialog spinboxes that used to source
-        # these have been removed, and ``state.wind_profile`` is not a property
-        # on the global AppState — only on the legacy local one).
-        base_spd  = float(getattr(self._state, "surf_wind_speed", 0.0) or 0.0)
-        base_dir  = float(getattr(self._state, "surf_wind_dir",   0.0) or 0.0)
-        up_spd    = float(getattr(self._state, "upper_wind_speed", 0.0) or 0.0)
-        up_dir    = float(getattr(self._state, "upper_wind_dir",   0.0) or 0.0)
+        # Surface and upper wind baselines now live in wind_profile_data
+        wp = self._state.wind_profile_data or []
+        lowest_wind = sorted(wp, key=lambda n: n["alt_m"])[0] if wp else {"speed_ms": 0.0, "dir_deg": 0.0}
+        highest_wind = sorted(wp, key=lambda n: n["alt_m"])[-1] if wp else {"speed_ms": 0.0, "dir_deg": 0.0}
+        
+        base_spd  = float(lowest_wind.get("speed_ms", 0.0))
+        base_dir  = float(lowest_wind.get("dir_deg", 0.0))
+        up_spd    = float(highest_wind.get("speed_ms", 0.0))
+        up_dir    = float(highest_wind.get("dir_deg", 0.0))
         speed     = max(0.0, base_spd + random.gauss(0.0, base_spd * 0.05 + 0.1))
         direction = (base_dir + random.gauss(0.0, 3.0)) % 360.0
 
         # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
         self._state.append_wind_reading(speed, direction)
+
+        # Mock Koinobori environmental data (Pressure, Temp, Humidity)
+        # Assuming sea-level launch baseline (101325 Pa, 15°C, 50% Hum) with small noise.
+        # This will be replaced by actual serial/UDP parsing from the Koinobori hardware.
+        mock_p = 101325.0 + random.gauss(0.0, 50.0)
+        mock_t = 15.0 + random.gauss(0.0, 0.5)
+        mock_h = 50.0 + random.gauss(0.0, 2.0)
+        self._state.env_pressure = mock_p
+        self._state.env_temp = mock_t
+        self._state.env_humidity = mock_h
 
         # Keep the status-bar readout current.
         self._window.update_wind_readout(speed, direction, up_spd, up_dir)

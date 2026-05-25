@@ -73,12 +73,14 @@ def _hellmann_alpha(v_lo: float, z_lo: float,
 def build_wind_profile(
     v_surf: float, dir_surf_deg: float, z_surf: float,
     v_upper: float, dir_upper_deg: float, z_upper: float,
+    alpha: float = None
 ) -> tuple[list, list]:
     """Return (u_prof, v_prof) for RocketPy custom_atmosphere.
 
     Altitude 0 is forced to zero wind (below the anemometer).
     """
-    alpha = _hellmann_alpha(v_surf, z_surf, v_upper, z_upper)
+    if alpha is None:
+        alpha = _hellmann_alpha(v_surf, z_surf, v_upper, z_upper)
 
     def _speed(z: float) -> float:
         if z <= 0:

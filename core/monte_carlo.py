@@ -308,8 +308,8 @@ def compute_error_ellipse(
     lam1      = float(eigvals[1])             # major-axis variance
     lam2      = float(eigvals[0])             # minor-axis variance
     major_vec = eigvecs[:, 1]
-    # ENU座標系のため atan2(y, x) -> atan2(North, East) に修正
-    angle_rad = float(math.atan2(float(major_vec[1]), float(major_vec[0])))
+    # ENU座標系のため atan2(y, x) -> atan2(East, North) に修正 (Azimuth: 北0度・時計回り)
+    angle_rad = float(math.atan2(float(major_vec[0]), float(major_vec[1])))
 
     k = chi2_scale(prob_pct)
     a = k * math.sqrt(max(lam1, 0.0))
@@ -413,8 +413,8 @@ def compute_cep_ellipse(
 
     a         = k * float(np.sqrt(max(float(eigvals[0]), 0.0)))   # semi-major
     b         = k * float(np.sqrt(max(float(eigvals[1]), 0.0)))   # semi-minor
-    # ENU座標系のため arctan2(y, x) -> arctan2(North, East) に修正
-    angle_rad = float(np.arctan2(float(eigvecs[1, 0]), float(eigvecs[0, 0])))
+    # ENU座標系のため arctan2(y, x) -> arctan2(East, North) に修正 (Azimuth: 北0度・時計回り)
+    angle_rad = float(np.arctan2(float(eigvecs[0, 0]), float(eigvecs[1, 0])))
     angle_deg = float(np.degrees(angle_rad))
 
     return {

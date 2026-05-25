@@ -470,25 +470,38 @@ class ManualSetupDialog(QDialog):
         self.af_fintip_input    = _dsb( 1.0, 3, 0.001, " m")
         self.af_finspan_input   = _dsb( 1.0, 3, 0.001, " m")
         self.af_finpos_input    = _dsb( 5.0, 3, 0.001, " m")
+
+        self.af_fincount_input  = QSpinBox()
+        self.af_fincount_input.setRange(3, 8)
+        self.af_fincount_input.setValue(4)
+        self.af_fincount_input.setSuffix(" 枚")
+
+        self.af_noseshape_input = QComboBox()
+        self.af_noseshape_input.addItems(["vonKarman", "conical", "ogive", "elliptical"])
+
         self.lbl_mass      = QLabel("Mass [kg]:")
         self.lbl_cg        = QLabel("CG from Nose [m]:")
         self.lbl_len       = QLabel("Length [m]:")
         self.lbl_radius    = QLabel("Body Radius [m]:")
         self.lbl_nose      = QLabel("Nose Length [m]:")
+        self.lbl_noseshape = QLabel("Nose Shape:")
         self.lbl_finroot   = QLabel("Fin Root Chord [m]:")
         self.lbl_fintip    = QLabel("Fin Tip Chord [m]:")
         self.lbl_finspan   = QLabel("Fin Semi-Span [m]:")
         self.lbl_finpos    = QLabel("Fin LE Position [m]:")
+        self.lbl_fincount  = QLabel("Fin Count:")
 
         frm.addRow(self.lbl_mass,      self.af_mass_input)
         frm.addRow(self.lbl_cg,        self.af_cg_input)
         frm.addRow(self.lbl_len,       self.af_len_input)
         frm.addRow(self.lbl_radius,    self.af_radius_input)
         frm.addRow(self.lbl_nose,      self.af_nose_input)
+        frm.addRow(self.lbl_noseshape, self.af_noseshape_input)
         frm.addRow(self.lbl_finroot,   self.af_finroot_input)
         frm.addRow(self.lbl_fintip,    self.af_fintip_input)
         frm.addRow(self.lbl_finspan,   self.af_finspan_input)
         frm.addRow(self.lbl_finpos,    self.af_finpos_input)
+        frm.addRow(self.lbl_fincount,  self.af_fincount_input)
 
 
         inner_lay.addWidget(grp)
@@ -1077,10 +1090,12 @@ class AppWindow(QMainWindow):
         self.af_len_input       = self._manual_dialog.af_len_input
         self.af_radius_input    = self._manual_dialog.af_radius_input
         self.af_nose_input      = self._manual_dialog.af_nose_input
+        self.af_noseshape_input = self._manual_dialog.af_noseshape_input
         self.af_finroot_input   = self._manual_dialog.af_finroot_input
         self.af_fintip_input    = self._manual_dialog.af_fintip_input
         self.af_finspan_input   = self._manual_dialog.af_finspan_input
         self.af_finpos_input    = self._manual_dialog.af_finpos_input
+        self.af_fincount_input  = self._manual_dialog.af_fincount_input
         # Create backfire delay input directly on the main window
         self.af_backfire_input  = QLineEdit(self)
         validator = QDoubleValidator(0.0, 10.0, 2, self.af_backfire_input)
@@ -1716,6 +1731,32 @@ class AppWindow(QMainWindow):
         self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
+        self.hellmann_preset = QComboBox(w)
+        self.hellmann_preset.addItems([
+            "0.14: 開けた平地 (Open Flat Terrain)",
+            "0.20: 郊外 (Suburban)",
+            "0.30: 都市部 (Urban)",
+            "Custom"
+        ])
+        
+        self.hellmann_alpha_input = QDoubleSpinBox(w)
+        self.hellmann_alpha_input.setDecimals(2)
+        self.hellmann_alpha_input.setRange(0.01, 1.0)
+        self.hellmann_alpha_input.setValue(0.14)
+        self.hellmann_alpha_input.setSingleStep(0.01)
+        self.hellmann_alpha_input.wheelEvent = lambda event: event.ignore()
+
+        def _on_hellmann_preset_changed(idx):
+            if idx == 0:
+                self.hellmann_alpha_input.setValue(0.14)
+            elif idx == 1:
+                self.hellmann_alpha_input.setValue(0.20)
+            elif idx == 2:
+                self.hellmann_alpha_input.setValue(0.30)
+            # Custom is freely editable
+
+        self.hellmann_preset.currentIndexChanged.connect(_on_hellmann_preset_changed)
+
         self.btn_download_map = QPushButton("🗺️  Download Offline Map", w)
         self.btn_download_map.setObjectName("btn_download_map")
         self.btn_download_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
@@ -1740,6 +1781,8 @@ class AppWindow(QMainWindow):
         form_lay2.addRow("Rail Elevation:", self.elev_input)
         form_lay2.addRow("Rail Length:", self.rail_len_input)
         form_lay2.addRow("Rail Azimuth:", self.azim_input)
+        form_lay2.addRow("Hellmann Preset:", self.hellmann_preset)
+        form_lay2.addRow("Hellmann α:", self.hellmann_alpha_input)
         lay.addLayout(form_lay2)
 
         return w
@@ -2237,7 +2280,7 @@ class AppWindow(QMainWindow):
             spine.set_edgecolor("#45475a")
         ax_p.grid(True, color="#333355", linewidth=0.5, alpha=0.7)
 
-        _HIST_ALTS = [3.0, 10.0, 150.0, 300.0, 600.0]
+        _HIST_ALTS = [3.0]
         hist_buf   = self._wind_hist_buf
 
         if hist_buf:
@@ -2306,12 +2349,7 @@ class AppWindow(QMainWindow):
 
         else:
             # ── Static profile fallback (no history received yet) ─────────────
-            if len(speeds) > 1:
-                ax_p.plot(speeds, alts,
-                          color="#44445a", lw=1.2, alpha=0.55, zorder=1,
-                          linestyle="--")
-
-            for spd, alt, col, lbl in zip(speeds, alts, colors, labels):
+            for spd, alt, col, lbl in zip(speeds[:1], alts[:1], colors[:1], labels[:1]):
                 marker = "D" if alt == 3.0 else "o"
                 ax_p.scatter([spd], [alt], color=col, s=52, zorder=5,
                              marker=marker, edgecolors="#1a1a2e", linewidths=0.8)
@@ -2322,7 +2360,7 @@ class AppWindow(QMainWindow):
             ax_p.set_ylabel("Altitude  (m)", color="#6c7086", fontsize=7, labelpad=3)
             ax_p.set_title("Wind Speed Profile", color="#aaaaaa", fontsize=8, pad=6)
             ax_p.set_xlim(0.0, max_spd * 1.40)
-            ax_p.set_ylim(-30.0, max(alts, default=600.0) * 1.18 + 10.0)
+            ax_p.set_ylim(-30.0, max(alts[:1], default=600.0) * 1.18 + 10.0)
 
             if alts and alts[0] == 3.0:
                 ax_p.annotate(
@@ -2953,6 +2991,17 @@ class AppWindow(QMainWindow):
         _check_and_style(self.af_fintip_input,    md.lbl_fintip,    "fin_tip")
         _check_and_style(self.af_finspan_input,   md.lbl_finspan,   "fin_span")
         _check_and_style(self.af_finpos_input,    md.lbl_finpos,    "fin_pos")
+        
+        # Checking string/int manually
+        if orig.get("fin_count") is not None and self.af_fincount_input.value() != orig.get("fin_count"):
+            md.lbl_fincount.setStyleSheet("color: #ff5555; font-weight: bold;")
+        else:
+            md.lbl_fincount.setStyleSheet("")
+            
+        if orig.get("nose_shape") is not None and self.af_noseshape_input.currentText() != orig.get("nose_shape"):
+            md.lbl_noseshape.setStyleSheet("color: #ff5555; font-weight: bold;")
+        else:
+            md.lbl_noseshape.setStyleSheet("")
 
     def _on_manual_config_reset(self) -> None:
         """Reset values in ManualSetupDialog to match original_rocket_config."""

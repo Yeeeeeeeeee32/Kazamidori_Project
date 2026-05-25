@@ -102,8 +102,8 @@ def speed_dir_to_uv(speed: float, dir_deg: float) -> tuple[float, float]:
     wind_y = speed * cos(direction)
     """
     rad = math.radians(dir_deg)
-    wind_x = speed * math.sin(rad)
-    wind_y = speed * math.cos(rad)
+    wind_x = -speed * math.sin(rad)
+    wind_y = -speed * math.cos(rad)
     return (wind_x, wind_y)
 
 
@@ -116,7 +116,7 @@ def uv_to_speed_dir(u: float, v: float) -> tuple[float, float]:
     speed = math.hypot(u, v)
     if speed < 1e-9:
         return 0.0, 0.0
-    dir_deg = math.degrees(math.atan2(u, v)) % 360.0
+    dir_deg = math.degrees(math.atan2(-u, -v)) % 360.0
     return speed, dir_deg
 
 
