@@ -61,8 +61,6 @@ UI parameters (airframe_cg, motor_pos, fin_pos) are all measured from the
 nose tip and map directly to RocketPy positions without sign inversion.
 """
 
-from __future__ import annotations
-
 import math
 import sys
 from typing import Any
