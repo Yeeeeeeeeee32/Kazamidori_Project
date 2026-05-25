@@ -21,8 +21,6 @@ etc.).  These are intentionally separate objects; the controller mediates
 writes to both.
 """
 
-from __future__ import annotations
-
 import faulthandler
 import sys
 
