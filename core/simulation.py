@@ -127,6 +127,8 @@ def build_motor_from_curve(
     thrust_data = [list(pt) for pt in thrust_data]
     if float(thrust_data[0][0]) > 0:
         thrust_data = [[0.0, 0.0]] + thrust_data
+    elif float(thrust_data[0][0]) < 0:
+        raise ValueError("Thrust curve cannot start at a negative time")
 
     # ── Total impulse (trapezoidal integration of the thrust curve) ───────────
     total_impulse = sum(
