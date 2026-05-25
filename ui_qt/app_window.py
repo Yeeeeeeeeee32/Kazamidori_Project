@@ -33,7 +33,7 @@ import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from PySide6.QtCore import Qt, QSize, QObject, Signal, Slot, QTimer
+from PySide6.QtCore import Qt, QObject, Signal, Slot, QTimer
 from PySide6.QtWidgets import (    QLineEdit,
     QApplication, QMainWindow, QWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QScrollArea,
@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (    QLineEdit,
     QMessageBox, QToolBox, QSplitter, QSlider,
     QDialog, QDialogButtonBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QAbstractButton, QGridLayout
+    QAbstractButton
 )
 from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
