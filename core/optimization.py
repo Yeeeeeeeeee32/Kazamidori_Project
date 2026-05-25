@@ -623,21 +623,31 @@ def run_phase1(
     chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
     futures = [executor.submit(_grid_search_chunk, chunk, p_nom) for chunk in chunks]
 
-    for future in concurrent.futures.as_completed(futures):
+    while futures:
         if stop_flag.is_set():
             for f in futures:
                 f.cancel()
             raise RuntimeError('cancelled')
             
-        chunk_res = future.result()
-        for e_, a_, res in chunk_res:
-            done += 1
-            if res['ok']:
-                if not use_r_filter or res['r_horiz'] <= target_r:
-                    score = p1_objective_score(res, mode)
-                    cands.append((score, e_, a_, res))
-            prog(f'Step 1/5  Grid ({done}/{N})  e={e_}° a={a_}°',
-                 done / N * 0.25)
+        done_futures, futures = concurrent.futures.wait(
+            futures, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+        )
+
+        for future in done_futures:
+            try:
+                chunk_res = future.result()
+                for e_, a_, res in chunk_res:
+                    done += 1
+                    if res['ok']:
+                        if not use_r_filter or res['r_horiz'] <= target_r:
+                            score = p1_objective_score(res, mode)
+                            cands.append((score, e_, a_, res))
+                    prog(f'Step 1/5  Grid ({done}/{N})  e={e_}° a={a_}°',
+                         done / N * 0.25)
+            except Exception as e:
+                print(f"Optimization Grid Chunk Error: {e}", flush=True)
+
+        time.sleep(0.005)
 
     elapsed = time.perf_counter() - _t_start
     print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")

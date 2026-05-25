@@ -41,6 +41,9 @@ DEFAULT_CONFIG: dict = {
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
+
     from PySide6.QtWidgets import QApplication
     from ui_qt.app_state import AppState
     from ui_qt.app_window import AppWindow, GLOBAL_QSS

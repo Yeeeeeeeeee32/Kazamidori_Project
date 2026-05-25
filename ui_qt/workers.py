@@ -724,7 +724,7 @@ class SimulationWorker(QThread):
         # max_workers=os.cpu_count() fully utilizes available CPU cores,
         # completely bypassing the Python GIL for heavy RocketPy math.
         from core.pool_manager import get_global_pool
-        from concurrent.futures import as_completed
+        import concurrent.futures
 
         executor = get_global_pool()
         base_seed = _random.randint(0, 2**31 - 1)
@@ -746,26 +746,38 @@ class SimulationWorker(QThread):
             ))
             
         _done = 0
-        for future in as_completed(futures):
+
+        # Use concurrent.futures.wait instead of as_completed to prevent QThread
+        # from blocking the event loop and deadlocking the QueueManagerThread
+        while futures:
             if self._stop_event.is_set():
                 for f in futures:
                     f.cancel()
                 break
 
-            chunk_results = future.result()
-            for res in chunk_results:
-                _done += 1
-                if res is not None:
-                    scatter.append(res)
+            done, futures = concurrent.futures.wait(
+                futures, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+            )
 
-            # Emit progress signals at most _MAX_PROG_SIGNALS times total.
-            # Always emit on the final iteration so the bar reaches 90%.
-            if _done % _emit_every == 0 or _done == n_total:
-                self.sig_progress.emit(_done, n_total, f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})")
-                self.progress.emit(min(25 + int(_done / n_total * 65), 90))
-                # Yield after signal emission so GUI thread can process
-                # the progress bar update before the next batch starts.
-                QThread.msleep(1)
+            for future in done:
+                try:
+                    chunk_results = future.result()
+                    for res in chunk_results:
+                        _done += 1
+                        if res is not None:
+                            scatter.append(res)
+                except Exception as e:
+                    print(f"MC Chunk Error: {e}", flush=True)
+
+                # Emit progress signals at most _MAX_PROG_SIGNALS times total.
+                # Always emit on the final iteration so the bar reaches 90%.
+                if _done % _emit_every == 0 or _done == n_total:
+                    self.sig_progress.emit(_done, n_total, f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})")
+                    self.progress.emit(min(25 + int(_done / n_total * 65), 90))
+
+            # Explicitly yield thread execution back to the OS so Qt events and
+            # the multiprocessing QueueManagerThread can breathe.
+            QThread.msleep(5)
 
         return scatter
 
