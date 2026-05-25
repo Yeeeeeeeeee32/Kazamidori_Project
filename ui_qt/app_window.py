@@ -773,12 +773,13 @@ class _AzimCanvas(FigureCanvasQTAgg):
         if parent is not None:
             self.setParent(parent)
         self.app_state = app_state
-        self._marker_artist = None
+        self.rocket_marker = None
         self._traj_x = None
         self._traj_y = None
         self._traj_z = None
         self._traj_t = None
         self._time_label = None
+        self.current_time_idx = 0
 
         self.mpl_connect('scroll_event', self._on_scroll)
 
@@ -791,8 +792,8 @@ class _AzimCanvas(FigureCanvasQTAgg):
             if self._traj_t is not None and len(self._traj_t) > 0:
                 step = SCROLL_STEP if event.step > 0 else -SCROLL_STEP
 
-                new_idx = max(0, min(len(self._traj_t) - 1, self.app_state.current_playback_index + step))
-                self.app_state.current_playback_index = new_idx
+                new_idx = max(0, min(len(self._traj_t) - 1, self.current_time_idx + step))
+                self.current_time_idx = new_idx
                 self._update_marker()
             return
 
@@ -808,7 +809,7 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_y = None
         self._traj_z = None
         self._traj_t = None
-        self._marker_artist = None
+        self.rocket_marker = None
         self._time_label = None
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
@@ -825,11 +826,11 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_y = y
         self._traj_z = z
         self._traj_t = t
-        self.app_state.current_playback_index = 0
+        self.current_time_idx = 0
 
-        if self._marker_artist:
+        if self.rocket_marker:
             try:
-                self._marker_artist.remove()
+                self.rocket_marker.remove()
             except:
                 pass
         if self._time_label:
@@ -839,20 +840,20 @@ class _AzimCanvas(FigureCanvasQTAgg):
                 pass
 
         # Draw the marker point using plot for faster rendering on update
-        self._marker_artist, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='yellow', zorder=100)
+        self.rocket_marker, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='red', zorder=100)
 
         # Use text2D on the axis to place it at the top-left
-        self._time_label = ax.text2D(0.05, 0.95, f"T+ {t[0]:.1f}s | Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
+        self._time_label = ax.text2D(0.05, 0.95, f"Time: {t[0]:.1f}s, Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
         self.draw_idle()
 
     def _update_marker(self) -> None:
         """Update the position of the 3D marker and the time label based on current index."""
-        if self._marker_artist and self._traj_x is not None:
-            idx = self.app_state.current_playback_index
-            self._marker_artist.set_data([self._traj_x[idx]], [self._traj_y[idx]])
-            self._marker_artist.set_3d_properties([self._traj_z[idx]])
+        if self.rocket_marker and self._traj_x is not None:
+            idx = self.current_time_idx
+            self.rocket_marker.set_data([self._traj_x[idx]], [self._traj_y[idx]])
+            self.rocket_marker.set_3d_properties([self._traj_z[idx]])
             if self._time_label:
-                self._time_label.set_text(f"T+ {self._traj_t[idx]:.1f}s | Alt: {self._traj_z[idx]:.1f}m")
+                self._time_label.set_text(f"Time: {self._traj_t[idx]:.1f}s, Alt: {self._traj_z[idx]:.1f}m")
             self.draw_idle()
 
 
