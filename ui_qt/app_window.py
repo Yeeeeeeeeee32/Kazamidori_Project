@@ -470,9 +470,6 @@ class ManualSetupDialog(QDialog):
         self.af_fintip_input    = _dsb( 1.0, 3, 0.001, " m")
         self.af_finspan_input   = _dsb( 1.0, 3, 0.001, " m")
         self.af_finpos_input    = _dsb( 5.0, 3, 0.001, " m")
-        self.af_motorpos_input  = _dsb( 5.0, 3, 0.001, " m")
-        self.af_motormass_input = _dsb( 5.0, 4, 0.001, " kg")
-
         self.lbl_mass      = QLabel("Mass [kg]:")
         self.lbl_cg        = QLabel("CG from Nose [m]:")
         self.lbl_len       = QLabel("Length [m]:")
@@ -482,8 +479,6 @@ class ManualSetupDialog(QDialog):
         self.lbl_fintip    = QLabel("Fin Tip Chord [m]:")
         self.lbl_finspan   = QLabel("Fin Semi-Span [m]:")
         self.lbl_finpos    = QLabel("Fin LE Position [m]:")
-        self.lbl_motorpos  = QLabel("Motor CG Pos. [m]:")
-        self.lbl_motormass = QLabel("Motor Dry Mass [kg]:")
 
         frm.addRow(self.lbl_mass,      self.af_mass_input)
         frm.addRow(self.lbl_cg,        self.af_cg_input)
@@ -494,8 +489,6 @@ class ManualSetupDialog(QDialog):
         frm.addRow(self.lbl_fintip,    self.af_fintip_input)
         frm.addRow(self.lbl_finspan,   self.af_finspan_input)
         frm.addRow(self.lbl_finpos,    self.af_finpos_input)
-        frm.addRow(self.lbl_motorpos,  self.af_motorpos_input)
-        frm.addRow(self.lbl_motormass, self.af_motormass_input)
 
 
         inner_lay.addWidget(grp)
@@ -1094,8 +1087,6 @@ class AppWindow(QMainWindow):
         self.af_fintip_input    = self._manual_dialog.af_fintip_input
         self.af_finspan_input   = self._manual_dialog.af_finspan_input
         self.af_finpos_input    = self._manual_dialog.af_finpos_input
-        self.af_motorpos_input  = self._manual_dialog.af_motorpos_input
-        self.af_motormass_input = self._manual_dialog.af_motormass_input
         # Create backfire delay input directly on the main window
         self.af_backfire_input  = QLineEdit(self)
         validator = QDoubleValidator(0.0, 10.0, 2, self.af_backfire_input)
@@ -1116,8 +1107,7 @@ class AppWindow(QMainWindow):
         self.af_fintip_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_finspan_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_finpos_input.textChanged.connect(lambda v: self._mark_modified())
-        self.af_motorpos_input.textChanged.connect(lambda v: self._mark_modified())
-        self.af_motormass_input.textChanged.connect(lambda v: self._mark_modified())
+        # Note: motor_cg_input and motor_dry_mass_input are not part of the airframe config
 
         # Phase 2 Tracker evaluation hooks
         self.af_mass_input.textChanged.connect(self._evaluate_config_deltas)
@@ -1129,8 +1119,6 @@ class AppWindow(QMainWindow):
         self.af_fintip_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_finspan_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_finpos_input.textChanged.connect(self._evaluate_config_deltas)
-        self.af_motorpos_input.textChanged.connect(self._evaluate_config_deltas)
-        self.af_motormass_input.textChanged.connect(self._evaluate_config_deltas)
 
         self._bind_state()
 
@@ -1611,6 +1599,35 @@ class AppWindow(QMainWindow):
         grp_motor_lay.addRow("Max Thrust:",    self.lbl_max_thrust)
         grp_motor_lay.addRow("Burn Time:",     self.lbl_burn_time)
         grp_motor_lay.addRow("Total Impulse:", self.lbl_total_impulse)
+
+        self.motor_cg_input = QLineEdit(grp_motor)
+        validator_cg = QDoubleValidator(0.001, 1000.0, 3, self.motor_cg_input)
+        validator_cg.setNotation(QDoubleValidator.StandardNotation)
+        self.motor_cg_input.setValidator(validator_cg)
+        self.motor_cg_input.setPlaceholderText("入力必須")
+        self.motor_cg_input.setClearButtonEnabled(True)
+        self.motor_cg_input.setText("")
+        self.motor_cg_input.textChanged.connect(
+            lambda text: self.motor_cg_input.setStyleSheet(
+                "" if self.motor_cg_input.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
+
+        self.motor_dry_mass_input = QLineEdit(grp_motor)
+        validator_mass = QDoubleValidator(0.001, 1000.0, 4, self.motor_dry_mass_input)
+        validator_mass.setNotation(QDoubleValidator.StandardNotation)
+        self.motor_dry_mass_input.setValidator(validator_mass)
+        self.motor_dry_mass_input.setPlaceholderText("入力必須")
+        self.motor_dry_mass_input.setClearButtonEnabled(True)
+        self.motor_dry_mass_input.setText("")
+        self.motor_dry_mass_input.textChanged.connect(
+            lambda text: self.motor_dry_mass_input.setStyleSheet(
+                "" if self.motor_dry_mass_input.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
+
+        grp_motor_lay.addRow("Motor CG Pos. [m]:", self.motor_cg_input)
+        grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
         grp_motor_lay.addRow("Backfire Delay [s]:", self.af_backfire_input)
 
         # ── Recovery / Parachute parameters ──────────────────────────────────
@@ -2940,8 +2957,6 @@ class AppWindow(QMainWindow):
         _check_and_style(self.af_fintip_input,    md.lbl_fintip,    "fin_tip")
         _check_and_style(self.af_finspan_input,   md.lbl_finspan,   "fin_span")
         _check_and_style(self.af_finpos_input,    md.lbl_finpos,    "fin_pos")
-        _check_and_style(self.af_motorpos_input,  md.lbl_motorpos,  "motor_pos")
-        _check_and_style(self.af_motormass_input, md.lbl_motormass, "motor_dry_mass")
 
     def _on_manual_config_reset(self) -> None:
         """Reset values in ManualSetupDialog to match original_rocket_config."""
@@ -2966,8 +2981,6 @@ class AppWindow(QMainWindow):
         _set(self.af_fintip_input,    "fin_tip")
         _set(self.af_finspan_input,   "fin_span")
         _set(self.af_finpos_input,    "fin_pos")
-        _set(self.af_motorpos_input,  "motor_pos")
-        _set(self.af_motormass_input, "motor_dry_mass")
 
     def _on_run(self) -> None:
         self.set_status("Simulation running…", "#f9e2af")
