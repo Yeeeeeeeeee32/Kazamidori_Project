@@ -262,7 +262,7 @@ def create_wind_profile(
     wind_profile: list[dict],
 ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
     if not wind_profile:
-        return [(0.0, 0.0)], [(0.0, 0.0)]
+        return [(0.0, 0.0), (5000.0, 0.0)], [(0.0, 0.0), (5000.0, 0.0)]
 
     nodes = []
     for n in wind_profile:
@@ -277,7 +277,7 @@ def create_wind_profile(
     nodes.sort(key=lambda t: t[0])
 
     if not nodes:
-        return [(0.0, 0.0)], [(0.0, 0.0)]
+        return [(0.0, 0.0), (5000.0, 0.0)], [(0.0, 0.0), (5000.0, 0.0)]
 
     u_pts, v_pts, alts = [], [], []
     for alt, spd, dir_deg in nodes:

@@ -179,23 +179,27 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
 
 # ── Optimiser (from _optimize_worker) ────────────────────────────────────────
 
-def _grid_search_worker(e_: float, a_: float, base_params: dict) -> tuple[float, float, dict]:
+def _grid_search_chunk(chunk_configs: list[tuple[float, float]], base_params: dict) -> list[tuple[float, float, dict]]:
     """Module-level worker for parallel grid search.
     Strips large trajectory arrays from result to minimise IPC overhead.
     """
-    res = simulate_once(e_, a_, base_params)
-    if res['ok']:
-        light_res = {
-            'ok': True,
-            'apogee_m': res['apogee_m'],
-            'hang_time': res['hang_time'],
-            'impact_x': res['impact_x'],
-            'impact_y': res['impact_y'],
-            'r_horiz': res['r_horiz'],
-            'backfire_alt': res['backfire_alt'],
-        }
-        return e_, a_, light_res
-    return e_, a_, {'ok': False, 'error': res.get('error', 'unknown error')}
+    results = []
+    for e_, a_ in chunk_configs:
+        res = simulate_once(e_, a_, base_params)
+        if res['ok']:
+            light_res = {
+                'ok': True,
+                'apogee_m': res['apogee_m'],
+                'hang_time': res['hang_time'],
+                'impact_x': res['impact_x'],
+                'impact_y': res['impact_y'],
+                'r_horiz': res['r_horiz'],
+                'backfire_alt': res['backfire_alt'],
+            }
+            results.append((e_, a_, light_res))
+        else:
+            results.append((e_, a_, {'ok': False, 'error': res.get('error', 'unknown error')}))
+    return results
 
 
 def optimize_launch_angle(
@@ -253,28 +257,29 @@ def optimize_launch_angle(
 
     import os
     import time
+
     _t_start = time.perf_counter()
 
-    from itertools import repeat
-    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        args_e = []
-        args_a = []
-        for e_ in elev_grid:
-            for a_ in azi_grid:
-                args_e.append(e_)
-                args_a.append(a_)
+    from .pool_manager import get_global_pool
+    executor = get_global_pool()
 
-        chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
-        for e_, a_, res in executor.map(
-            _grid_search_worker,
-            args_e,
-            args_a,
-            repeat(base_params, N),
-            chunksize=chunksize
-        ):
-            if stop_flag.is_set():
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise RuntimeError('cancelled')
+    configs = []
+    for e_ in elev_grid:
+        for a_ in azi_grid:
+            configs.append((e_, a_))
+
+    chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
+    chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
+    futures = [executor.submit(_grid_search_chunk, chunk, base_params) for chunk in chunks]
+
+    for future in concurrent.futures.as_completed(futures):
+        if stop_flag.is_set():
+            for f in futures:
+                f.cancel()
+            raise RuntimeError('cancelled')
+            
+        chunk_res = future.result()
+        for e_, a_, res in chunk_res:
             done += 1
             if res['ok']:
                 score = objective(res, mc_r=None)
@@ -605,28 +610,27 @@ def run_phase1(
 
     _t_start = time.perf_counter()
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        args_e = []
-        args_a = []
-        # Optimization: hoist invariant parameter generation out of the loop
-        p_nom = p1_params_at_wind(base_params, mu_nom)
-        for e in elev_grid:
-            for a in azi_grid:
-                args_e.append(e)
-                args_a.append(a)
+    from .pool_manager import get_global_pool
+    executor = get_global_pool()
+    p_nom = p1_params_at_wind(base_params, mu_nom)
+    
+    configs = []
+    for e in elev_grid:
+        for a in azi_grid:
+            configs.append((e, a))
 
-        from itertools import repeat
-        chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
-        for e_, a_, res in executor.map(
-            _grid_search_worker,
-            args_e,
-            args_a,
-            repeat(p_nom, N),
-            chunksize=chunksize
-        ):
-            if stop_flag.is_set():
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise RuntimeError('cancelled')
+    chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
+    chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
+    futures = [executor.submit(_grid_search_chunk, chunk, p_nom) for chunk in chunks]
+
+    for future in concurrent.futures.as_completed(futures):
+        if stop_flag.is_set():
+            for f in futures:
+                f.cancel()
+            raise RuntimeError('cancelled')
+            
+        chunk_res = future.result()
+        for e_, a_, res in chunk_res:
             done += 1
             if res['ok']:
                 if not use_r_filter or res['r_horiz'] <= target_r:

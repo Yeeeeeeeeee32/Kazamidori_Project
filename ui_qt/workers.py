@@ -106,7 +106,9 @@ _DEFAULT_AIRFRAME: dict[str, Any] = {
 _MC_BATCH_SIZE: int = 10
 
 
-def _mc_worker_task(
+def _mc_worker_chunk(
+    seeds: list[int],
+    trials: list[int],
     sim_params: dict,
     wind_unc: float,
     gust_sigma: float,
@@ -118,54 +120,54 @@ def _mc_worker_task(
     base_v: list,
     flight_mode: str,
     target_radius: float,
-    seed: int,
-    trial_idx: int = 0,
-) -> dict | None:
+) -> list[dict | None]:
     """
     Top-level, picklable worker function for ProcessPoolExecutor.
-    Runs a single perturbed Monte Carlo simulation and returns purely scalar values.
-    The Flight array data is aggressively discarded to keep memory O(1).
+    Runs a chunk of perturbed Monte Carlo simulations.
     """
-    rng = _random.Random(seed)
+    results = []
+    for seed, trial_idx in zip(seeds, trials):
+        rng = _random.Random(seed)
 
-    # ── Wind perturbation
-    u_prof, v_prof, _ = _perturb_wind_profile(
-        base_u, base_v, rng,
-        wind_unc, gust_intensity=gust_sigma,
-    )
+        # ── Wind perturbation
+        u_prof, v_prof, _ = _perturb_wind_profile(
+            base_u, base_v, rng,
+            wind_unc, gust_intensity=gust_sigma,
+        )
 
-    # ── Thrust perturbation
-    thrust_scale = max(0.1, 1.0 + rng.gauss(0.0, tu))
-    perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
+        # ── Thrust perturbation
+        thrust_scale = max(0.1, 1.0 + rng.gauss(0.0, tu))
+        perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
 
-    trial_p = {
-        **sim_params,
-        "wind_u_prof": u_prof,
-        "wind_v_prof": v_prof,
-        "thrust_data": perturbed_thrust,
-    }
-
-    r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
-
-    if r["ok"]:
-        from core.optimization import p1_objective_score
-        score = p1_objective_score(r, flight_mode, target_radius)
-
-        # Only return the scalars
-        res = {
-            "x": float(r["impact_x"]),
-            "y": float(r["impact_y"]),
-            "apogee": float(r["apogee_m"]),
-            "hang_time": float(r["hang_time"]),
-            "score": score
+        trial_p = {
+            **sim_params,
+            "wind_u_prof": u_prof,
+            "wind_v_prof": v_prof,
+            "thrust_data": perturbed_thrust,
         }
-    else:
-        res = None
 
-    # Memory optimization: forcefully garbage collect / remove refs
-    del r, trial_p, u_prof, v_prof, perturbed_thrust
+        r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
 
-    return res
+        if r["ok"]:
+            from core.optimization import p1_objective_score
+            score = p1_objective_score(r, flight_mode, target_radius)
+
+            # Only return the scalars
+            res = {
+                "x": float(r["impact_x"]),
+                "y": float(r["impact_y"]),
+                "apogee": float(r["apogee_m"]),
+                "hang_time": float(r["hang_time"]),
+                "score": score
+            }
+        else:
+            res = None
+
+        # Memory optimization
+        del r, trial_p, u_prof, v_prof, perturbed_thrust
+        results.append(res)
+
+    return results
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -719,37 +721,38 @@ class SimulationWorker(QThread):
         # ── ProcessPoolExecutor for CPU-bound Monte Carlo ─────────────────────
         # max_workers=os.cpu_count() fully utilizes available CPU cores,
         # completely bypassing the Python GIL for heavy RocketPy math.
-        from itertools import repeat
+        from core.pool_manager import get_global_pool
+        from concurrent.futures import as_completed
 
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            # Start random seed block to avoid generating exactly the same stream
-            # of random numbers in each process if we were not passing seeds.
-            base_seed = _random.randint(0, 2**31 - 1)
+        executor = get_global_pool()
+        base_seed = _random.randint(0, 2**31 - 1)
+        
+        all_seeds = list(range(base_seed, base_seed + n_total))
+        all_trials = list(range(1, n_total + 1))
+        
+        chunksize = max(1, n_total // (os.cpu_count() * 4) if os.cpu_count() else 1)
+        chunks_seeds = [all_seeds[i:i + chunksize] for i in range(0, n_total, chunksize)]
+        chunks_trials = [all_trials[i:i + chunksize] for i in range(0, n_total, chunksize)]
+        
+        futures = []
+        for c_seeds, c_trials in zip(chunks_seeds, chunks_trials):
+            futures.append(executor.submit(
+                _mc_worker_chunk,
+                c_seeds, c_trials,
+                sim_params, wind_unc, gust_sigma, tu, raw_thrust,
+                elev, azi, base_u, base_v, flight_mode, target_radius
+            ))
+            
+        _done = 0
+        for future in as_completed(futures):
+            if self._stop_event.is_set():
+                for f in futures:
+                    f.cancel()
+                break
 
-            chunksize = max(1, n_total // (os.cpu_count() * 4))
-
-            # Gather results as they complete
-            for _done, res in enumerate(executor.map(
-                _mc_worker_task,
-                repeat(sim_params, n_total),
-                repeat(wind_unc, n_total),
-                repeat(gust_sigma, n_total),
-                repeat(tu, n_total),
-                repeat(raw_thrust, n_total),
-                repeat(elev, n_total),
-                repeat(azi, n_total),
-                repeat(base_u, n_total),
-                repeat(base_v, n_total),
-                repeat(flight_mode, n_total),
-                repeat(target_radius, n_total),
-                range(base_seed, base_seed + n_total),
-                range(1, n_total + 1),
-                chunksize=chunksize
-            ), start=1):
-                if self._stop_event.is_set():
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    break
-
+            chunk_results = future.result()
+            for res in chunk_results:
+                _done += 1
                 if res is not None:
                     scatter.append(res)
 
