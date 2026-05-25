@@ -280,7 +280,13 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
     """
     diag_buffer = []
 
+    import os
+    DEBUG_PHYSICS = os.environ.get("DEBUG_PHYSICS") == "1"
+
     def _diag(tag: str, **kw) -> None:
+        if not DEBUG_PHYSICS:
+            return
+
         diag_buffer.append((tag, kw))
         if len(diag_buffer) > 2000:
             lines = []

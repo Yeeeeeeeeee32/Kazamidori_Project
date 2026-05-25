@@ -272,22 +272,30 @@ def optimize_launch_angle(
     chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
     futures = [executor.submit(_grid_search_chunk, chunk, base_params) for chunk in chunks]
 
-    for future in concurrent.futures.as_completed(futures):
+    while futures:
         if stop_flag.is_set():
             for f in futures:
                 f.cancel()
             raise RuntimeError('cancelled')
             
-        chunk_res = future.result()
-        for e_, a_, res in chunk_res:
-            done += 1
-            if res['ok']:
-                score = objective(res, mc_r=None)
-                candidates.append((score, e_, a_, res))
-            frac = (done / N) * phase1_weight
-            progress_cb(
-                f"Phase 1: Coarse search ({done}/{N}) "
-                f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+        done_futures, futures = concurrent.futures.wait(
+            futures, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+        )
+
+        for future in done_futures:
+            chunk_res = future.result()
+            for e_, a_, res in chunk_res:
+                done += 1
+                if res['ok']:
+                    score = objective(res, mc_r=None)
+                    candidates.append((score, e_, a_, res))
+                frac = (done / N) * phase1_weight
+                progress_cb(
+                    f"Phase 1: Coarse search ({done}/{N}) "
+                    f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+
+        from PySide6.QtCore import QThread
+        QThread.msleep(5)
 
     elapsed = time.perf_counter() - _t_start
     print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")

@@ -463,6 +463,36 @@ class SimulationWorker(QThread):
             self.progress.emit(98)
             self.sig_status_text.emit("Packaging results...")
 
+            # Process KDE filtered scatter points to remove heavy math from UI
+            mc_scatter_x_filtered = []
+            mc_scatter_y_filtered = []
+
+            if scatter:
+                sx = [p["x"] if isinstance(p, dict) else p[0] for p in scatter]
+                sy = [p["y"] if isinstance(p, dict) else p[1] for p in scatter]
+
+                if kde_contours and len(kde_contours) > 0:
+                    import matplotlib.path as mpath
+                    outer_contour = kde_contours[0]
+                    outer_points = outer_contour.get('points_m', []) if isinstance(outer_contour, dict) else outer_contour
+
+                    if outer_points and len(outer_points) > 2:
+                        path = mpath.Path(outer_points)
+                        pts = np.column_stack((sx, sy))
+                        mask = path.contains_points(pts)
+                        outside_mask = ~mask
+                        mc_scatter_x_filtered = np.array(sx)[outside_mask].tolist()[:500]
+                        mc_scatter_y_filtered = np.array(sy)[outside_mask].tolist()[:500]
+                    else:
+                        mc_scatter_x_filtered = sx[:500]
+                        mc_scatter_y_filtered = sy[:500]
+                else:
+                    mc_scatter_x_filtered = sx[:500]
+                    mc_scatter_y_filtered = sy[:500]
+
+            stats["mc_scatter_x_filtered"] = mc_scatter_x_filtered
+            stats["mc_scatter_y_filtered"] = mc_scatter_y_filtered
+
             # Emit MC-specific payload for dedicated statistics consumers
             self.sig_mc_done.emit(self._package_mc(scatter, stats, prob_pct))
 
@@ -988,6 +1018,8 @@ class SimulationWorker(QThread):
             # ── Legacy alias keys ─────────────────────────────────────────────
             "trajectory_3d":     list(zip(x_vals, y_vals, z_vals)),
             "mc_scatter_points": scatter,
+            "mc_scatter_x_filtered": stats.get("mc_scatter_x_filtered", []),
+            "mc_scatter_y_filtered": stats.get("mc_scatter_y_filtered", []),
             "apogee":            nom_pkg["apogee_m"],
             "impact_distance":   nom_pkg["r_horiz"],
         }
