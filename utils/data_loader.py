@@ -20,7 +20,7 @@ import io
 import json
 import math as _math
 import os
-import xml.etree.ElementTree as _ET
+import defusedxml.ElementTree as _ET
 import zipfile as _zipfile
 from typing import Any
 
