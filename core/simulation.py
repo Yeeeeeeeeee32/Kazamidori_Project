@@ -612,7 +612,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         _bo2_z   = float(z_vals[_idx_bo2])
         _bo2_vz  = float(vz_vals[_idx_bo2])
         try:
-            _bo2_az = float(fl2.az(_bo2_t))   # Bug A: RocketPy Function — call with time
+            _bo2_az = float(fl2.az(float(_bo2_t)))   # Bug A: RocketPy Function — call with time
         except Exception:
             _bo2_az = float("nan")
         _diag("PASS2_BURNOUT",
