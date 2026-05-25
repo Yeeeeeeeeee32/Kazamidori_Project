@@ -96,8 +96,8 @@ _LevelLike = Union[WindLevel, tuple, list]
 def speed_dir_to_uv(speed: float, dir_deg: float) -> tuple[float, float]:
     """Convert meteorological speed/direction to East/North vector components.
 
-    Meteorological convention: *dir_deg* is the direction FROM which the
-    wind blows (e.g. 270° = westerly wind, moves toward the east).
+    System Directive ENU System: *dir_deg* 0 is North, increasing clockwise.
+    Calculates explicitly as: u = speed * sin(direction), v = speed * cos(direction)
 
     Args:
         speed:    Wind speed (m/s); must be ≥ 0.
@@ -108,8 +108,8 @@ def speed_dir_to_uv(speed: float, dir_deg: float) -> tuple[float, float]:
         components in m/s.
     """
     rad = math.radians(dir_deg)
-    return (-speed * math.sin(rad),
-            -speed * math.cos(rad))
+    return (speed * math.sin(rad),
+            speed * math.cos(rad))
 
 
 def uv_to_speed_dir(u: float, v: float) -> tuple[float, float]:
@@ -128,7 +128,7 @@ def uv_to_speed_dir(u: float, v: float) -> tuple[float, float]:
     speed = math.hypot(u, v)
     if speed < 1e-9:
         return 0.0, 0.0
-    dir_deg = math.degrees(math.atan2(-u, -v)) % 360.0
+    dir_deg = math.degrees(math.atan2(u, v)) % 360.0
     return speed, dir_deg
 
 

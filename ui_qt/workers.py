@@ -481,8 +481,8 @@ class SimulationWorker(QThread):
     def _build_wind_profiles(
         p: dict,
     ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
-        wind_profile = p.get("wind_profile", [])
-        return create_wind_profile(wind_profile)
+        wind_profile_data = p.get("wind_profile_data", [])
+        return create_wind_profile(wind_profile_data)
 
     @staticmethod
     def _build_sim_params(
