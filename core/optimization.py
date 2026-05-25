@@ -82,34 +82,36 @@ def build_wind_profile(
     if alpha is None:
         alpha = _hellmann_alpha(v_surf, z_surf, v_upper, z_upper)
 
-    def _speed(z: float) -> float:
-        if z <= 0:
-            return 0.0
-        if z <= z_surf:
-            return v_surf * (z / z_surf) ** alpha
-        if z >= z_upper:
-            return v_upper
-        return v_surf * (z / z_surf) ** alpha
+    # Pre-calculate common terms to avoid redundant math inside the loop
+    dir_surf_rad = math.radians(dir_surf_deg)
+    dir_upper_rad = math.radians(dir_upper_deg)
+    diff_deg = ((dir_upper_deg - dir_surf_deg + 180.0) % 360.0) - 180.0
+    diff_rad = math.radians(diff_deg)
 
-    def _dir(z: float) -> float:
-        if z <= z_surf:
-            return dir_surf_deg
-        if z >= z_upper:
-            return dir_upper_deg
-        frac = (z - z_surf) / (z_upper - z_surf)
-        diff = ((dir_upper_deg - dir_surf_deg + 180.0) % 360.0) - 180.0
-        return dir_surf_deg + frac * diff
+    z_diff_inv = 1.0 / (z_upper - z_surf) if z_upper != z_surf else 0.0
+    z_surf_inv = 1.0 / z_surf if z_surf != 0 else 0.0
 
     alts = sorted({0, 3, z_surf, 30, 100, 300, z_upper, 1000, 5000})
     u_prof: list = [(0, 0.0)]
     v_prof: list = [(0, 0.0)]
+
     for z in alts:
         if z == 0:
             continue
-        spd = _speed(z)
-        rad = math.radians(_dir(z))
+
+        if z <= z_surf:
+            spd = v_surf * (z * z_surf_inv) ** alpha
+            rad = dir_surf_rad
+        elif z >= z_upper:
+            spd = v_upper
+            rad = dir_upper_rad
+        else:
+            spd = v_surf * (z * z_surf_inv) ** alpha
+            rad = dir_surf_rad + (z - z_surf) * z_diff_inv * diff_rad
+
         u_prof.append((z, -spd * math.sin(rad)))
         v_prof.append((z, -spd * math.cos(rad)))
+
     return u_prof, v_prof
 
 
