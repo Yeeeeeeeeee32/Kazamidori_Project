@@ -42,6 +42,7 @@ class AppState(QObject):
     # ── Simulation configuration ───────────────────────────────────────────────
     wind_uncertainty_changed   = Signal(float)
     magnetic_declination_changed = Signal(float)
+    offline_map_extent_changed = Signal(list)
     thrust_uncertainty_changed = Signal(float)
     landing_prob_changed       = Signal(int)
     mc_n_runs_changed          = Signal(int)
@@ -243,6 +244,7 @@ class AppState(QObject):
         self._launch_lat = _ff("launch_lat")    # decimal degrees
         self._launch_lon = _ff("launch_lon")    # decimal degrees
         self._magnetic_declination = 0.0
+        self._offline_map_extent = [-250.0, 250.0, -250.0, 250.0]
 
         self._current_playback_index = 0
 
@@ -546,6 +548,16 @@ class AppState(QObject):
         if self._magnetic_declination != value:
             self._magnetic_declination = value
             self.magnetic_declination_changed.emit(value)
+
+    @Property(list, notify=offline_map_extent_changed)
+    def offline_map_extent(self) -> list:
+        return self._offline_map_extent
+
+    @offline_map_extent.setter
+    def offline_map_extent(self, value: list) -> None:
+        if self._offline_map_extent != value:
+            self._offline_map_extent = value
+            self.offline_map_extent_changed.emit(value)
 
     @Property(float, notify=launch_lat_changed)
     def launch_lat(self) -> float:
