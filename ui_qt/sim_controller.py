@@ -1281,13 +1281,13 @@ class SimController(QObject):
         manual_fields = missing_info.get("manual_fields", [])
 
         # Add manual fields that might have been detected globally but missed by specific tags
-        if (cfg.get("parachute", {}).get("cd", 0) > 0 and
+        if ((cfg.get("parachute", {}).get("cd") or 0) > 0 and
             "パラシュート関連パラメータ (Cd, Area, Lag)" not in manual_fields):
             manual_fields.append("パラシュート関連パラメータ (Cd, Area, Lag)")
-        if ((af.get("motor_dry_mass", 0) > 0 or af.get("motor_pos", 0) != 0) and
+        if (((af.get("motor_dry_mass") or 0) > 0 or (af.get("motor_pos") or 0) != 0) and
             "モーターパラメータ" not in manual_fields):
             manual_fields.append("モーターパラメータ")
-        if (af.get("backfire_delay", 0) > 0 and
+        if ((af.get("backfire_delay") or 0) > 0 and
             "バックファイア遅延 (Backfire Delay)" not in manual_fields):
             manual_fields.append("バックファイア遅延 (Backfire Delay)")
 

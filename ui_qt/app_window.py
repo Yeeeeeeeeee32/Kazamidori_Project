@@ -556,7 +556,7 @@ class AdvancedSettingsDialog(QDialog):
 
         # ── Wind group ────────────────────────────────────────────────────────
         grp_wind = QWidget()
-        frm_wind = QGridLayout(grp_wind)
+        frm_wind = QVBoxLayout(grp_wind)
         frm_wind.setSpacing(6)
         frm_wind.setContentsMargins(10, 12, 10, 8)
 
