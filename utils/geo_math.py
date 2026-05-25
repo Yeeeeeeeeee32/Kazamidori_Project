@@ -114,8 +114,9 @@ def ellipse_polygon(
     ca, sa = math.cos(angle_rad), math.sin(angle_rad)
     for i in range(n):
         t  = 2.0 * math.pi * i / n
-        xe = b * math.sin(t) * ca + a * math.cos(t) * sa
-        ye = -b * math.sin(t) * sa + a * math.cos(t) * ca
+        # 標準的な回転行列の公式に修正
+        xe = a * math.cos(t) * ca - b * math.sin(t) * sa
+        ye = a * math.cos(t) * sa + b * math.sin(t) * ca
         lat, lon = offset_to_latlon(ref_lat, ref_lon, cx + xe, cy + ye)
         coords.append((lat, lon))
     return coords
