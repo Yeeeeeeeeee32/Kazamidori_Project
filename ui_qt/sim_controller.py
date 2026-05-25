@@ -1063,7 +1063,7 @@ class SimController(QObject):
                 # Text input handling
                 def safe_set(v, _p=prop, _f=to_si):
                     if v.strip() == "":
-                        setattr(s, _p, None)
+                        return
                     else:
                         try:
                             setattr(s, _p, _f(float(v)))

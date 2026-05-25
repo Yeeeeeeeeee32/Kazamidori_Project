@@ -2,11 +2,12 @@
 ui_qt/app_window.py
 Main application window — Kazamidori Project.
 
-3-pane docking layout
----------------------
-  parameters_dock (Left) |  profile_dock (Centre)  |  map_dock (Right)
-  Airframe / Launch /        3-D trajectory + wind       2-D landing map
-  Launch Mode / Run btn
+3-column QSplitter layout
+-------------------------
+  Column 1 (Left)     |  Column 2 (Centre)        |  Column 3 (Right)
+  Parameters panel     |  3-D Trajectory (top)      |  Wind Profile
+  Airframe / Launch /  |  2-D Landing Map (bottom)  |  Speed + Compass
+  Launch Mode / Run    |  (vertical QSplitter)      |  Table + Status
 
 All heavy computation lives in core/ — this module is view-only.
 
@@ -991,7 +992,7 @@ class _MapCoordProxy:
 
 class AppWindow(QMainWindow):
     """
-    Top-level PySide6 window — 3-pane docking layout.
+    Top-level PySide6 window — 3-column QSplitter layout.
 
     Public widget attributes (consumed by SimController._collect_params)
     -------------------------------------------------------------------
@@ -1153,10 +1154,11 @@ class AppWindow(QMainWindow):
 
         self.map_view = MapView(self.state, self)
 
-        # Dual wind panel: left = Cartesian speed profile, right = polar compass.
-        self.wind_fig        = Figure(figsize=(9, 3.5), facecolor="#1e1e1e")
-        self.wind_profile_ax = self.wind_fig.add_subplot(121)
-        self.wind_ax         = self.wind_fig.add_subplot(122, projection="polar")
+        # Dual wind panel: top = Cartesian speed profile, bottom = polar compass.
+        # Vertical layout (stacked) for the tall right-column panel.
+        self.wind_fig        = Figure(figsize=(3.5, 9), facecolor="#1e1e1e")
+        self.wind_profile_ax = self.wind_fig.add_subplot(211)
+        self.wind_ax         = self.wind_fig.add_subplot(212, projection="polar")
         self.wind_canvas     = _MplCanvas(self.wind_fig)
 
         # Overlay artist tracking — populated by update_map_plot() and
@@ -1298,14 +1300,13 @@ class AppWindow(QMainWindow):
     # Build order: map panel FIRST so self.map_widget exists before
     # _build_parameters_panel() wires the lat/lon lambda closures.
     #
-    # Structure:
+    # 3-Column Architecture (Left → Right):
     #   _main_splitter (H)
-    #   ├── params_panel          (left, full height)
-    #   └── _right_splitter (V)
-    #       ├── _top_splitter (H)
-    #       │   ├── profile_panel   (3-D trajectory)
-    #       │   └── map_panel       (2-D landing map)
-    #       └── wind_panel          (wind history + compass + table, full width)
+    #   ├── params_panel          (Column 1 — left, full height)
+    #   ├── _center_splitter (V)  (Column 2 — centre, largest)
+    #   │   ├── profile_panel     (3-D trajectory, top)
+    #   │   └── map_panel         (2-D landing map, bottom)
+    #   └── wind_panel            (Column 3 — right, tall & narrow)
 
     def _setup_splitter(self) -> None:
         self._map_panel     = self._build_map_dock_widget()
@@ -1313,23 +1314,17 @@ class AppWindow(QMainWindow):
         self._profile_panel = self._build_profile_dock_widget()
         self._wind_panel    = self._build_wind_panel()
 
-        self._top_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self._top_splitter.setChildrenCollapsible(False)
-        self._top_splitter.setHandleWidth(3)
-        self._top_splitter.addWidget(self._profile_panel)
-        self._top_splitter.addWidget(self._map_panel)
+        # Column 2: vertical split — 3D trajectory (top) / 2D map (bottom)
+        self._center_splitter = QSplitter(Qt.Orientation.Vertical)
+        self._center_splitter.setChildrenCollapsible(False)
+        self._center_splitter.setHandleWidth(3)
+        self._center_splitter.addWidget(self._profile_panel)
+        self._center_splitter.addWidget(self._map_panel)
 
-
-
-        self._right_splitter = QSplitter(Qt.Orientation.Vertical)
-        self._right_splitter.setChildrenCollapsible(False)
-        self._right_splitter.setHandleWidth(3)
-
-        self._right_splitter.addWidget(self._top_splitter)
-        self._right_splitter.addWidget(self._wind_panel)
-
+        # Main: 3 columns — params | trajectories | wind profile
         self._main_splitter.addWidget(self._params_panel)
-        self._main_splitter.addWidget(self._right_splitter)
+        self._main_splitter.addWidget(self._center_splitter)
+        self._main_splitter.addWidget(self._wind_panel)
 
     # ── Column sizing (deferred to first paint) ───────────────────────────────
 
@@ -1338,12 +1333,10 @@ class AppWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_initial_sizes)
 
     def _apply_initial_sizes(self) -> None:
-        # Main: params 300 | right rest
-        self._main_splitter.setSizes([300, 1300])
-        # Right vertical: top (3D+map) 60% | wind 40%
-        self._right_splitter.setSizes([180, 500, 300])
-        # Top horizontal: profile | map equal
-        self._top_splitter.setSizes([650, 650])
+        # Main 3-column: params 280 | centre 960 | wind 360
+        self._main_splitter.setSizes([280, 960, 360])
+        # Centre vertical: 3D trajectory 55% | 2D map 45%
+        self._center_splitter.setSizes([500, 400])
 
     # ── Profile dock content (3-D trajectory + wind) ──────────────────────────
 
@@ -1772,44 +1765,32 @@ class AppWindow(QMainWindow):
         return container
 
     # ── Wind panel (history graph + compass + current-values table) ──────────
+    #
+    # Column 3 (right): Tall vertical panel so altitude Y-axis is properly
+    # visualised.  Layout is top-to-bottom: canvas (2 stacked subplots) →
+    # current-values table → status labels → telemetry stats.
 
     def _build_wind_panel(self) -> QWidget:
-        """Bottom row: wind speed history  ·  polar compass  ·  current-values table."""
+        """Right column: wind speed profile (top) · polar compass (bottom) · table."""
         container = QWidget()
-        lay = QHBoxLayout(container)
+        container.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        lay = QVBoxLayout(container)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
 
-        # ── Left: matplotlib canvas (2 subplots) ──────────────────────────────
-        canvas_wrap = QWidget(container)
-        cwl = QVBoxLayout(canvas_wrap)
-        cwl.setContentsMargins(0, 0, 0, 0)
-        cwl.setSpacing(0)
+        # ── Header ─────────────────────────────────────────────────────────────
         hdr = QLabel(
-            "  Wind  ·  Speed History  &  Compass  ·  5 Altitude Nodes",
-            canvas_wrap)
+            "  Wind Profile  ·  Speed  &  Compass",
+            container)
         hdr.setStyleSheet("color: #6c7086; font-size: 7pt; padding: 1px 4px;")
+        lay.addWidget(hdr)
 
-        cwl.addWidget(self.wind_canvas, stretch=1)
-        lay.addWidget(canvas_wrap, stretch=1)
+        # ── Matplotlib canvas (2 vertically stacked subplots) ─────────────────
+        lay.addWidget(self.wind_canvas, stretch=1)
 
-        # ── Right column: wind table on top, status labels directly below ────
-        # Previously the table and the two status labels lived as three
-        # separate slots inside the outer QHBoxLayout, which pushed the
-        # Koinobori / GPV labels to the far-right of the panel and produced
-        # visible horizontal dead space.  Wrapping them into a dedicated
-        # QVBoxLayout keeps the compass canvas at stretch=1 (so it absorbs
-        # the reclaimed width) and stacks the labels neatly under the table.
-        right_col = QWidget(container)
-        right_col.setSizePolicy(
-            QSizePolicy.Policy.Maximum,    # do not let the column eat canvas width
-            QSizePolicy.Policy.Preferred,
-        )
-        right_lay = QVBoxLayout(right_col)
-        right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(4)
-
-        self._wind_table = QTableWidget(5, 3, right_col)
+        # ── Current wind values table ─────────────────────────────────────────
+        self._wind_table = QTableWidget(5, 3, container)
         self._wind_table.setObjectName("WindTable")
         self._wind_table.setHorizontalHeaderLabels(["Alt", "Speed (m/s)", "Dir (°)"])
         self._wind_table.verticalHeader().setVisible(False)
@@ -1819,8 +1800,7 @@ class AppWindow(QMainWindow):
             QTableWidget.SelectionMode.NoSelection)
         hh = self._wind_table.horizontalHeader()
         hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self._wind_table.setMaximumWidth(260)
-        self._wind_table.setMinimumWidth(160)
+        self._wind_table.setMaximumHeight(180)
         self._wind_table.setAlternatingRowColors(True)
         # Pre-populate with dashes; cells are reused (never re-created) for speed
         for r in range(5):
@@ -1829,50 +1809,41 @@ class AppWindow(QMainWindow):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._wind_table.setItem(r, c, item)
 
-        right_lay.addWidget(self._wind_table)
+        lay.addWidget(self._wind_table)
 
-        # ── System Status Labels (stacked under the table) ───────────────────
-        # Koinobori on the left edge, GPV timestamp on the right edge of the
-        # same row.  ``addStretch`` keeps them pinned to opposite sides so
-        # the row stays compact when the column is narrow and the labels
-        # remain readable when the column widens.  Signal/slot bindings to
-        # AppState.koinobori_status_changed and gpv_last_fetch_time_changed
-        # are wired elsewhere (search for ``lbl_koinobori_status`` /
-        # ``lbl_gpv_status``); only the layout placement is touched here.
-        status_lay = QHBoxLayout()
-        status_lay.setContentsMargins(4, 0, 4, 0)
-        status_lay.setSpacing(8)
+        # ── System Status Labels ──────────────────────────────────────────────
+        status_lay = QVBoxLayout()
+        status_lay.setContentsMargins(4, 2, 4, 0)
+        status_lay.setSpacing(2)
 
-        self.lbl_koinobori_status = QLabel("Koinobori: Disconnected", right_col)
+        self.lbl_koinobori_status = QLabel("Koinobori: Disconnected", container)
         self.lbl_koinobori_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
         self.lbl_koinobori_status.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        self.lbl_gpv_status = QLabel("GPV Updated: N/A", right_col)
+        self.lbl_gpv_status = QLabel("GPV Updated: N/A", container)
         self.lbl_gpv_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
         self.lbl_gpv_status.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
         status_lay.addWidget(self.lbl_koinobori_status)
-        status_lay.addStretch()
         status_lay.addWidget(self.lbl_gpv_status)
 
-        right_lay.addLayout(status_lay)
+        lay.addLayout(status_lay)
 
-        telemetry_lay = QHBoxLayout()
-        telemetry_lay.setContentsMargins(4, 4, 4, 0)
-        self.lbl_max_gust = QLabel("Max Gust: —", right_col)
-        self.lbl_mean_wind = QLabel("Mean Wind: —", right_col)
-        self.lbl_std_dev = QLabel("Std Dev: —", right_col)
+        # ── Telemetry stats ────────────────────────────────────────────────────
+        telemetry_lay = QVBoxLayout()
+        telemetry_lay.setContentsMargins(4, 2, 4, 4)
+        telemetry_lay.setSpacing(2)
+        self.lbl_max_gust = QLabel("Max Gust: —", container)
+        self.lbl_mean_wind = QLabel("Mean Wind: —", container)
+        self.lbl_std_dev = QLabel("Std Dev: —", container)
         for _lbl in (self.lbl_max_gust, self.lbl_mean_wind, self.lbl_std_dev):
             _lbl.setStyleSheet("color: #cdd6f4; font-size: 8pt;")
-            _lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            _lbl.setAlignment(Qt.AlignmentFlag.AlignLeft)
             telemetry_lay.addWidget(_lbl)
 
-        right_lay.addLayout(telemetry_lay)
-        right_lay.addStretch()   # keep table + status pinned to the top
-
-        lay.addWidget(right_col)
+        lay.addLayout(telemetry_lay)
 
         return container
 
@@ -2389,16 +2360,16 @@ class AppWindow(QMainWindow):
             fig.legends.clear()
             fig.legend(
                 by_label.values(), by_label.keys(),
-                loc="center left", bbox_to_anchor=(0.01, 0.5),
+                loc="lower center", bbox_to_anchor=(0.5, 0.0),
                 borderaxespad=0,
-                fontsize=7,
+                fontsize=6,
                 facecolor="#1a1a2e", edgecolor="#3a3a52",
                 labelcolor="#cdd6f4", framealpha=0.88,
                 ncol=1
             )
 
-        # subplots_adjust reserves left margin for the legend
-        fig.subplots_adjust(left=0.25, right=0.95, top=0.90, bottom=0.15, wspace=0.3)
+        # subplots_adjust for vertical stacked layout in the tall right panel
+        fig.subplots_adjust(left=0.22, right=0.92, top=0.95, bottom=0.08, hspace=0.35)
         self.wind_canvas.draw_idle()
         self._update_wind_table(nodes)
 
