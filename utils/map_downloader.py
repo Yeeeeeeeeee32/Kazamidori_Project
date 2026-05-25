@@ -2,6 +2,7 @@ import os
 import math
 import json
 import argparse
+import concurrent.futures
 
 try:
     import requests
@@ -52,6 +53,19 @@ def enu_to_latlon(dx, dy, clat, clon):
     lat = clat + dlat
     lon = clon + dlon
     return lat, lon
+
+def _download_tile(x, y, zoom, session):
+    import time
+    url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
+    try:
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
+        img = Image.open(io.BytesIO(response.content)).convert("RGBA")
+        # Be nice to OSM
+        time.sleep(0.1)
+        return x, y, img, None
+    except Exception as e:
+        return x, y, None, str(e)
 
 def main():
     parser = argparse.ArgumentParser(description="Download offline map tiles and calculate magnetic declination.")
@@ -113,24 +127,21 @@ def main():
     downloaded = 0
 
     tile_size = 256
-    import time
 
-    for x in range(min_x_tile, max_x_tile + 1):
-        for y in range(min_y_tile, max_y_tile + 1):
-            url = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
-            try:
-                response = session.get(url, timeout=10)
-                response.raise_for_status()
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = []
+        for x in range(min_x_tile, max_x_tile + 1):
+            for y in range(min_y_tile, max_y_tile + 1):
+                futures.append(executor.submit(_download_tile, x, y, zoom, session))
 
-                img = Image.open(io.BytesIO(response.content)).convert("RGBA")
+        for future in concurrent.futures.as_completed(futures):
+            x, y, img, err = future.result()
+            downloaded += 1
+            if img is not None:
                 tiles_data[(x, y)] = img
-
-                downloaded += 1
                 print(f"  Downloaded tile {x},{y} ({downloaded}/{total_tiles})")
-                time.sleep(0.1) # Be nice to OSM
-            except Exception as e:
-                print(f"  Failed to download tile {x},{y}: {e}")
-                downloaded += 1
+            else:
+                print(f"  Failed to download tile {x},{y}: {err}")
 
     if not tiles_data:
         print("Error: Failed to download any map tiles.")
