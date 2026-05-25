@@ -447,15 +447,17 @@ def p1_mc_points(
     rng        = _random_mod.Random()
     points: list[tuple[float, float]] = []
 
+    # Optimization: hoist invariant scaling parameters outside the loop
+    # Scale the nominal profile to mu
+    p_scaled = p1_params_at_wind(base_params, mu)
+
+    # Perturb with sigma as fraction of mu
+    wu = sigma / max(mu, 1e-6)
+
     for _ in range(n):
         if stop_flag is not None and stop_flag.is_set():
             break
         
-        # Scale the nominal profile to mu
-        p_scaled = p1_params_at_wind(base_params, mu)
-        
-        # Perturb with sigma as fraction of mu
-        wu = sigma / max(mu, 1e-6)
         u_prof, v_prof, _, _, _ = build_perturbed_wind_prof(p_scaled, rng, wu)
         
         p = dict(base_params)
@@ -604,20 +606,20 @@ def run_phase1(
     with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
         args_e = []
         args_a = []
-        args_p = []
+        # Optimization: hoist invariant parameter generation out of the loop
+        p_nom = p1_params_at_wind(base_params, mu_nom)
         for e in elev_grid:
             for a in azi_grid:
-                p = p1_params_at_wind(base_params, mu_nom)
                 args_e.append(e)
                 args_a.append(a)
-                args_p.append(p)
 
+        from itertools import repeat
         chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
         for e_, a_, res in executor.map(
             _grid_search_worker,
             args_e,
             args_a,
-            args_p,
+            repeat(p_nom, N),
             chunksize=chunksize
         ):
             if stop_flag.is_set():

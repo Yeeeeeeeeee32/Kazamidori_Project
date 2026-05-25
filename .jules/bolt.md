@@ -11,3 +11,6 @@
 ## $(date +%Y-%m-%d) - Combining Random Variable Variances in Monte Carlo Loop
 **Learning:** In the `_perturb_wind_profile` core monte carlo simulation tight loop, there are consecutive Gaussian sampling steps with mean 0. Generating a single random number with the combined variance `math.hypot(sigma1, sigma2)` mathematically matches adding two normal variables with variances `sigma1` and `sigma2`, avoiding an extra `rng.gauss` call which are expensive.
 **Action:** Always look for contiguous random number samplings that can be statistically condensed in tight math loops.
+## $(date +%Y-%m-%d) - [Hoisting Invariant Code in Monte Carlo Loops]
+**Learning:** Performing invariant calculations (like scaling a base profile or allocating duplicate dictionaries) inside a Monte Carlo parallel process loop drastically drops overall throughput by redundantly taxing the CPU.
+**Action:** When creating high-iteration loops (e.g. Monte Carlo samplers or Grid Searches), always analyze the inner loop execution path and hoist strictly invariant dictionary creations or configuration scalings to the outer scope to be evaluated once, leveraging `itertools.repeat` in mapping parallel execution.
