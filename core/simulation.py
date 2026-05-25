@@ -633,7 +633,6 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
                 _dt = float(t_vals[_ci]) - float(t_vals[_ci - 1])
                 _measured_az = (_vz_c - _vz_prev) / _dt if _dt > 0 else float("nan")
                 # Expected: a_z = -(g + C_D * 0.5*rho*v^2*A/m)
-                # Bug D: coasting mass = airframe + motor dry (propellant exhausted)
                 _rho = RHO_0
                 _coast_mass = airframe_mass + motor_dry_mass
                 _a_drag = (body_cd * 0.5 * _rho * _vz_c**2 * (math.pi * radius**2)
