@@ -582,7 +582,7 @@ class AdvancedSettingsDialog(QDialog):
         self.wind_grid.addWidget(QLabel("Dir (°)"), 0, 2)
 
         self.wind_inputs = []
-        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
+        alts = [3.0]
 
         for i, alt in enumerate(alts):
             row = i + 1
@@ -738,7 +738,6 @@ class AdvancedSettingsDialog(QDialog):
     def _on_wind_grid_changed(self):
         if getattr(self, '_wind_table_updating', False):
             return
-        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
         profile = []
         for alt, spd_edit, dir_edit in self.wind_inputs:
             try:

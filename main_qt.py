@@ -45,10 +45,13 @@ if __name__ == "__main__":
     from ui_qt.app_state import AppState
     from ui_qt.app_window import AppWindow, GLOBAL_QSS
     from ui_qt.sim_controller import SimController
-    from core.pool_manager import get_global_pool
 
-    # Initialize the global process pool in the main thread to avoid Windows spawn issues
+    # Pre-warm the global ThreadPoolExecutor so all worker threads are alive
+    # before the first simulation run — avoids any cold-start latency.
+    from core.pool_manager import get_global_pool, shutdown_global_pool
+    import atexit
     get_global_pool()
+    atexit.register(shutdown_global_pool, False)
     def global_excepthook(exc_type, exc_value, exc_traceback):
         import traceback
         import sys

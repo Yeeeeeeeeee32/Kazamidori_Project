@@ -297,10 +297,6 @@ class AppState(QObject):
         ]
         self._wind_profile_data = [
             {"alt_m": 3.0, "speed_ms": 4.0, "dir_deg": 0.0},
-            {"alt_m": 10.0, "speed_ms": 8.0, "dir_deg": 0.0},
-            {"alt_m": 150.0, "speed_ms": 8.0, "dir_deg": 0.0},
-            {"alt_m": 300.0, "speed_ms": 8.0, "dir_deg": 0.0},
-            {"alt_m": 600.0, "speed_ms": 8.0, "dir_deg": 0.0},
         ]
         self._gust_speed       = 0.0
 

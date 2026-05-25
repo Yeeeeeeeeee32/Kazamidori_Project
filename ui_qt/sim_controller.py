@@ -1294,6 +1294,10 @@ class SimController(QObject):
         s.fin_tip_chord   = af["fin_tip"]
         s.fin_span        = af["fin_span"]
         s.fin_position    = af["fin_pos"]
+        if "fin_count" in af:
+            s.fin_count = af["fin_count"]
+        if "nose_shape" in af:
+            s.nose_shape = af["nose_shape"]
         # s.backfire_delay  = af["backfire_delay"]  # Operational input only
 
         missing_info = cfg.get("missing_info", {})

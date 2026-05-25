@@ -295,13 +295,14 @@ class SimulationWorker(QThread):
             # ── Mandatory stage boundary ──────────────────────────────────
             # sig_nominal_done is a queued signal: it was posted to the GUI
             # thread's event queue but has NOT been processed yet.  Without
-            # an explicit yield the worker immediately calls _run_mc_loop,
-            # which blocks on the first RocketPy call for several seconds.
-            # During that time Python's GIL is held and the GUI thread cannot
-            # drain its event queue, so the trajectory never appears until
-            # the full MC loop finishes — defeating the two-stage UX.
-            # msleep(0) releases the GIL and lets the event queue flush.
-            QThread.msleep(0)
+            # an explicit sleep the worker immediately calls _run_mc_loop
+            # and the ThreadPoolExecutor begins submitting MC tasks.
+            # 150 ms gives the Qt event loop enough wall-clock time to:
+            #   1. Dequeue the sig_nominal_done callback
+            #   2. Execute _on_nominal_done (sets simulation_result, emits needs_redraw)
+            #   3. Run update_profile_plot (Matplotlib 3D render + draw_idle)
+            # Without this pause the 3D canvas stays blank until all MC runs finish.
+            QThread.msleep(150)
 
             # ── Nominal pre-evaluation — early NO-GO warning ───────────────────
             # Compare the deterministic nominal landing distance against
@@ -484,7 +485,8 @@ class SimulationWorker(QThread):
         p: dict,
     ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
         wind_profile_data = p.get("wind_profile_data", [])
-        return create_wind_profile(wind_profile_data)
+        hellmann_exp = float(p.get("hellmann_alpha", 0.14))
+        return create_wind_profile(wind_profile_data, hellmann_exp)
 
     @staticmethod
     def _build_sim_params(
@@ -756,18 +758,14 @@ class SimulationWorker(QThread):
                 if res is not None:
                     scatter.append(res)
 
-                # ── Yield every iteration — scheduler fairness ────────────────────
-                # yieldCurrentThread() lets the OS give the GUI thread a timeslice
-                # to process any already-queued signals (e.g. repaint the progress
-                # bar from the PREVIOUS emission) without flooding the queue with
-                # a new signal on this iteration.
-                QThread.yieldCurrentThread()
-
-                # Emit progress signals at most _MAX_PROG_SIGNALS times total.
-                # Always emit on the final iteration so the bar reaches 90%.
-                if _done % _emit_every == 0 or _done == n_total:
-                    self.sig_progress.emit(_done, n_total, f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})")
-                    self.progress.emit(min(25 + int(_done / n_total * 65), 90))
+            # Emit progress signals at most _MAX_PROG_SIGNALS times total.
+            # Always emit on the final iteration so the bar reaches 90%.
+            if _done % _emit_every == 0 or _done == n_total:
+                self.sig_progress.emit(_done, n_total, f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})")
+                self.progress.emit(min(25 + int(_done / n_total * 65), 90))
+                # Yield after signal emission so GUI thread can process
+                # the progress bar update before the next batch starts.
+                QThread.msleep(1)
 
         return scatter
 
@@ -1164,7 +1162,7 @@ class OptimizationWorker(QThread):
                 "turb_intensity": float(p.get("turb_intensity", 0.0)),
             })
             self.sig_nominal_done.emit(nom_pkg)
-            QThread.msleep(0)
+            QThread.msleep(150)  # Give GUI time to render 3D trajectory before MC starts
 
             _is_free  = bool(p.get("is_free_mode", False))
             _target_r = p.get("target_radius")

@@ -260,6 +260,7 @@ import numpy as np
 
 def create_wind_profile(
     wind_profile: list[dict],
+    hellmann_exp: float = 0.14
 ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
     if not wind_profile:
         return [(0.0, 0.0), (5000.0, 0.0)], [(0.0, 0.0), (5000.0, 0.0)]
@@ -278,6 +279,16 @@ def create_wind_profile(
 
     if not nodes:
         return [(0.0, 0.0), (5000.0, 0.0)], [(0.0, 0.0), (5000.0, 0.0)]
+
+    # If we only have 1 surface point (e.g., from Koinobori at 3m),
+    # extrapolate upper winds using the Hellmann exponential law.
+    if len(nodes) == 1:
+        base_alt, base_spd, base_dir = nodes[0]
+        base_alt = max(base_alt, 0.1)  # Prevent division by zero
+        for target_alt in [10.0, 50.0, 150.0, 300.0, 600.0, 1000.0, 3000.0, 5000.0]:
+            if target_alt > base_alt:
+                extrapolated_spd = base_spd * ((target_alt / base_alt) ** hellmann_exp)
+                nodes.append((target_alt, extrapolated_spd, base_dir))
 
     u_pts, v_pts, alts = [], [], []
     for alt, spd, dir_deg in nodes:
