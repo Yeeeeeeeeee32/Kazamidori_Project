@@ -281,11 +281,14 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
     diag_buffer = []
 
     def _diag(tag: str, **kw) -> None:
-        vals = "  ".join(f"{k}={v}" for k, v in kw.items())
-        diag_buffer.append(f"[Trial {trial_idx}] {tag}  {vals}")
+        diag_buffer.append((tag, kw))
         if len(diag_buffer) > 2000:
+            lines = []
+            for t_tag, t_kw in diag_buffer:
+                vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
+                lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
             with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
-                f.write("\n".join(diag_buffer) + "\n")
+                f.write("\n".join(lines) + "\n")
             diag_buffer.clear()
 
     try:
@@ -612,7 +615,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         _bo2_z   = float(z_vals[_idx_bo2])
         _bo2_vz  = float(vz_vals[_idx_bo2])
         try:
-            _bo2_az = float(fl2.az(_bo2_t))   # Bug A: RocketPy Function — call with time
+            _bo2_az = float(fl2.az(float(_bo2_t)))   # Bug A: RocketPy Function — call with time
         except Exception:
             _bo2_az = float("nan")
         _diag("PASS2_BURNOUT",
@@ -652,8 +655,12 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
               impact_y_m=round(impact_y, 1))
 
         if diag_buffer:
+            lines = []
+            for t_tag, t_kw in diag_buffer:
+                vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
+                lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
             with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
-                f.write("\n".join(diag_buffer) + "\n")
+                f.write("\n".join(lines) + "\n")
             diag_buffer.clear()
 
         return {
@@ -695,15 +702,23 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         _tb_str = _tb.format_exc()
         _diag("ERROR", msg=f"ZeroDivisionError: {_zdx}")
         if diag_buffer:
+            lines = []
+            for t_tag, t_kw in diag_buffer:
+                vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
+                lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
             with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
-                f.write("\n".join(diag_buffer) + "\n")
+                f.write("\n".join(lines) + "\n")
         print(f"[simulate_once] ZeroDivisionError:\n{_tb_str}", flush=True)
         return {'ok': False, 'error': f'ZeroDivisionError: {_zdx}\n{_tb_str}'}
     except Exception as exc:
         import traceback as _tb
         _diag("ERROR", msg=f"{type(exc).__name__}: {exc}")
         if diag_buffer:
+            lines = []
+            for t_tag, t_kw in diag_buffer:
+                vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
+                lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
             with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
-                f.write("\n".join(diag_buffer) + "\n")
+                f.write("\n".join(lines) + "\n")
         print(f"[simulate_once] {type(exc).__name__}: {exc}\n{_tb.format_exc()}", flush=True)
         return {'ok': False, 'error': str(exc)}
