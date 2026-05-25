@@ -292,9 +292,12 @@ class SimController(QObject):
         if any(v is None for v in (
             s._rocket_dry_mass, s._rocket_cg, s._rocket_length, s._rocket_diameter,
             s._nose_length, s._fin_root_chord, s._fin_tip_chord, s._fin_span,
-            s._fin_position, s._motor_cg, s._motor_dry_mass
+            s._fin_position
         )):
             missing.append("Rocket Geometry (All fields in Airframe tab must be filled manually or loaded via JSON)")
+
+        if s.motor_cg_pos is None or s.motor_dry_mass is None:
+            missing.append("Motor Physical Parameters (Motor CG Pos and Motor Dry Mass must be filled manually)")
 
         # Parachute Parameters
         if any(v is None for v in (s._parachute_cd, s._parachute_area, s._parachute_lag)):
@@ -467,6 +470,10 @@ class SimController(QObject):
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
 
+        if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
+            QMessageBox.critical(self._window, "Validation Error", "Motor Physical Parameters must be set before running the simulation.")
+            return
+
         if not self._validate_run_prerequisites():
             return
 
@@ -509,6 +516,10 @@ class SimController(QObject):
     def _on_phase1_clicked(self) -> None:
         if self._worker and self._worker.isRunning():
             return  # guard against double-click spam
+
+        if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
+            QMessageBox.critical(self._window, "Validation Error", "Motor Physical Parameters must be set before running the simulation.")
+            return
 
         if not self._validate_run_prerequisites():
             return
@@ -969,6 +980,13 @@ class SimController(QObject):
         # I = σ/μ  (dimensionless turbulence intensity)
         _turb_intensity = _turb_sigma / _turb_mu if _turb_mu > 0.1 else 0.0
 
+        try:
+            safe_motor_pos      = float(s.motor_cg_pos)
+            safe_motor_dry_mass = float(s.motor_dry_mass)
+        except (TypeError, ValueError):
+            safe_motor_pos      = 0.0
+            safe_motor_dry_mass = 0.0
+
         return {
             # ── Simulation / wind config ───────────────────────────────────────
             # cep_prob: read from AppState (authoritative) — updated by both the
@@ -1008,8 +1026,8 @@ class SimController(QObject):
             "fin_tip":        s.fin_tip_chord,         # m
             "fin_span":       s.fin_span,              # m
             "fin_pos":        s.fin_position,          # m from nose
-            "motor_pos":      s.motor_cg,              # m from nose
-            "motor_dry_mass": s.motor_dry_mass,        # kg
+            "motor_pos":      safe_motor_pos,          # m from nose
+            "motor_dry_mass": safe_motor_dry_mass,     # kg
             "body_cd":        s.drag_coeff or 0.45,          # rocket airframe Cd (None→default)
             "para_cd":        s.parachute_cd,              # parachute Cd (for CdS product)
             "para_area":      s.parachute_area,            # m²
@@ -1103,8 +1121,8 @@ class SimController(QObject):
         _bind("af_fintip_input",   "fin_tip_chord",   lambda v: float(v),      lambda v: float(v))
         _bind("af_finspan_input",  "fin_span",        lambda v: float(v),      lambda v: float(v))
         _bind("af_finpos_input",   "fin_position",    lambda v: float(v),      lambda v: float(v))
-        _bind("af_motorpos_input", "motor_cg",        lambda v: float(v),      lambda v: float(v))
-        _bind("af_motormass_input","motor_dry_mass",  lambda v: float(v),      lambda v: float(v))
+        _bind("motor_cg_input",    "motor_cg_pos",    lambda v: float(v),      lambda v: float(v))
+        _bind("motor_dry_mass_input","motor_dry_mass",  lambda v: float(v),      lambda v: float(v))
         _bind("af_backfire_input", "backfire_delay",  lambda v: float(v),      lambda v: float(v))
         _bind("para_cd_input",     "parachute_cd",    lambda v: float(v),      lambda v: float(v))
         _bind("para_area_input",   "parachute_area",  lambda v: float(v),      lambda v: float(v))
@@ -1172,8 +1190,8 @@ class SimController(QObject):
         s.fin_tip_chord   = af["fin_tip"]             # m
         s.fin_span        = af["fin_span"]            # m
         s.fin_position    = af["fin_pos"]             # m from nose
-        s.motor_cg        = af["motor_pos"]           # m from nose
-        s.motor_dry_mass  = af["motor_dry_mass"]      # kg
+        # s.motor_cg_pos    = af["motor_pos"]           # Operational input only
+        # s.motor_dry_mass  = af["motor_dry_mass"]      # Operational input only
         # s.backfire_delay  = af["backfire_delay"]      # s (Operational input only, do not overwrite on load)
 
         # ── Parachute: JSON is SI; push directly into AppState ────────────────
