@@ -464,6 +464,7 @@ class MapView(QWidget):
         img_path = "assets/offline_map/background.png"
 
         if not os.path.exists(meta_path) or not os.path.exists(img_path):
+            print("Warning: Offline map files missing. Rendering blank grid.")
             return
 
         try:
@@ -474,34 +475,14 @@ class MapView(QWidget):
             if getattr(self._state, 'magnetic_declination', None) != declination:
                 self._state.magnetic_declination = declination
 
-            tile_bounds = meta.get("tile_bounds", {})
-            x_min = tile_bounds.get("x_min")
-            x_max = tile_bounds.get("x_max")
-            y_min = tile_bounds.get("y_min")
-            y_max = tile_bounds.get("y_max")
-
-            if None in (x_min, x_max, y_min, y_max):
-                return
-
-            # Render tiles
-            # Need to calculate each tile's ENU coordinates relative to the center_lat/center_lon
-            # so they form a continuous map aligned with the 0,0 center.
-
-            # Load the single stitched background image
-            background_path = "assets/offline_map/background.png"
-            if not os.path.exists(background_path):
-                return
-
-            img = Image.open(background_path)
-
-            # We strictly render it relative to the origin within the 500x500 bounds
             extent = meta.get("extent_meters", [-250.0, 250.0, -250.0, 250.0])
+            if getattr(self._state, 'offline_map_extent', None) != extent:
+                self._state.offline_map_extent = extent
 
-            self.ax.imshow(np.array(img), extent=extent, origin='upper', zorder=0, alpha=0.6)
-            # We assume it was correctly generated as 500x500m ENU extent [-250, 250, -250, 250]
-            # based on the map_downloader logic.
             img = Image.open(img_path)
-            self.ax.imshow(np.array(img), extent=[-250, 250, -250, 250], zorder=-10, alpha=0.7)
+
+            # We strictly render it relative to the origin within the bounds
+            self.ax.imshow(np.array(img), extent=self._state.offline_map_extent, origin='upper', zorder=0, alpha=0.6)
 
         except Exception as e:
             import traceback
