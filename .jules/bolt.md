@@ -8,7 +8,6 @@
 ## 2024-05-19 - [Optimizing Nested Monte Carlo Loops]
 **Learning:** Instantiating `ProcessPoolExecutor` inside a frequently called function creates a massive performance regression due to process-spawning overhead. Furthermore, submitting individual tiny tasks (like a single RocketPy evaluation) via `executor.submit` in a `for` loop causes severe Inter-Process Communication (IPC) overhead, consuming massive amounts of memory and effectively running slower than a sequential loop.
 **Action:** When parallelizing many fast tasks, always use `executor.map` with a calculated `chunksize` to batch execution, significantly reducing IPC serialization costs. Never instantiate an executor in the inner loop of an optimization algorithm; either pass it down or ensure the workload per pool creation is large enough to justify the setup cost.
-
-## 2025-05-18 - Replacing ProcessPoolExecutor.submit with map for performance
-**Learning:** Using `executor.submit()` inside nested loops for small parallel tasks incurs massive Inter-Process Communication (IPC) overhead, taking significant time just to enqueue tasks. Using `executor.map()` with a properly calculated `chunksize` drastically reduces IPC calls, achieving order-of-magnitude speedups.
-**Action:** When parallelising small tasks using `ProcessPoolExecutor`, batch execution with `executor.map(func, ..., chunksize=N)` instead of individual `executor.submit()` calls inside loops.
+## $(date +%Y-%m-%d) - Combining Random Variable Variances in Monte Carlo Loop
+**Learning:** In the `_perturb_wind_profile` core monte carlo simulation tight loop, there are consecutive Gaussian sampling steps with mean 0. Generating a single random number with the combined variance `math.hypot(sigma1, sigma2)` mathematically matches adding two normal variables with variances `sigma1` and `sigma2`, avoiding an extra `rng.gauss` call which are expensive.
+**Action:** Always look for contiguous random number samplings that can be statistically condensed in tight math loops.
