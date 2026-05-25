@@ -367,12 +367,22 @@ class SimController(QObject):
         if self._worker is not None and self._worker.isRunning():
             return
 
-        lat = getattr(self._state, "pad_lat", 0.0)
-        lon = getattr(self._state, "pad_lon", 0.0)
+        lat_text = self._window.lat_input.cleanText()
+        lon_text = self._window.lon_input.cleanText()
 
-        if lat == 0.0 and lon == 0.0:
-            QMessageBox.warning(self._window, "Invalid Coordinates", "Please enter valid launch pad coordinates first.")
+        if not lat_text or not lon_text:
+            QMessageBox.warning(self._window, "Invalid Coordinates", "Coordinates are not entered. Please enter valid launch pad coordinates first.")
             return
+
+        try:
+            lat = float(lat_text)
+            lon = float(lon_text)
+        except ValueError:
+            QMessageBox.warning(self._window, "Invalid Coordinates", "Coordinates are not entered or invalid.")
+            return
+
+        self._state.launch_lat = lat
+        self._state.launch_lon = lon
 
         self._state.is_calculating = True
         self._state.status_text = "Downloading Map..."
@@ -1053,7 +1063,7 @@ class SimController(QObject):
                 # Text input handling
                 def safe_set(v, _p=prop, _f=to_si):
                     if v.strip() == "":
-                        setattr(s, _p, None)
+                        return
                     else:
                         try:
                             setattr(s, _p, _f(float(v)))

@@ -2,11 +2,15 @@
 ui_qt/app_window.py
 Main application window — Kazamidori Project.
 
-3-pane docking layout
----------------------
-  parameters_dock (Left) |  profile_dock (Centre)  |  map_dock (Right)
-  Airframe / Launch /        3-D trajectory + wind       2-D landing map
-  Launch Mode / Run btn
+Nested QSplitter layout
+-----------------------
+  _main_splitter (H)
+  ├── params_panel                 (Left — full height)
+  └── _right_splitter (V)
+      ├── _top_splitter (H)        (Upper ~67%)
+      │   ├── profile_panel        (3-D trajectory)
+      │   └── map_panel            (2-D landing map)
+      └── wind_panel               (Lower ~33% — full width)
 
 All heavy computation lives in core/ — this module is view-only.
 
@@ -453,6 +457,7 @@ class ManualSetupDialog(QDialog):
             validator.setNotation(QDoubleValidator.StandardNotation)
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
+            le.setClearButtonEnabled(True)
             le.setText("")
             return le
 
@@ -536,6 +541,226 @@ class ManualSetupDialog(QDialog):
 
 # ── Matplotlib canvas wrapper ─────────────────────────────────────────────────
 
+
+
+class AdvancedSettingsDialog(QDialog):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Advanced Settings")
+        self.setMinimumWidth(800)
+        self.setModal(True)
+        self._build()
+
+    def _build(self) -> None:
+        container = self
+
+        root = QVBoxLayout(container)
+        root.setSpacing(10)
+        root.setContentsMargins(14, 14, 14, 10)
+
+        # ── Tab Widget ────────────────────────────────────────────────────────
+        tabs = QToolBox()
+
+        # ── Wind group ────────────────────────────────────────────────────────
+        grp_wind = QWidget()
+        frm_wind = QVBoxLayout(grp_wind)
+        frm_wind.setSpacing(6)
+        frm_wind.setContentsMargins(10, 12, 10, 8)
+
+        self.wind_profile_table = QTableWidget(0, 3)
+        self.wind_profile_table.setHorizontalHeaderLabels(["Altitude (m)", "Speed (m/s)", "Dir (°)"])
+        self.wind_profile_table.verticalHeader().setVisible(False)
+        self.wind_profile_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        hh = self.wind_profile_table.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.wind_profile_table.itemChanged.connect(self._on_wind_table_changed)
+
+        btn_add_row = QPushButton("➕ Add Row")
+        btn_add_row.setToolTip("Add a new altitude node to the wind profile")
+        btn_add_row.clicked.connect(self._add_wind_row)
+        btn_del_row = QPushButton("➖ Delete Row")
+        btn_del_row.setToolTip("Remove the selected altitude node from the wind profile")
+        btn_del_row.clicked.connect(self._delete_wind_row)
+
+        row_btns = QHBoxLayout()
+        row_btns.addWidget(btn_add_row)
+        row_btns.addWidget(btn_del_row)
+
+        frm_wind.addWidget(self.wind_profile_table)
+        frm_wind.addLayout(row_btns)
+        tabs.addItem(grp_wind, "🌬️ Wind Profile")
+
+        # ── Monte Carlo group ─────────────────────────────────────────────────
+        grp_mc = QWidget()
+        frm2 = QFormLayout(grp_mc)
+        frm2.setSpacing(6)
+        frm2.setContentsMargins(10, 12, 10, 8)
+
+        self.cep_prob_input = QSpinBox()
+        self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
+        self.cep_prob_input.setSuffix(" %")
+        self.cep_prob_input.wheelEvent = lambda event: event.ignore()
+
+        self.mc_runs_input = QSpinBox()
+        self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
+        self.mc_runs_input.setSingleStep(50)
+        self.mc_runs_input.wheelEvent = lambda event: event.ignore()
+
+        self.wind_unc_input = QDoubleSpinBox()
+        self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
+        self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
+        self.wind_unc_input.setSuffix("  (±ratio)")
+        self.wind_unc_input.wheelEvent = lambda event: event.ignore()
+
+        self.thrust_unc_input = QDoubleSpinBox()
+        self.thrust_unc_input.setRange(0, 1);  self.thrust_unc_input.setDecimals(2)
+        self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
+        self.thrust_unc_input.setSuffix("  (±ratio)")
+        self.thrust_unc_input.wheelEvent = lambda event: event.ignore()
+
+        frm2.addRow("CEP Probability:",    self.cep_prob_input)
+        frm2.addRow("MC Runs:",            self.mc_runs_input)
+        frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
+        frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
+        tabs.addItem(grp_mc, "🎲 Monte Carlo / Statistics")
+
+        # ── Aerodynamics & Motor group ────────────────────────────────────────
+        grp_aero = QWidget()
+        frm3 = QFormLayout(grp_aero)
+        frm3.setSpacing(6)
+        frm3.setContentsMargins(10, 12, 10, 8)
+
+        self.power_on_cd_input = QDoubleSpinBox()
+        self.power_on_cd_input.setRange(0.0, 2.0)
+        self.power_on_cd_input.setDecimals(3)
+        self.power_on_cd_input.setSingleStep(0.01)
+        self.power_on_cd_input.setValue(0.45)
+        self.power_on_cd_input.wheelEvent = lambda event: event.ignore()
+
+        self.power_off_cd_input = QDoubleSpinBox()
+        self.power_off_cd_input.setRange(0.0, 2.0)
+        self.power_off_cd_input.setDecimals(3)
+        self.power_off_cd_input.setSingleStep(0.01)
+        self.power_off_cd_input.setValue(0.40)
+        self.power_off_cd_input.wheelEvent = lambda event: event.ignore()
+
+        self.motor_isp_input = QDoubleSpinBox()
+        self.motor_isp_input.setRange(40.0, 300.0)
+        self.motor_isp_input.setDecimals(1)
+        self.motor_isp_input.setSingleStep(1.0)
+        self.motor_isp_input.setValue(80.0)
+        self.motor_isp_input.setSuffix(" s")
+        self.motor_isp_input.wheelEvent = lambda event: event.ignore()
+
+        self.motor_propellant_density_input = QDoubleSpinBox()
+        self.motor_propellant_density_input.setRange(500.0, 2500.0)
+        self.motor_propellant_density_input.setDecimals(0)
+        self.motor_propellant_density_input.setSingleStep(10.0)
+        self.motor_propellant_density_input.setValue(1700.0)
+        self.motor_propellant_density_input.setSuffix(" kg/m³")
+        self.motor_propellant_density_input.wheelEvent = lambda event: event.ignore()
+
+        def _build_curve_row() -> tuple[QPushButton, QPushButton, QPushButton, QLabel, QWidget]:
+            host  = QWidget()
+            row   = QHBoxLayout(host)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            btn_load    = QPushButton("Load Cd Curve…")
+            btn_load.setToolTip("Load a Mach-dependent Cd curve from a CSV file")
+            btn_preview = QPushButton("Preview")
+            btn_preview.setToolTip("Preview the currently loaded Cd curve")
+            btn_clear   = QPushButton("Clear")
+            btn_clear.setToolTip("Clear the loaded Cd curve and fallback to the static scalar value")
+            lbl         = QLabel("Using Static Value")
+            lbl.setStyleSheet("color: #888888;")
+            row.addWidget(btn_load)
+            row.addWidget(btn_preview)
+            row.addWidget(btn_clear)
+            row.addWidget(lbl, 1)
+            return btn_load, btn_preview, btn_clear, lbl, host
+
+        (self.power_on_cd_curve_load_btn,
+         self.power_on_cd_curve_preview_btn,
+         self.power_on_cd_curve_clear_btn,
+         self.power_on_cd_curve_label,
+         _row_on)  = _build_curve_row()
+
+        (self.power_off_cd_curve_load_btn,
+         self.power_off_cd_curve_preview_btn,
+         self.power_off_cd_curve_clear_btn,
+         self.power_off_cd_curve_label,
+         _row_off) = _build_curve_row()
+
+        frm3.addRow("Power-On  Cd (boost):",  self.power_on_cd_input)
+        frm3.addRow("Power-On  Cd Curve:",    _row_on)
+        frm3.addRow("Power-Off Cd (coast):",  self.power_off_cd_input)
+        frm3.addRow("Power-Off Cd Curve:",    _row_off)
+        frm3.addRow("Motor Isp:",             self.motor_isp_input)
+        frm3.addRow("Propellant Density:",    self.motor_propellant_density_input)
+        tabs.addItem(grp_aero, "✈️ Aerodynamics & Motor")
+
+        root.addWidget(tabs)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _bind_wind_profile_table(self, state) -> None:
+        self.state = state
+        self._wind_table_updating = True
+        self.wind_profile_table.setRowCount(len(state.wind_profile))
+        for i, node in enumerate(state.wind_profile):
+            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
+            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
+            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
+        self._wind_table_updating = False
+
+        state.wind_profile_changed.connect(self._on_wind_state_changed)
+
+    def _on_wind_table_changed(self, item=None):
+        if getattr(self, '_wind_table_updating', False):
+            return
+        profile = []
+        for i in range(self.wind_profile_table.rowCount()):
+            try:
+                alt = float(self.wind_profile_table.item(i, 0).text() if self.wind_profile_table.item(i, 0) else 0)
+                spd = float(self.wind_profile_table.item(i, 1).text() if self.wind_profile_table.item(i, 1) else 0)
+                dir_deg = float(self.wind_profile_table.item(i, 2).text() if self.wind_profile_table.item(i, 2) else 0)
+                profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
+            except ValueError:
+                continue
+        self.state.wind_profile = profile
+
+    def _on_wind_state_changed(self, profile):
+        if getattr(self, '_wind_table_updating', False):
+            return
+        self._wind_table_updating = True
+        self.wind_profile_table.setRowCount(len(profile))
+        for i, node in enumerate(profile):
+            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
+            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
+            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
+        self._wind_table_updating = False
+
+    def _add_wind_row(self):
+        self._wind_table_updating = True
+        row_pos = self.wind_profile_table.rowCount()
+        self.wind_profile_table.insertRow(row_pos)
+        self.wind_profile_table.setItem(row_pos, 0, QTableWidgetItem("0.0"))
+        self.wind_profile_table.setItem(row_pos, 1, QTableWidgetItem("0.0"))
+        self.wind_profile_table.setItem(row_pos, 2, QTableWidgetItem("0.0"))
+        self._wind_table_updating = False
+        self._on_wind_table_changed()
+
+    def _delete_wind_row(self):
+        row = self.wind_profile_table.currentRow()
+        if row >= 0:
+            self.wind_profile_table.removeRow(row)
+            self._on_wind_table_changed()
+
+
 class _MplCanvas(FigureCanvasQTAgg):
     def __init__(self, fig: Figure, parent: Optional[QWidget] = None) -> None:
         FigureCanvasQTAgg.__init__(self, fig)
@@ -551,12 +776,13 @@ class _AzimCanvas(FigureCanvasQTAgg):
         if parent is not None:
             self.setParent(parent)
         self.app_state = app_state
-        self._marker_artist = None
+        self.rocket_marker = None
         self._traj_x = None
         self._traj_y = None
         self._traj_z = None
         self._traj_t = None
         self._time_label = None
+        self.current_time_idx = 0
 
         self.mpl_connect('scroll_event', self._on_scroll)
 
@@ -569,8 +795,8 @@ class _AzimCanvas(FigureCanvasQTAgg):
             if self._traj_t is not None and len(self._traj_t) > 0:
                 step = SCROLL_STEP if event.step > 0 else -SCROLL_STEP
 
-                new_idx = max(0, min(len(self._traj_t) - 1, self.app_state.current_playback_index + step))
-                self.app_state.current_playback_index = new_idx
+                new_idx = max(0, min(len(self._traj_t) - 1, self.current_time_idx + step))
+                self.current_time_idx = new_idx
                 self._update_marker()
             return
 
@@ -586,7 +812,7 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_y = None
         self._traj_z = None
         self._traj_t = None
-        self._marker_artist = None
+        self.rocket_marker = None
         self._time_label = None
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
@@ -603,11 +829,11 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_y = y
         self._traj_z = z
         self._traj_t = t
-        self.app_state.current_playback_index = 0
+        self.current_time_idx = 0
 
-        if self._marker_artist:
+        if self.rocket_marker:
             try:
-                self._marker_artist.remove()
+                self.rocket_marker.remove()
             except:
                 pass
         if self._time_label:
@@ -617,20 +843,20 @@ class _AzimCanvas(FigureCanvasQTAgg):
                 pass
 
         # Draw the marker point using plot for faster rendering on update
-        self._marker_artist, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='yellow', zorder=100)
+        self.rocket_marker, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='red', zorder=100)
 
         # Use text2D on the axis to place it at the top-left
-        self._time_label = ax.text2D(0.05, 0.95, f"T+ {t[0]:.1f}s | Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
+        self._time_label = ax.text2D(0.05, 0.95, f"Time: {t[0]:.1f}s, Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
         self.draw_idle()
 
     def _update_marker(self) -> None:
         """Update the position of the 3D marker and the time label based on current index."""
-        if self._marker_artist and self._traj_x is not None:
-            idx = self.app_state.current_playback_index
-            self._marker_artist.set_data([self._traj_x[idx]], [self._traj_y[idx]])
-            self._marker_artist.set_3d_properties([self._traj_z[idx]])
+        if self.rocket_marker and self._traj_x is not None:
+            idx = self.current_time_idx
+            self.rocket_marker.set_data([self._traj_x[idx]], [self._traj_y[idx]])
+            self.rocket_marker.set_3d_properties([self._traj_z[idx]])
             if self._time_label:
-                self._time_label.set_text(f"T+ {self._traj_t[idx]:.1f}s | Alt: {self._traj_z[idx]:.1f}m")
+                self._time_label.set_text(f"Time: {self._traj_t[idx]:.1f}s, Alt: {self._traj_z[idx]:.1f}m")
             self.draw_idle()
 
 
@@ -714,8 +940,8 @@ def _draw_ellipse_3d(ax: object, *, cx: float, cy: float, a: float, b: float, an
         label: Legend label.
     """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
-    xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
-    ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
+    xe = b * np.sin(t) * np.cos(angle_rad) + a * np.cos(t) * np.sin(angle_rad)
+    ye = -b * np.sin(t) * np.sin(angle_rad) + a * np.cos(t) * np.cos(angle_rad)
     ax.plot(cx + xe, cy + ye, np.zeros(120),
             color=color, lw=lw, linestyle="--", alpha=0.90,
             label=label if label else "_nolegend_")
@@ -741,8 +967,8 @@ def _draw_ellipse_2d(ax: object, *, cx: float, cy: float, a: float, b: float, an
         The created Line2D artist.
     """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
-    xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
-    ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
+    xe = b * np.sin(t) * np.cos(angle_rad) + a * np.cos(t) * np.sin(angle_rad)
+    ye = -b * np.sin(t) * np.sin(angle_rad) + a * np.cos(t) * np.cos(angle_rad)
     (line,) = ax.plot(cx + xe, cy + ye,
                       color=color, lw=lw, linestyle="--", alpha=alpha,
                       label=label if label else "_nolegend_")
@@ -770,7 +996,7 @@ class _MapCoordProxy:
 
 class AppWindow(QMainWindow):
     """
-    Top-level PySide6 window — 3-pane docking layout.
+    Top-level PySide6 window — nested QSplitter layout.
 
     Public widget attributes (consumed by SimController._collect_params)
     -------------------------------------------------------------------
@@ -823,6 +1049,33 @@ class AppWindow(QMainWindow):
         self._build_tool_bar()
         self._build_status_bar()
 
+        self._adv_dialog = AdvancedSettingsDialog(self)
+        self.cep_prob_input = self._adv_dialog.cep_prob_input
+        self.mc_runs_input = self._adv_dialog.mc_runs_input
+        self.wind_unc_input = self._adv_dialog.wind_unc_input
+        self.thrust_unc_input = self._adv_dialog.thrust_unc_input
+        self.power_on_cd_input = self._adv_dialog.power_on_cd_input
+        self.power_off_cd_input = self._adv_dialog.power_off_cd_input
+        self.motor_isp_input = self._adv_dialog.motor_isp_input
+        self.motor_propellant_density_input = self._adv_dialog.motor_propellant_density_input
+        self.power_on_cd_curve_load_btn = self._adv_dialog.power_on_cd_curve_load_btn
+        self.power_on_cd_curve_preview_btn = self._adv_dialog.power_on_cd_curve_preview_btn
+        self.power_on_cd_curve_clear_btn = self._adv_dialog.power_on_cd_curve_clear_btn
+        self.power_on_cd_curve_label = self._adv_dialog.power_on_cd_curve_label
+        self.power_off_cd_curve_load_btn = self._adv_dialog.power_off_cd_curve_load_btn
+        self.power_off_cd_curve_preview_btn = self._adv_dialog.power_off_cd_curve_preview_btn
+        self.power_off_cd_curve_clear_btn = self._adv_dialog.power_off_cd_curve_clear_btn
+        self.power_off_cd_curve_label = self._adv_dialog.power_off_cd_curve_label
+        self.wind_profile_table = self._adv_dialog.wind_profile_table
+
+        self.power_on_cd_curve_load_btn.clicked.connect(lambda: self._on_load_cd_curve("power_on"))
+        self.power_on_cd_curve_preview_btn.clicked.connect(lambda: self._on_preview_cd_curve("power_on"))
+        self.power_on_cd_curve_clear_btn.clicked.connect(lambda: self._on_clear_cd_curve("power_on"))
+        self.power_off_cd_curve_load_btn.clicked.connect(lambda: self._on_load_cd_curve("power_off"))
+        self.power_off_cd_curve_preview_btn.clicked.connect(lambda: self._on_preview_cd_curve("power_off"))
+        self.power_off_cd_curve_clear_btn.clicked.connect(lambda: self._on_clear_cd_curve("power_off"))
+
+
 
 
         # Create the persistent ManualSetupDialog and expose its airframe spinboxes
@@ -849,6 +1102,7 @@ class AppWindow(QMainWindow):
         validator.setNotation(QDoubleValidator.StandardNotation)
         self.af_backfire_input.setValidator(validator)
         self.af_backfire_input.setPlaceholderText("入力必須")
+        self.af_backfire_input.setClearButtonEnabled(True)
         self.af_backfire_input.setText("")
         self._setup_splitter()
 
@@ -905,6 +1159,7 @@ class AppWindow(QMainWindow):
         self.map_view = MapView(self.state, self)
 
         # Dual wind panel: left = Cartesian speed profile, right = polar compass.
+        # Wide horizontal layout for the full-width bottom panel.
         self.wind_fig        = Figure(figsize=(9, 3.5), facecolor="#1e1e1e")
         self.wind_profile_ax = self.wind_fig.add_subplot(121)
         self.wind_ax         = self.wind_fig.add_subplot(122, projection="polar")
@@ -940,6 +1195,8 @@ class AppWindow(QMainWindow):
         fm.addAction(QAction("Quit", self, triggered=self.close))
 
         sm = mb.addMenu("&Simulation")
+        sm.addAction(QAction("Advanced Settings...", self, triggered=self._on_advanced_settings))
+        sm.addSeparator()
         sm.addAction(QAction("▶  Run Simulation (F5)", self, triggered=self._on_run))
         sm.addAction(QAction("⏹  Stop (Esc)",           self, triggered=self._on_stop))
 
@@ -1004,11 +1261,6 @@ class AppWindow(QMainWindow):
         tb.addWidget(btn_stop)
         _vline()
 
-        self.btn_download_map = QPushButton("🗺️ Download Map", tb)
-        self.btn_download_map.setObjectName("btn_download_map")
-        self.btn_download_map.setToolTip("Download offline map tiles for current location")
-        tb.addWidget(self.btn_download_map)
-
         spacer = QWidget(tb)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
@@ -1054,12 +1306,12 @@ class AppWindow(QMainWindow):
     #
     # Structure:
     #   _main_splitter (H)
-    #   ├── params_panel          (left, full height)
+    #   ├── params_panel              (left, full height)
     #   └── _right_splitter (V)
-    #       ├── _top_splitter (H)
-    #       │   ├── profile_panel   (3-D trajectory)
-    #       │   └── map_panel       (2-D landing map)
-    #       └── wind_panel          (wind history + compass + table, full width)
+    #       ├── _top_splitter (H)     (~67% height)
+    #       │   ├── profile_panel     (3-D trajectory)
+    #       │   └── map_panel         (2-D landing map)
+    #       └── wind_panel            (~33% height, full width)
 
     def _setup_splitter(self) -> None:
         self._map_panel     = self._build_map_dock_widget()
@@ -1067,21 +1319,21 @@ class AppWindow(QMainWindow):
         self._profile_panel = self._build_profile_dock_widget()
         self._wind_panel    = self._build_wind_panel()
 
+        # Upper section: 3D trajectory (left) | 2D landing map (right)
         self._top_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._top_splitter.setChildrenCollapsible(False)
         self._top_splitter.setHandleWidth(3)
         self._top_splitter.addWidget(self._profile_panel)
         self._top_splitter.addWidget(self._map_panel)
 
-        self._adv_panel = self._build_simulation_header()
-
+        # Right column: upper trajectories | lower wind (vertical split)
         self._right_splitter = QSplitter(Qt.Orientation.Vertical)
         self._right_splitter.setChildrenCollapsible(False)
         self._right_splitter.setHandleWidth(3)
-        self._right_splitter.addWidget(self._adv_panel)
         self._right_splitter.addWidget(self._top_splitter)
         self._right_splitter.addWidget(self._wind_panel)
 
+        # Main horizontal: params | right (trajectories + wind)
         self._main_splitter.addWidget(self._params_panel)
         self._main_splitter.addWidget(self._right_splitter)
 
@@ -1092,11 +1344,11 @@ class AppWindow(QMainWindow):
         QTimer.singleShot(0, self._apply_initial_sizes)
 
     def _apply_initial_sizes(self) -> None:
-        # Main: params 300 | right rest
+        # Main horizontal: params 300px | right takes the rest
         self._main_splitter.setSizes([300, 1300])
-        # Right vertical: top (3D+map) 60% | wind 40%
-        self._right_splitter.setSizes([180, 500, 300])
-        # Top horizontal: profile | map equal
+        # Right vertical: upper trajectories ~67% | lower wind ~33%
+        self._right_splitter.setSizes([600, 300])
+        # Top horizontal: 3D profile | 2D map — equal split
         self._top_splitter.setSizes([650, 650])
 
     # ── Profile dock content (3-D trajectory + wind) ──────────────────────────
@@ -1297,225 +1549,6 @@ class AppWindow(QMainWindow):
         return container
 
 
-    # ── Simulation Header (Wind, Monte Carlo, Aero) ───────────────────────────
-
-    def _build_simulation_header(self) -> QWidget:
-        container = QWidget()
-        # Ensure it doesn't take too much vertical space
-        container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-
-        root = QHBoxLayout(container)
-        root.setSpacing(10)
-        root.setContentsMargins(14, 14, 14, 10)
-
-        # ── Wind group ────────────────────────────────────────────────────────
-        grp_wind = QGroupBox("Wind Profile")
-        frm_wind = QVBoxLayout(grp_wind)
-        frm_wind.setSpacing(6)
-        frm_wind.setContentsMargins(10, 12, 10, 8)
-
-        self.wind_profile_table = QTableWidget(0, 3)
-        self.wind_profile_table.setHorizontalHeaderLabels(["Altitude (m)", "Speed (m/s)", "Dir (°)"])
-        self.wind_profile_table.verticalHeader().setVisible(False)
-        self.wind_profile_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        hh = self.wind_profile_table.horizontalHeader()
-        hh.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.wind_profile_table.itemChanged.connect(self._on_wind_table_changed)
-
-        btn_add_row = QPushButton("➕ Add Row")
-        btn_add_row.setToolTip("Add a new altitude node to the wind profile")
-        btn_add_row.clicked.connect(self._add_wind_row)
-        btn_del_row = QPushButton("➖ Delete Row")
-        btn_del_row.setToolTip("Remove the selected altitude node from the wind profile")
-        btn_del_row.clicked.connect(self._delete_wind_row)
-
-        row_btns = QHBoxLayout()
-        row_btns.addWidget(btn_add_row)
-        row_btns.addWidget(btn_del_row)
-
-        frm_wind.addWidget(self.wind_profile_table)
-        frm_wind.addLayout(row_btns)
-
-        # ── Monte Carlo group ─────────────────────────────────────────────────
-        grp_mc = QGroupBox("Monte Carlo / Statistics")
-        frm2 = QFormLayout(grp_mc)
-        frm2.setSpacing(6)
-        frm2.setContentsMargins(10, 12, 10, 8)
-
-        self.cep_prob_input = QSpinBox()
-        self.cep_prob_input.setRange(50, 99); self.cep_prob_input.setValue(90)
-        self.cep_prob_input.setSuffix(" %")
-        self.cep_prob_input.wheelEvent = lambda event: event.ignore()
-
-        self.mc_runs_input = QSpinBox()
-        self.mc_runs_input.setRange(10, 5000); self.mc_runs_input.setValue(200)
-        self.mc_runs_input.setSingleStep(50)
-        self.mc_runs_input.wheelEvent = lambda event: event.ignore()
-
-        self.wind_unc_input = QDoubleSpinBox()
-        self.wind_unc_input.setRange(0, 1);  self.wind_unc_input.setDecimals(2)
-        self.wind_unc_input.setValue(0.20);  self.wind_unc_input.setSingleStep(0.01)
-        self.wind_unc_input.setSuffix("  (±ratio)")
-        self.wind_unc_input.wheelEvent = lambda event: event.ignore()
-
-        self.thrust_unc_input = QDoubleSpinBox()
-        self.thrust_unc_input.setRange(0, 1);  self.thrust_unc_input.setDecimals(2)
-        self.thrust_unc_input.setValue(0.05);  self.thrust_unc_input.setSingleStep(0.01)
-        self.thrust_unc_input.setSuffix("  (±ratio)")
-        self.thrust_unc_input.wheelEvent = lambda event: event.ignore()
-
-        frm2.addRow("CEP Probability:",    self.cep_prob_input)
-        frm2.addRow("MC Runs:",            self.mc_runs_input)
-        frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
-        frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
-
-        # ── Aerodynamics & Motor group ────────────────────────────────────────
-        grp_aero = QGroupBox("Aerodynamics & Motor")
-        frm3 = QFormLayout(grp_aero)
-        frm3.setSpacing(6)
-        frm3.setContentsMargins(10, 12, 10, 8)
-
-        self.power_on_cd_input = QDoubleSpinBox()
-        self.power_on_cd_input.setRange(0.0, 2.0)
-        self.power_on_cd_input.setDecimals(3)
-        self.power_on_cd_input.setSingleStep(0.01)
-        self.power_on_cd_input.setValue(0.45)
-        self.power_on_cd_input.wheelEvent = lambda event: event.ignore()
-
-        self.power_off_cd_input = QDoubleSpinBox()
-        self.power_off_cd_input.setRange(0.0, 2.0)
-        self.power_off_cd_input.setDecimals(3)
-        self.power_off_cd_input.setSingleStep(0.01)
-        self.power_off_cd_input.setValue(0.40)
-        self.power_off_cd_input.wheelEvent = lambda event: event.ignore()
-
-        self.motor_isp_input = QDoubleSpinBox()
-        self.motor_isp_input.setRange(40.0, 300.0)
-        self.motor_isp_input.setDecimals(1)
-        self.motor_isp_input.setSingleStep(1.0)
-        self.motor_isp_input.setValue(80.0)
-        self.motor_isp_input.setSuffix(" s")
-        self.motor_isp_input.wheelEvent = lambda event: event.ignore()
-
-        self.motor_propellant_density_input = QDoubleSpinBox()
-        self.motor_propellant_density_input.setRange(500.0, 2500.0)
-        self.motor_propellant_density_input.setDecimals(0)
-        self.motor_propellant_density_input.setSingleStep(10.0)
-        self.motor_propellant_density_input.setValue(1700.0)
-        self.motor_propellant_density_input.setSuffix(" kg/m³")
-        self.motor_propellant_density_input.wheelEvent = lambda event: event.ignore()
-
-        def _build_curve_row() -> tuple[QPushButton, QPushButton, QPushButton, QLabel, QWidget]:
-            host  = QWidget()
-            row   = QHBoxLayout(host)
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(6)
-            btn_load    = QPushButton("Load Cd Curve…")
-            btn_load.setToolTip("Load a Mach-dependent Cd curve from a CSV file")
-            btn_preview = QPushButton("Preview")
-            btn_preview.setToolTip("Preview the currently loaded Cd curve")
-            btn_clear   = QPushButton("Clear")
-            btn_clear.setToolTip("Clear the loaded Cd curve and fallback to the static scalar value")
-            lbl         = QLabel("Using Static Value")
-            lbl.setStyleSheet("color: #888888;")
-            row.addWidget(btn_load)
-            row.addWidget(btn_preview)
-            row.addWidget(btn_clear)
-            row.addWidget(lbl, 1)
-            return btn_load, btn_preview, btn_clear, lbl, host
-
-        (self.power_on_cd_curve_load_btn,
-         self.power_on_cd_curve_preview_btn,
-         self.power_on_cd_curve_clear_btn,
-         self.power_on_cd_curve_label,
-         _row_on)  = _build_curve_row()
-
-        (self.power_off_cd_curve_load_btn,
-         self.power_off_cd_curve_preview_btn,
-         self.power_off_cd_curve_clear_btn,
-         self.power_off_cd_curve_label,
-         _row_off) = _build_curve_row()
-
-        self.power_on_cd_curve_load_btn.clicked.connect(
-            lambda: self._on_load_cd_curve("power_on"))
-        self.power_on_cd_curve_preview_btn.clicked.connect(
-            lambda: self._on_preview_cd_curve("power_on"))
-        self.power_on_cd_curve_clear_btn.clicked.connect(
-            lambda: self._on_clear_cd_curve("power_on"))
-        self.power_off_cd_curve_load_btn.clicked.connect(
-            lambda: self._on_load_cd_curve("power_off"))
-        self.power_off_cd_curve_preview_btn.clicked.connect(
-            lambda: self._on_preview_cd_curve("power_off"))
-        self.power_off_cd_curve_clear_btn.clicked.connect(
-            lambda: self._on_clear_cd_curve("power_off"))
-
-        frm3.addRow("Power-On  Cd (boost):",  self.power_on_cd_input)
-        frm3.addRow("Power-On  Cd Curve:",    _row_on)
-        frm3.addRow("Power-Off Cd (coast):",  self.power_off_cd_input)
-        frm3.addRow("Power-Off Cd Curve:",    _row_off)
-        frm3.addRow("Motor Isp:",             self.motor_isp_input)
-        frm3.addRow("Propellant Density:",    self.motor_propellant_density_input)
-
-        root.addWidget(grp_wind)
-        root.addWidget(grp_mc)
-        root.addWidget(grp_aero)
-
-        return container
-
-
-    def _bind_wind_profile_table(self, state) -> None:
-        self._wind_table_updating = True
-        self.wind_profile_table.setRowCount(len(state.wind_profile))
-        for i, node in enumerate(state.wind_profile):
-            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
-            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
-            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
-        self._wind_table_updating = False
-
-        state.wind_profile_changed.connect(self._on_wind_state_changed)
-
-    def _on_wind_table_changed(self, item=None):
-        if getattr(self, '_wind_table_updating', False):
-            return
-        profile = []
-        for i in range(self.wind_profile_table.rowCount()):
-            try:
-                alt = float(self.wind_profile_table.item(i, 0).text() if self.wind_profile_table.item(i, 0) else 0)
-                spd = float(self.wind_profile_table.item(i, 1).text() if self.wind_profile_table.item(i, 1) else 0)
-                dir_deg = float(self.wind_profile_table.item(i, 2).text() if self.wind_profile_table.item(i, 2) else 0)
-                profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
-            except ValueError:
-                continue
-        self.state.wind_profile = profile
-
-    def _on_wind_state_changed(self, profile):
-        if getattr(self, '_wind_table_updating', False):
-            return
-        self._wind_table_updating = True
-        self.wind_profile_table.setRowCount(len(profile))
-        for i, node in enumerate(profile):
-            self.wind_profile_table.setItem(i, 0, QTableWidgetItem(str(node.get("alt_m", 0.0))))
-            self.wind_profile_table.setItem(i, 1, QTableWidgetItem(str(node.get("speed_ms", 0.0))))
-            self.wind_profile_table.setItem(i, 2, QTableWidgetItem(str(node.get("dir_deg", 0.0))))
-        self._wind_table_updating = False
-
-    def _add_wind_row(self):
-        self._wind_table_updating = True
-        row_pos = self.wind_profile_table.rowCount()
-        self.wind_profile_table.insertRow(row_pos)
-        self.wind_profile_table.setItem(row_pos, 0, QTableWidgetItem("0.0"))
-        self.wind_profile_table.setItem(row_pos, 1, QTableWidgetItem("0.0"))
-        self.wind_profile_table.setItem(row_pos, 2, QTableWidgetItem("0.0"))
-        self._wind_table_updating = False
-        self._on_wind_table_changed()
-
-    def _delete_wind_row(self):
-        row = self.wind_profile_table.currentRow()
-        if row >= 0:
-            self.wind_profile_table.removeRow(row)
-            self._on_wind_table_changed()
-
-
     # ── Airframe tab ──────────────────────────────────────────────────────────
     # Contains: Load-JSON button, motor load + specs, 12 CGS airframe params.
     # Units: CGMS — lengths in cm from nose tip, mass in g, delay in s.
@@ -1592,6 +1625,7 @@ class AppWindow(QMainWindow):
             validator.setNotation(QDoubleValidator.StandardNotation)
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
+            le.setClearButtonEnabled(True)
             le.setText("")
             return le
 
@@ -1671,27 +1705,31 @@ class AppWindow(QMainWindow):
         self.azim_input.wheelEvent = lambda event: event.ignore()
         self.azim_input.setWrapping(True)
 
-        self.btn_offline_map = QPushButton("🗺️  Download Offline Map", w)
-        self.btn_offline_map.setObjectName("btn_download_map")
-        self.btn_offline_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
-        btn_dl_map = self.btn_offline_map
+        self.btn_download_map = QPushButton("🗺️  Download Offline Map", w)
+        self.btn_download_map.setObjectName("btn_download_map")
+        self.btn_download_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
 
         btn_gps = QPushButton("📍  Get Current Location", w)
         btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
-        form_lay = QFormLayout()
-        form_lay.setContentsMargins(0, 0, 0, 0)
-        form_lay.setSpacing(4)
-        form_lay.addRow("Latitude:", self.lat_input)
-        form_lay.addRow("Longitude:", self.lon_input)
-        form_lay.addRow("Rail Elevation:", self.elev_input)
-        form_lay.addRow("Rail Length:", self.rail_len_input)
-        form_lay.addRow("Rail Azimuth:", self.azim_input)
-        lay.addLayout(form_lay)
+        form_lay1 = QFormLayout()
+        form_lay1.setContentsMargins(0, 0, 0, 0)
+        form_lay1.setSpacing(4)
+        form_lay1.addRow("Latitude:", self.lat_input)
+        form_lay1.addRow("Longitude:", self.lon_input)
+        lay.addLayout(form_lay1)
 
         lay.addWidget(btn_gps)
-        lay.addWidget(btn_dl_map)
+        lay.addWidget(self.btn_download_map)
+
+        form_lay2 = QFormLayout()
+        form_lay2.setContentsMargins(0, 0, 0, 0)
+        form_lay2.setSpacing(4)
+        form_lay2.addRow("Rail Elevation:", self.elev_input)
+        form_lay2.addRow("Rail Length:", self.rail_len_input)
+        form_lay2.addRow("Rail Azimuth:", self.azim_input)
+        lay.addLayout(form_lay2)
 
         return w
 
@@ -1740,6 +1778,10 @@ class AppWindow(QMainWindow):
         return container
 
     # ── Wind panel (history graph + compass + current-values table) ──────────
+    #
+    # Lower section of the right vertical splitter.  Stretches full width
+    # beneath the trajectory views.  Internal layout is horizontal:
+    # matplotlib canvas (speed history + compass)  |  table + status column.
 
     def _build_wind_panel(self) -> QWidget:
         """Bottom row: wind speed history  ·  polar compass  ·  current-values table."""
@@ -1748,7 +1790,7 @@ class AppWindow(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(2)
 
-        # ── Left: matplotlib canvas (2 subplots) ──────────────────────────────
+        # ── Left: matplotlib canvas (2 side-by-side subplots) ─────────────────
         canvas_wrap = QWidget(container)
         cwl = QVBoxLayout(canvas_wrap)
         cwl.setContentsMargins(0, 0, 0, 0)
@@ -1761,16 +1803,10 @@ class AppWindow(QMainWindow):
         cwl.addWidget(self.wind_canvas, stretch=1)
         lay.addWidget(canvas_wrap, stretch=1)
 
-        # ── Right column: wind table on top, status labels directly below ────
-        # Previously the table and the two status labels lived as three
-        # separate slots inside the outer QHBoxLayout, which pushed the
-        # Koinobori / GPV labels to the far-right of the panel and produced
-        # visible horizontal dead space.  Wrapping them into a dedicated
-        # QVBoxLayout keeps the compass canvas at stretch=1 (so it absorbs
-        # the reclaimed width) and stacks the labels neatly under the table.
+        # ── Right column: wind table on top, status labels below ──────────────
         right_col = QWidget(container)
         right_col.setSizePolicy(
-            QSizePolicy.Policy.Maximum,    # do not let the column eat canvas width
+            QSizePolicy.Policy.Maximum,
             QSizePolicy.Policy.Preferred,
         )
         right_lay = QVBoxLayout(right_col)
@@ -1799,14 +1835,7 @@ class AppWindow(QMainWindow):
 
         right_lay.addWidget(self._wind_table)
 
-        # ── System Status Labels (stacked under the table) ───────────────────
-        # Koinobori on the left edge, GPV timestamp on the right edge of the
-        # same row.  ``addStretch`` keeps them pinned to opposite sides so
-        # the row stays compact when the column is narrow and the labels
-        # remain readable when the column widens.  Signal/slot bindings to
-        # AppState.koinobori_status_changed and gpv_last_fetch_time_changed
-        # are wired elsewhere (search for ``lbl_koinobori_status`` /
-        # ``lbl_gpv_status``); only the layout placement is touched here.
+        # ── System Status Labels (stacked under the table) ────────────────────
         status_lay = QHBoxLayout()
         status_lay.setContentsMargins(4, 0, 4, 0)
         status_lay.setSpacing(8)
@@ -1827,6 +1856,7 @@ class AppWindow(QMainWindow):
 
         right_lay.addLayout(status_lay)
 
+        # ── Telemetry stats ────────────────────────────────────────────────────
         telemetry_lay = QHBoxLayout()
         telemetry_lay.setContentsMargins(4, 4, 4, 0)
         self.lbl_max_gust = QLabel("Max Gust: —", right_col)
@@ -1838,7 +1868,7 @@ class AppWindow(QMainWindow):
             telemetry_lay.addWidget(_lbl)
 
         right_lay.addLayout(telemetry_lay)
-        right_lay.addStretch()   # keep table + status pinned to the top
+        right_lay.addStretch()
 
         lay.addWidget(right_col)
 
@@ -1910,6 +1940,24 @@ class AppWindow(QMainWindow):
         ax.quiver(cx, cy, cz, span, 0, 0, color="#f38ba8", arrow_length_ratio=0.1, alpha=0.8) # East
         ax.text(cx, cy + span*1.1, cz, "N", color="#a6e3a1", fontsize=8, fontweight="bold", ha="center")
         ax.text(cx + span*1.1, cy, cz, "E", color="#f38ba8", fontsize=8, fontweight="bold", ha="center")
+
+        x_limits = ax.get_xlim3d()
+        y_limits = ax.get_ylim3d()
+        z_limits = ax.get_zlim3d()
+
+        x_range = abs(x_limits[1] - x_limits[0])
+        x_middle = np.mean(x_limits)
+        y_range = abs(y_limits[1] - y_limits[0])
+        y_middle = np.mean(y_limits)
+        z_range = abs(z_limits[1] - z_limits[0])
+        z_middle = np.mean(z_limits)
+
+        plot_radius = 0.5 * max([x_range, y_range, z_range])
+
+        ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
+        ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
+        ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+        ax.set_box_aspect([1, 1, 1])
 
         self.profile_fig.tight_layout(pad=0.5)
         self.profile_canvas.draw_idle()
@@ -2532,10 +2580,10 @@ class AppWindow(QMainWindow):
         if ellipse and "a" in ellipse and "b" in ellipse:
             t   = np.linspace(0.0, 2.0 * np.pi, 120)
             ang = float(ellipse.get("angle_rad", 0.0))
-            xe  = (float(ellipse["a"]) * np.cos(t) * np.cos(ang)
-                   - float(ellipse["b"]) * np.sin(t) * np.sin(ang))
-            ye  = (float(ellipse["a"]) * np.cos(t) * np.sin(ang)
-                   + float(ellipse["b"]) * np.sin(t) * np.cos(ang))
+            xe  = (float(ellipse["b"]) * np.sin(t) * np.cos(ang)
+                   + float(ellipse["a"]) * np.cos(t) * np.sin(ang))
+            ye  = (-float(ellipse["b"]) * np.sin(t) * np.sin(ang)
+                   + float(ellipse["a"]) * np.cos(t) * np.cos(ang))
             (line,) = ax.plot(
                 float(ellipse["cx"]) + xe,
                 float(ellipse["cy"]) + ye,
@@ -2754,7 +2802,7 @@ class AppWindow(QMainWindow):
         self.thrust_unc_input.valueChanged.connect(lambda v: setattr(state, "thrust_uncertainty", float(v)))
         state.thrust_uncertainty_changed.connect(lambda v: _push(self.thrust_unc_input, v))
 
-        self._bind_wind_profile_table(state)
+        self._adv_dialog._bind_wind_profile_table(state)
 
 
         if hasattr(state, 'launch_lat_changed'):

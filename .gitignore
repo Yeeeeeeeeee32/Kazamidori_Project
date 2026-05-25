@@ -22,3 +22,4 @@ __pycache__/
 mc_diagnostics.log
 assets/offline_map/
 log.txt
+stats
