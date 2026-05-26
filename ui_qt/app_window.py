@@ -582,7 +582,9 @@ class AdvancedSettingsDialog(QDialog):
         self.wind_grid.addWidget(QLabel("Dir (°)"), 0, 2)
 
         self.wind_inputs = []
-        alts = [3.0]
+        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
+
+        prev_widget = None
 
         for i, alt in enumerate(alts):
             row = i + 1
@@ -590,16 +592,37 @@ class AdvancedSettingsDialog(QDialog):
             
             spd_edit = QLineEdit()
             spd_edit.setValidator(QDoubleValidator())
+            spd_edit.setPlaceholderText("0.0")
+            spd_edit.setClearButtonEnabled(True)
             spd_edit.textChanged.connect(self._on_wind_grid_changed)
+            spd_edit.textChanged.connect(
+                lambda text, w=spd_edit: w.setStyleSheet(
+                    "" if text.strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+                )
+            )
+            spd_edit.setStyleSheet("border: 1px solid red;")
             
             dir_edit = QLineEdit()
             dir_edit.setValidator(QDoubleValidator())
+            dir_edit.setPlaceholderText("0.0")
+            dir_edit.setClearButtonEnabled(True)
             dir_edit.textChanged.connect(self._on_wind_grid_changed)
+            dir_edit.textChanged.connect(
+                lambda text, w=dir_edit: w.setStyleSheet(
+                    "" if text.strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+                )
+            )
+            dir_edit.setStyleSheet("border: 1px solid red;")
             
             self.wind_grid.addWidget(alt_lbl, row, 0)
             self.wind_grid.addWidget(spd_edit, row, 1)
             self.wind_grid.addWidget(dir_edit, row, 2)
             
+            if prev_widget is not None:
+                QWidget.setTabOrder(prev_widget, spd_edit)
+            QWidget.setTabOrder(spd_edit, dir_edit)
+            prev_widget = dir_edit
+
             self.wind_inputs.append((alt, spd_edit, dir_edit))
 
         frm_wind.addLayout(self.wind_grid)
