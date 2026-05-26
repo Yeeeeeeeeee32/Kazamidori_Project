@@ -285,7 +285,8 @@ def optimize_launch_angle(
         for a_ in azi_grid:
             configs.append((e_, a_))
 
-    chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
+    _n_workers = max(1, (os.cpu_count() or 2) - 2)
+    chunksize = max(1, N // _n_workers)
     chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
     futures = [executor.submit(_grid_search_chunk, chunk, base_params) for chunk in chunks]
 
@@ -644,7 +645,8 @@ def run_phase1(
         for a in azi_grid:
             configs.append((e, a))
 
-    chunksize = max(1, N // (os.cpu_count() * 4) if os.cpu_count() else 1)
+    _n_workers = max(1, (os.cpu_count() or 2) - 2)
+    chunksize = max(1, N // _n_workers)
     chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
     futures = [executor.submit(_grid_search_chunk, chunk, p_nom) for chunk in chunks]
 
