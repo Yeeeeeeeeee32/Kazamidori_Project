@@ -14,3 +14,6 @@
 ## $(date +%Y-%m-%d) - [Hoisting Invariant Code in Monte Carlo Loops]
 **Learning:** Performing invariant calculations (like scaling a base profile or allocating duplicate dictionaries) inside a Monte Carlo parallel process loop drastically drops overall throughput by redundantly taxing the CPU.
 **Action:** When creating high-iteration loops (e.g. Monte Carlo samplers or Grid Searches), always analyze the inner loop execution path and hoist strictly invariant dictionary creations or configuration scalings to the outer scope to be evaluated once, leveraging `itertools.repeat` in mapping parallel execution.
+## $(date +%Y-%m-%d) - [Gating Diagnostic Logging with Boolean evaluation]
+**Learning:** Evaluating `os.environ.get('DEBUG_PHYSICS') == '1'` directly inside the heavily-called `_diag` function (or similar inner loops) adds noticeable overhead in a high-iteration context (like Monte Carlo simulations). Even when the log isn't written, the dictionary packing, string formatting, and environment check cost CPU cycles.
+**Action:** Gate diagnostic functions or blocks using a module-level boolean variable (e.g. `DEBUG_PHYSICS = (os.environ.get('DEBUG_PHYSICS') == '1')`). This reduces the check to a fast local/global boolean evaluation, allowing the interpreter to bypass expensive blocks and unused argument evaluations entirely.
