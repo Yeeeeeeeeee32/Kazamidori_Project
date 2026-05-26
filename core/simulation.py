@@ -61,6 +61,7 @@ UI parameters (airframe_cg, motor_pos, fin_pos) are all measured from the
 nose tip and map directly to RocketPy positions without sign inversion.
 """
 
+import os
 import math
 import sys
 from typing import Any
@@ -70,6 +71,8 @@ from rocketpy import Environment, SolidMotor, Rocket, Flight
 from scipy.interpolate import CubicSpline
 
 from .constants import G0, RHO_0
+
+DEBUG_PHYSICS = (os.environ.get("DEBUG_PHYSICS") == "1")
 
 
 # ── Motor builder ────────────────────────────────────────────────────────────
@@ -280,16 +283,20 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
     """
     diag_buffer = []
 
-    def _diag(tag: str, **kw) -> None:
-        diag_buffer.append((tag, kw))
-        if len(diag_buffer) > 2000:
-            lines = []
-            for t_tag, t_kw in diag_buffer:
-                vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
-                lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
-            with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-            diag_buffer.clear()
+    if DEBUG_PHYSICS:
+        def _diag(tag: str, **kw) -> None:
+            diag_buffer.append((tag, kw))
+            if len(diag_buffer) > 2000:
+                lines = []
+                for t_tag, t_kw in diag_buffer:
+                    vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
+                    lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
+                with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
+                    f.write("\n".join(lines) + "\n")
+                diag_buffer.clear()
+    else:
+        def _diag(tag: str, **kw) -> None:
+            pass
 
     try:
         # ── unpack params ────────────────────────────────────────────────────
@@ -654,7 +661,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
               impact_x_m=round(impact_x, 1),
               impact_y_m=round(impact_y, 1))
 
-        if diag_buffer:
+        if DEBUG_PHYSICS and diag_buffer:
             lines = []
             for t_tag, t_kw in diag_buffer:
                 vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
@@ -701,7 +708,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         import traceback as _tb
         _tb_str = _tb.format_exc()
         _diag("ERROR", msg=f"ZeroDivisionError: {_zdx}")
-        if diag_buffer:
+        if DEBUG_PHYSICS and diag_buffer:
             lines = []
             for t_tag, t_kw in diag_buffer:
                 vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
@@ -713,7 +720,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
     except Exception as exc:
         import traceback as _tb
         _diag("ERROR", msg=f"{type(exc).__name__}: {exc}")
-        if diag_buffer:
+        if DEBUG_PHYSICS and diag_buffer:
             lines = []
             for t_tag, t_kw in diag_buffer:
                 vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
