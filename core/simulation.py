@@ -283,20 +283,22 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
     """
     diag_buffer = []
 
-    if DEBUG_PHYSICS:
-        def _diag(tag: str, **kw) -> None:
-            diag_buffer.append((tag, kw))
-            if len(diag_buffer) > 2000:
-                lines = []
-                for t_tag, t_kw in diag_buffer:
-                    vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
-                    lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
-                with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
-                    f.write("\n".join(lines) + "\n")
-                diag_buffer.clear()
-    else:
-        def _diag(tag: str, **kw) -> None:
-            pass
+    import os
+    DEBUG_PHYSICS = os.environ.get("DEBUG_PHYSICS") == "1"
+
+    def _diag(tag: str, **kw) -> None:
+        if not DEBUG_PHYSICS:
+            return
+
+        diag_buffer.append((tag, kw))
+        if len(diag_buffer) > 2000:
+            lines = []
+            for t_tag, t_kw in diag_buffer:
+                vals = "  ".join(f"{k}={v}" for k, v in t_kw.items())
+                lines.append(f"[Trial {trial_idx}] {t_tag}  {vals}")
+            with open("mc_diagnostics.log", "a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            diag_buffer.clear()
 
     try:
         # ── unpack params ────────────────────────────────────────────────────

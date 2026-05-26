@@ -281,35 +281,16 @@ class MapView(QWidget):
                         all_y.extend([p[1] for p in points])
 
             # Impact Scatter (Filtered by KDE contours)
-            if len(scatter_x) > 0 and len(scatter_y) > 0 and getattr(self._state, 'show_scatter', True):
-                import numpy as np
-                from matplotlib.path import Path
+            if getattr(self._state, 'show_scatter', True):
+                sx = result.get('mc_scatter_x_filtered', [])
+                sy = result.get('mc_scatter_y_filtered', [])
 
-                sx_filtered = scatter_x
-                sy_filtered = scatter_y
+                # Fallback if filtered arrays aren't present
+                if not sx and not sy:
+                    sx = scatter_x[:500]
+                    sy = scatter_y[:500]
 
-                # Check if we have KDE contours to filter by
-                if contours and getattr(self._state, 'show_kde', True):
-                    outer_contour = contours[0]
-                    if isinstance(outer_contour, dict) and 'points_m' in outer_contour:
-                        outer_points = outer_contour['points_m']
-                    else:
-                        outer_points = outer_contour
-
-                    if outer_points and len(outer_points) > 2:
-                        path = Path(outer_points)
-                        pts = np.column_stack((scatter_x, scatter_y))
-                        mask = path.contains_points(pts)
-                        # We want points OUTSIDE the outermost contour
-                        outside_mask = ~mask
-
-                        sx_filtered = np.array(scatter_x)[outside_mask].tolist()
-                        sy_filtered = np.array(scatter_y)[outside_mask].tolist()
-
-                sx = sx_filtered[:500]
-                sy = sy_filtered[:500]
-
-                if len(sx) > 0:
+                if len(sx) > 0 and len(sy) > 0:
                     self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)
                     all_x.extend(sx)
                     all_y.extend(sy)
@@ -324,17 +305,20 @@ class MapView(QWidget):
             # Explicit Manual Auto-Scaling
             self._current_all_x = all_x
             self._current_all_y = all_y
-            self._calculate_and_apply_bounds(self._current_all_x, self._current_all_y)
+            self._calculate_and_apply_bounds()
 
             self.figure.tight_layout()
-            self.canvas.draw()
+            self.canvas.draw_idle()
             print("=== MAP RENDER SUCCESSFULLY COMPLETED ===")
         except Exception as e:
             import traceback
             print(f"=== MAP RENDER ERROR ===\n{traceback.format_exc()}")
 
 
-    def _calculate_and_apply_bounds(self, all_x, all_y):
+    def _calculate_and_apply_bounds(self):
+        all_x = self._current_all_x
+        all_y = self._current_all_y
+
         if not all_x or not all_y:
             return
 
