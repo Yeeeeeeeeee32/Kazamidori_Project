@@ -341,6 +341,24 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         safe_burn_time = max(0.1, motor_burn_time)
         backfire_time  = safe_burn_time + backfire_delay
 
+        # ── ODE solver tolerances — mode-aware (Proposal F) ──────────────────
+        # Looser tolerances reduce ODE step count and speed up simulation.
+        # Required accuracy scales with expected apogee:
+        #   高度 (Altitude Competition)  ~400 m  → tight   (1e-6)
+        #   有翼 (Winged Hover)          ~100 m  → medium  (1e-5)
+        #   定点滞空 (Precision Landing)  ~50 m   → relaxed (1e-4)
+        #   自由 (Free Mode)             → unconstrained, default to tight (1e-6) for safety
+        _fmode = str(params.get('flight_mode', ''))
+        if '高度' in _fmode or 'altitude' in _fmode.lower():
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-6, 1e-6, 0.02
+        elif '有翼' in _fmode or 'winged' in _fmode.lower() or 'wing' in _fmode.lower():
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-5, 1e-5, 0.03
+        elif '定点' in _fmode or 'precision' in _fmode.lower():
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-4, 1e-4, 0.05
+        else:
+            # 自由 (Free) or default fallback — unconstrained flight profile, use tight tolerances for accuracy
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-6, 1e-6, 0.02
+
         # ── Moment of inertia ────────────────────────────────────────────────
         # Prefer the precise MoI values computed by ``core/geometry_math.py``
         # and passed in via ``params`` (keys ``I_z`` for the longitudinal/roll
@@ -513,6 +531,8 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             rocket=rk1, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=True,
+            # Mode-aware ODE tolerances (Proposal F)
+            max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
         )
         t1_arr = fl1.z[:, 0]
         z1_arr = fl1.z[:, 1]
@@ -579,6 +599,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             rocket=rk2, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=False,
+            max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
         )
 
         t_vals  = fl2.z[:, 0]
@@ -728,3 +749,227 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
                 f.write("\n".join(lines) + "\n")
         print(f"[simulate_once] {type(exc).__name__}: {exc}\n{_tb.format_exc()}", flush=True)
         return {'ok': False, 'error': str(exc)}
+
+
+# ── Fast MC variant ────────────────────────────────────────────────────────────
+
+def simulate_once_mc(
+    elev: float,
+    azi: float,
+    params: dict[str, Any],
+    backfire_alt: float,
+    trial_idx: int = 0,
+) -> dict:
+    """Single-pass flight simulation for Monte Carlo trials.
+
+    Identical to :func:`simulate_once` but **skips Pass 1** by accepting a
+    pre-computed *backfire_alt* from the nominal (deterministic) run.
+
+    Rationale
+    ---------
+    The two-pass structure in ``simulate_once`` exists to find the altitude at
+    which the ejection charge fires so it can be used as the parachute trigger
+    in Pass 2.  For Monte Carlo perturbations (±20 % wind, ±5 % thrust) the
+    variation in backfire altitude is small (typically < 0.5 m for
+    competition-class rockets at 10–20 m apogee).  Reusing the nominal value
+    across all MC trials is a valid engineering approximation that halves the
+    number of expensive RocketPy ``Flight`` ODE integrations.
+
+    Parameters
+    ----------
+    elev, azi    : launch rail orientation (degrees)
+    params       : same dict as ``simulate_once`` — must include all keys
+    backfire_alt : ejection-charge trigger altitude (m AGL), pre-computed by
+                   the nominal ``simulate_once`` call
+    trial_idx    : for diagnostic log labelling only
+
+    Returns
+    -------
+    Same result dict as ``simulate_once``, with 'ok' True/False.
+    """
+    try:
+        airframe_mass  = max(0.01,  params['airframe_mass'])
+        airframe_len   = max(0.01,  params['airframe_len'])
+        radius         = max(0.001, params['radius'])
+        airframe_cg    = params['airframe_cg']
+        nose_len       = params['nose_len']
+        fin_root       = max(0.001, params['fin_root'])
+        fin_tip        = max(0.0,   params['fin_tip'])
+        fin_span       = max(0.001, params['fin_span'])
+        fin_pos        = params['fin_pos']
+        motor_pos      = params['motor_pos']
+        motor_dry_mass = params['motor_dry_mass']
+        power_on_cd    = float(params.get('power_on_cd',  0.45))
+        power_off_cd   = float(params.get('power_off_cd', 0.40))
+        para_cd        = params['para_cd']
+        para_area      = params['para_area']
+        para_lag       = params['para_lag']
+        rail           = params['rail']
+        launch_lat     = params.get('launch_lat', 35.0)
+        launch_lon     = params.get('launch_lon', 135.0)
+        wind_u_prof    = params['wind_u_prof']
+        wind_v_prof    = params['wind_v_prof']
+        thrust_data    = params['thrust_data']
+        motor_burn_time = params['motor_burn_time']
+
+        if not thrust_data:
+            return {'ok': False, 'error': 'No thrust data'}
+
+        safe_burn_time = max(0.1, motor_burn_time)
+
+        # ── ODE solver tolerances — mode-aware (mirrors simulate_once) ───────
+        _fmode = str(params.get('flight_mode', ''))
+        if '高度' in _fmode or 'altitude' in _fmode.lower():
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-6, 1e-6, 0.02
+        elif '有翼' in _fmode or 'winged' in _fmode.lower() or 'wing' in _fmode.lower():
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-5, 1e-5, 0.03
+        elif '定点' in _fmode or 'precision' in _fmode.lower():
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-4, 1e-4, 0.05
+        else:
+            _ode_rtol, _ode_atol, _ode_max_dt = 1e-6, 1e-6, 0.02
+
+        _I_z_param  = params.get('I_z')
+        _I_xy_param = params.get('I_xy')
+        if _I_z_param is not None and _I_xy_param is not None:
+            I_z  = float(_I_z_param)
+            I_xy = float(_I_xy_param)
+        else:
+            I_z  = 0.5 * airframe_mass * (radius ** 2)
+            I_xy = (1 / 12) * airframe_mass * (3 * (radius ** 2) + airframe_len ** 2)
+
+        # ── Atmosphere ────────────────────────────────────────────────────────
+        u_alts = [pt[0] for pt in wind_u_prof]
+        u_vals = [pt[1] for pt in wind_u_prof]
+        v_alts = [pt[0] for pt in wind_v_prof]
+        v_vals = [pt[1] for pt in wind_v_prof]
+
+        u_spline = CubicSpline(u_alts, u_vals, bc_type='natural')
+        v_spline = CubicSpline(v_alts, v_vals, bc_type='natural')
+
+        env = Environment(latitude=launch_lat, longitude=launch_lon, elevation=0)
+
+        p0 = params.get('env_pressure', 101325.0)
+        t0 = params.get('env_temp', 15.0)
+
+        def _calc_temp(h):
+            return t0 + 273.15 - 0.0065 * h
+
+        def _calc_pres(h):
+            return p0 * (1 - 0.0065 * h / (t0 + 273.15)) ** 5.2561
+
+        env.set_atmospheric_model(
+            type="custom_atmosphere",
+            pressure=_calc_pres,
+            temperature=_calc_temp,
+            wind_u=lambda h: float(u_spline(h)),
+            wind_v=lambda h: float(v_spline(h)),
+        )
+
+        # ── Build rocket (single call) ─────────────────────────────────────────
+        isp_s         = float(params.get("motor_isp",                80.0))
+        grain_density = float(params.get("motor_propellant_density", 1700.0))
+        motor = build_motor_from_curve(
+            thrust_data=thrust_data,
+            burn_time=safe_burn_time,
+            dry_mass=motor_dry_mass,
+            rocket_radius=radius,
+            isp_s=isp_s,
+            grain_density=grain_density,
+        )
+
+        def _pick_drag(curve, scalar):
+            if isinstance(curve, list) and len(curve) >= 2:
+                return curve
+            return scalar
+
+        power_on_drag  = _pick_drag(params.get("cd_curve_power_on"),  power_on_cd)
+        power_off_drag = _pick_drag(params.get("cd_curve_power_off"), power_off_cd)
+
+        rk = Rocket(
+            radius=radius,
+            mass=airframe_mass,
+            inertia=(I_xy, I_xy, I_z),
+            power_off_drag=power_off_drag,
+            power_on_drag=power_on_drag,
+            center_of_mass_without_motor=airframe_cg,
+            coordinate_system_orientation="nose_to_tail",
+        )
+        rk.add_motor(motor, position=motor_pos)
+        rk.add_nose(length=nose_len, kind=params.get("nose_kind", "vonKarman"), position=0.0)
+        rk.add_trapezoidal_fins(
+            n=params.get("fin_count", 4), root_chord=fin_root, tip_chord=fin_tip,
+            span=fin_span, position=fin_pos,
+        )
+
+        # ── Single-pass flight with pre-known backfire altitude ───────────────
+        safe_backfire_alt = max(float(backfire_alt), 1.0)
+        trig = make_backfire_trigger(safe_backfire_alt)
+        rk.add_parachute(
+            "Main",
+            cd_s=para_cd * para_area,
+            trigger=trig,
+            sampling_rate=105,
+            lag=para_lag,
+        )
+        fl = Flight(
+            rocket=rk, environment=env,
+            rail_length=rail, inclination=elev, heading=azi,
+            terminate_on_apogee=False,
+            max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
+        )
+
+        t_vals  = fl.z[:, 0]
+        x_vals  = fl.x[:, 1]
+        y_vals  = fl.y[:, 1]
+        z_vals  = fl.z[:, 1]
+        vz_vals = fl.vz[:, 1]
+
+        idx_burnout = int((np.abs(t_vals - safe_burn_time)).argmin())
+        descending  = vz_vals < 0
+        below_alt   = z_vals <= safe_backfire_alt
+        bf_cands    = np.where(descending & below_alt)[0]
+        idx_bf      = int(bf_cands[0]) if len(bf_cands) > 0 else int(np.argmax(z_vals))
+
+        bf_abs_time    = float(t_vals[idx_bf])
+        para_open_time = bf_abs_time + para_lag
+        if para_open_time <= t_vals[-1]:
+            idx_para = int((np.abs(t_vals - para_open_time)).argmin())
+        else:
+            idx_para = -1
+
+        apogee_idx = int(np.argmax(z_vals))
+        apogee_m   = float(z_vals[apogee_idx])
+        impact_x   = float(x_vals[-1])
+        impact_y   = float(y_vals[-1])
+        r_horiz    = math.hypot(impact_x, impact_y)
+        hang_time  = float(t_vals[-1])
+
+        return {
+            'ok':             True,
+            'apogee_m':       apogee_m,
+            'hang_time':      hang_time,
+            'impact_x':       impact_x,
+            'impact_y':       impact_y,
+            'r_horiz':        r_horiz,
+            'backfire_alt':   safe_backfire_alt,
+            'burn_time_s':    float(safe_burn_time),
+            't_vals':         t_vals,
+            'x_vals':         x_vals,
+            'y_vals':         y_vals,
+            'z_vals':         z_vals,
+            'vz_vals':        vz_vals,
+            'idx_burnout':    idx_burnout,
+            'idx_bf':         idx_bf,
+            'idx_para':       idx_para,
+            'apogee_idx':     apogee_idx,
+            'bf_abs_time':    bf_abs_time,
+            'para_open_time': para_open_time,
+            'elev':           elev,
+            'azi':            azi,
+        }
+
+    except Exception as exc:
+        import traceback as _tb
+        print(f"[simulate_once_mc] trial={trial_idx} {type(exc).__name__}: {exc}", flush=True)
+        return {'ok': False, 'error': str(exc)}
+

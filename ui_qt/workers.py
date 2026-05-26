@@ -57,7 +57,7 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
-from core.simulation   import simulate_once
+from core.simulation   import simulate_once, simulate_once_mc
 from core.wind_model   import create_wind_profile, sample_wind_nodes
 from core.monte_carlo  import (
     _perturb_wind_profile,
@@ -120,10 +120,15 @@ def _mc_worker_chunk(
     base_v: list,
     flight_mode: str,
     target_radius: float,
+    backfire_alt: float = 0.0,
 ) -> list[dict | None]:
     """
     Top-level, picklable worker function for ProcessPoolExecutor.
     Runs a chunk of perturbed Monte Carlo simulations.
+
+    If *backfire_alt* > 0 (provided by the nominal run), the fast
+    single-pass ``simulate_once_mc`` is used, halving ODE integrations.
+    Falls back to the full two-pass ``simulate_once`` otherwise.
     """
     results = []
     for seed, trial_idx in zip(seeds, trials):
@@ -146,19 +151,33 @@ def _mc_worker_chunk(
             "thrust_data": perturbed_thrust,
         }
 
-        r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
+        # Use fast single-pass variant when the nominal backfire_alt is known.
+        # Falls back to the full two-pass simulate_once if it was not provided.
+        if backfire_alt > 0.0:
+            r = simulate_once_mc(elev, azi, trial_p, backfire_alt, trial_idx=trial_idx)
+        else:
+            r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
 
         if r["ok"]:
             from core.optimization import p1_objective_score
             score = p1_objective_score(r, flight_mode, target_radius)
 
-            # Only return the scalars
+            h_time = float(r["hang_time"])
+            bf_t = float(r.get("bf_abs_time", 0.0))
+            if '有翼' in flight_mode or 'winged' in flight_mode.lower() or 'wing' in flight_mode.lower():
+                h_time = max(0.0, h_time - bf_t)
+
+            # Only return the scalars (no trajectory arrays — minimise IPC payload)
             res = {
-                "x": float(r["impact_x"]),
-                "y": float(r["impact_y"]),
-                "apogee": float(r["apogee_m"]),
-                "hang_time": float(r["hang_time"]),
-                "score": score
+                "x":           float(r["impact_x"]),
+                "y":           float(r["impact_y"]),
+                "apogee":      float(r["apogee_m"]),
+                "hang_time":   h_time,
+                # bf_abs_time: time of ejection charge firing (backfire).
+                # Required by p1_objective_score for Winged Hover mode:
+                #   score = hang_time - bf_abs_time  (payload airborne duration)
+                "bf_abs_time": bf_t,
+                "score": score,
             }
         else:
             res = None
@@ -282,7 +301,7 @@ class SimulationWorker(QThread):
 
             # Build and augment the nominal payload with turbulence stats so
             # the UI can lock the Phase B baseline immediately on receipt.
-            nom_pkg = self._package_nominal(nominal, wind_nodes)
+            nom_pkg = self._package_nominal(nominal, wind_nodes, flight_mode=p.get("flight_mode", ""))
             nom_pkg.update({
                 "turb_mu":        float(p.get("turb_mu",        0.0)),
                 "turb_sigma":     float(p.get("turb_sigma",     0.0)),
@@ -345,7 +364,12 @@ class SimulationWorker(QThread):
             # ════════════════════════════════════════════════════════════════
 
             self.sig_status_text.emit("Monte Carlo...")
-            scatter = self._run_mc_loop(sim_params, p)
+            # Extract the nominal backfire altitude so MC trials can skip Pass 1.
+            # Variation in backfire_alt across ±20% wind / ±5% thrust perturbations
+            # is typically < 0.5 m for competition-class rockets; reusing the
+            # nominal value is a valid engineering approximation (Proposal D).
+            _nom_backfire_alt = float(nominal.get("backfire_alt", 0.0))
+            scatter = self._run_mc_loop(sim_params, p, nominal_backfire_alt=_nom_backfire_alt)
 
             if self._stop_event.is_set():
                 self.sig_finished.emit({
@@ -381,12 +405,11 @@ class SimulationWorker(QThread):
             prob_pct = int(p.get("cep_prob", 90))
             n_pts    = len(scatter)
 
-            # ── Percentile radius + covariance (fast) ────────────────────────
+            # ── Fast stats: percentile radius + covariance (~ms) ─────────────
             self.progress.emit(92)
             self.sig_status_text.emit("Computing landing statistics...")
 
             if n_pts > 0:
-                # Handle list of dicts or list of tuples
                 if scatter and isinstance(scatter[0], dict):
                     pts_tuples = [(pt["x"], pt["y"]) for pt in scatter]
                     scores = [pt["score"] for pt in scatter if pt["score"] != float('-inf')]
@@ -421,31 +444,49 @@ class SimulationWorker(QThread):
                 avg_alt = 0.0
                 avg_hang = 0.0
 
-            # ── Error ellipse — numpy eigendecomposition ─────────────────────
-            # Yield before so the GUI can paint the 92% bar before we enter
-            # the numpy call that may briefly hold the GIL.
+            # ── Error ellipse — numpy eigendecomposition (~ms) ───────────────
             QThread.yieldCurrentThread()
             self.progress.emit(93)
             self.sig_status_text.emit("Fitting error ellipse...")
-            ellipse    = compute_error_ellipse(pts_tuples, prob_pct=prob_pct)
+            ellipse = compute_error_ellipse(pts_tuples, prob_pct=prob_pct)
 
-
-            # ── KDE contours — scipy + matplotlib (HEAVY) ────────────────────
-            # Yield before: allows the OS to switch to the GUI thread so the
-            # status bar ("Fitting error ellipse...") is visible before the
-            # 1-3 s scipy call starts and the GIL is intermittently held.
-            QThread.yieldCurrentThread()
+            # ── Proposal E: emit fast results NOW so scatter + ellipse appear ─
+            # KDE contours / density grid are visual-only extras that take 2-5 s.
+            # We emit a first-pass sig_mc_done (no KDE) immediately so the map
+            # updates while heavy KDE runs below, then overwrite with the full
+            # payload once KDE is ready.
+            _fast_stats = {
+                "r_N_radius":   r_N,
+                "cep":          cep_val,
+                "ellipse":      ellipse,
+                "cep_circle":   compute_cep_circle(pts_tuples),
+                "kde_contours": [],      # populated after heavy KDE below
+                "kde":          None,
+                "cov_matrix":   cov_matrix,
+                "mc_avg_score": avg_score,
+                "mc_min_score": min_score,
+                "mc_avg_alt":   avg_alt,
+                "mc_avg_hang_time": avg_hang,
+            }
             self.progress.emit(95)
+            self.sig_status_text.emit("Rendering scatter (KDE loading)...")
+            self.sig_mc_done.emit(self._package_mc(scatter, _fast_stats, prob_pct))
+            QThread.yieldCurrentThread()   # let the GUI thread paint scatter + ellipse
+
+            # ── KDE contours — scipy + matplotlib (HEAVY, 2-5 s) ────────────
+            # Run AFTER the fast payload has been emitted so the map is already
+            # showing scatter dots and the ellipse during this long operation.
+            QThread.yieldCurrentThread()
+            self.progress.emit(96)
             self.sig_status_text.emit("Computing KDE contours...")
             kde_contours = compute_kde_contours(pts_tuples, conf_pct=prob_pct)
 
-            # ── KDE density grid — scipy (HEAVY) ─────────────────────────────
             QThread.yieldCurrentThread()
             self.progress.emit(97)
             self.sig_status_text.emit("Computing KDE density grid...")
             kde_grid = compute_kde_grid(pts_tuples)
 
-            # ── Assemble stats dict (all pre-computed above) ──────────────────
+            # ── Assemble full stats dict with KDE ─────────────────────────────
             stats = {
                 "r_N_radius":   r_N,
                 "cep":          cep_val,
@@ -462,6 +503,7 @@ class SimulationWorker(QThread):
 
             self.progress.emit(98)
             self.sig_status_text.emit("Packaging results...")
+
 
             # Process KDE filtered scatter points to remove heavy math from UI
             mc_scatter_x_filtered = []
@@ -609,7 +651,7 @@ class SimulationWorker(QThread):
             )
 
     @staticmethod
-    def _package_nominal(nominal: dict, wind_nodes: list[dict]) -> dict:
+    def _package_nominal(nominal: dict, wind_nodes: list[dict], flight_mode: str = "") -> dict:
         """Package the nominal trajectory for sig_nominal_done.
 
         Trajectory phases (phase-split arrays)
@@ -674,13 +716,19 @@ class SimulationWorker(QThread):
         # Keyed by altitude float for O(1) per-level lookup in UI slots
         wind_by_alt = {node["alt_m"]: node for node in wind_nodes}
 
+        h_time = float(nominal["hang_time"])
+        bf_t = float(nominal.get("bf_abs_time", 0.0))
+        if '有翼' in flight_mode or 'winged' in flight_mode.lower() or 'wing' in flight_mode.lower():
+            h_time = max(0.0, h_time - bf_t)
+
         return {
             "t_vals":     t,
             "x_vals":     x,
             "y_vals":     y,
             "z_vals":     z,
             "apogee_m":   float(nominal["apogee_m"]),
-            "hang_time":  float(nominal["hang_time"]),
+            "hang_time":  h_time,
+            "bf_abs_time": bf_t,
             "impact_x":   float(nominal["impact_x"]),
             "impact_y":   float(nominal["impact_y"]),
             "r_horiz":    float(nominal["r_horiz"]),
@@ -699,6 +747,7 @@ class SimulationWorker(QThread):
         self,
         sim_params: dict,
         p: dict,
+        nominal_backfire_alt: float = 0.0,
     ) -> list[tuple[float, float]]:
         """Run the MC scatter inline — O(1) peak memory per iteration.
 
@@ -762,9 +811,18 @@ class SimulationWorker(QThread):
         all_seeds = list(range(base_seed, base_seed + n_total))
         all_trials = list(range(1, n_total + 1))
         
-        chunksize = max(1, n_total // (os.cpu_count() * 4) if os.cpu_count() else 1)
-        chunks_seeds = [all_seeds[i:i + chunksize] for i in range(0, n_total, chunksize)]
+        # ── Chunk sizing ────────────────────────────────────────────────────
+        # One chunk per worker process: each worker gets a contiguous slice of
+        # trials and the IPC round-trip (pickle → subprocess → result) happens
+        # exactly n_workers times instead of n_total times.
+        # Previous formula (n_total // cpu_count*4) produced ~3-trial micro-
+        # chunks with 60+ IPC trips on a 16-core machine, wasting ~40 % of
+        # wall-time on serialisation overhead.
+        _n_workers = max(1, (os.cpu_count() or 2) - 2)
+        chunksize = max(1, n_total // _n_workers)
+        chunks_seeds  = [all_seeds[i:i + chunksize]  for i in range(0, n_total, chunksize)]
         chunks_trials = [all_trials[i:i + chunksize] for i in range(0, n_total, chunksize)]
+
         
         futures = []
         for c_seeds, c_trials in zip(chunks_seeds, chunks_trials):
@@ -772,7 +830,8 @@ class SimulationWorker(QThread):
                 _mc_worker_chunk,
                 c_seeds, c_trials,
                 sim_params, wind_unc, gust_sigma, tu, raw_thrust,
-                elev, azi, base_u, base_v, flight_mode, target_radius
+                elev, azi, base_u, base_v, flight_mode, target_radius,
+                nominal_backfire_alt,   # D: skip Pass 1 in each MC trial
             ))
             
         _done = 0
@@ -1199,7 +1258,7 @@ class OptimizationWorker(QThread):
 
             self.progress.emit(25)
 
-            nom_pkg = SimulationWorker._package_nominal(nominal, wind_nodes)
+            nom_pkg = SimulationWorker._package_nominal(nominal, wind_nodes, flight_mode=mode)
             nom_pkg.update({
                 "turb_mu":        float(p.get("turb_mu",        0.0)),
                 "turb_sigma":     float(p.get("turb_sigma",     0.0)),

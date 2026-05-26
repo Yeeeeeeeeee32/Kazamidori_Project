@@ -1,24 +1,63 @@
+"""
+core/pool_manager.py
+
+Global ProcessPoolExecutor for CPU-bound Monte Carlo simulations.
+
+Performance notes
+-----------------
+RocketPy's Flight integrator uses scipy.integrate.solve_ivp (LSODA solver),
+which wraps legacy Fortran code that holds global state and is strictly
+NOT THREAD-SAFE.  ProcessPoolExecutor provides full memory isolation via
+OS-level process separation.
+
+CPU oversubscription prevention
+--------------------------------
+scipy / numpy rely on BLAS / OpenBLAS / MKL for matrix operations.  By
+default those libraries spawn N_CORES threads per process.  Running
+N_WORKERS processes each with N_CORES BLAS threads produces:
+    N_WORKERS × N_CORES threads competing for N_CORES physical cores
+This causes thrashing, massively increased context-switch overhead, and
+effectively starves the Qt GUI thread — freezing the UI.
+
+The env-var block below limits every BLAS/OMP library to a single thread
+so the worker pool runs as exactly N_WORKERS clean processes.  The vars
+must be set BEFORE any numpy/scipy import in the parent process; they are
+inherited by spawned children automatically.
+"""
+
 import os
 import concurrent.futures
 import multiprocessing
 
+# ── BLAS / OpenMP thread cap ──────────────────────────────────────────────────
+# Must be set before numpy/scipy are imported anywhere in this process.
+# 'setdefault' avoids overriding an explicit user override (e.g. via shell).
+os.environ.setdefault("OMP_NUM_THREADS",        "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS",   "1")
+os.environ.setdefault("MKL_NUM_THREADS",        "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS",    "1")
+
 _global_pool = None
+
 
 def get_global_pool():
     global _global_pool
     if _global_pool is None:
-        # RocketPy's Flight integrator uses scipy.integrate.solve_ivp with the
-        # LSODA method, which relies on legacy Fortran code holding global state.
-        # This makes the physics core strictly NOT THREAD-SAFE. We MUST use
-        # ProcessPoolExecutor to guarantee memory isolation, despite the Windows
-        # spawn overhead, to prevent memory corruption and UI freezes.
-        n_workers = os.cpu_count() or 1
+        # Reserve 2 cores for the Qt GUI thread and OS background tasks so the
+        # interface stays responsive during heavy Monte Carlo computation.
+        # Minimum 1 worker even on single-core machines.
+        n_workers = max(1, (os.cpu_count() or 2) - 2)
 
-        # Explicitly use 'spawn' context to avoid fork-related GUI deadlocks/state corruption
-        # and ensure consistent behavior across platforms (Windows defaults to spawn,
-        # but Linux defaults to fork which copies the PySide6 app state and freezes).
+        # 'spawn' context: child processes are created fresh without inheriting
+        # the parent's memory (including any PySide6 / Qt state), which is the
+        # only safe option on Windows (Windows has no fork(2)) and recommended
+        # on Linux to prevent GUI deadlocks from forking a Qt event loop.
         ctx = multiprocessing.get_context('spawn')
-        _global_pool = concurrent.futures.ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx)
+        _global_pool = concurrent.futures.ProcessPoolExecutor(
+            max_workers=n_workers,
+            mp_context=ctx,
+        )
     return _global_pool
 
 

@@ -34,7 +34,10 @@ DEFAULT_CONFIG: dict = {
     "wind_uncertainty":   0.20,
     "thrust_uncertainty": 0.05,
     "landing_prob":        90,
-    "mc_n_runs":          200,
+    # 50 runs is statistically sufficient for the CEP ellipse (CLT holds at n≥30)
+    # and keeps MC wall-time under ~30 s on a mid-range laptop.
+    # Increase to 100-200 for final competition analysis if time allows.
+    "mc_n_runs":          50,
 }
 
 

@@ -154,14 +154,24 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
 
     Implements hard constraint:
     If mode is not 'Free' (自由) and r_horiz > r_max, return -inf.
+
+    Score definitions
+    -----------------
+    定点滞空 (Precision Landing) : (r_max - r_horiz) + hang_time
+        Minimise landing radius; hang_time tie-breaks equal-radius results.
+    高度 (Altitude Competition)  : apogee_m
+        Maximise peak altitude.
+    有翼 (Winged Hover)          : hang_time - bf_abs_time
+        Maximise payload hangtime — time from backfire ejection to landing.
+        bf_abs_time is the absolute time at which the ejection charge fires,
+        so (hang_time - bf_abs_time) is the duration the payload is airborne
+        after being released from the rocket body.
+    自由 (Free)                  : apogee_m (default fallback)
     """
     if not res.get('ok', False):
         return float('-inf')
 
     # Hard constraint: disqualify if r > r_max and not Free mode
-    # Assuming "Free" mode string might be English or Japanese or just matched against "Free".
-    # Since the UI translates "自由" to "Free" (or we can just check if "Free" in mode/ "自由" in mode),
-    # let's be robust:
     is_free = "free" in mode.lower() or "自由" in mode
     if not is_free and res['r_horiz'] > r_max:
         return float('-inf')
@@ -172,9 +182,15 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
     elif mode == 'Altitude Competition' or '高度' in mode:
         return res['apogee_m']
     elif mode == 'Winged Hover' or '有翼' in mode:
-        return res['hang_time']
+        # Payload hangtime: from ejection charge to landing.
+        # bf_abs_time is the moment the backfire fires and the payload is
+        # released; hang_time is total flight time.
+        # Falls back to total hang_time if bf_abs_time is unavailable
+        # (e.g. older cached result dicts from before this change).
+        bf_t = res.get('bf_abs_time', 0.0)
+        return float(res['hang_time']) - float(bf_t)
     else:
-        # Fallback to Free or default
+        # Free mode fallback
         return res['apogee_m']
 
 # ── Optimiser (from _optimize_worker) ────────────────────────────────────────
@@ -195,6 +211,7 @@ def _grid_search_chunk(chunk_configs: list[tuple[float, float]], base_params: di
                 'impact_y': res['impact_y'],
                 'r_horiz': res['r_horiz'],
                 'backfire_alt': res['backfire_alt'],
+                'bf_abs_time': res.get('bf_abs_time', 0.0),
             }
             results.append((e_, a_, light_res))
         else:
