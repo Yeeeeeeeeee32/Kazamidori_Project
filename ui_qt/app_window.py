@@ -458,6 +458,11 @@ class ManualSetupDialog(QDialog):
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
             le.setClearButtonEnabled(True)
+            le.textChanged.connect(
+                lambda text, w=le: w.setStyleSheet(
+                    "" if w.hasAcceptableInput() else "border: 1px solid red;"
+                )
+            )
             le.setText("")
             return le
 
@@ -490,6 +495,18 @@ class ManualSetupDialog(QDialog):
         self.lbl_finspan   = QLabel("Fin Semi-Span [m]:")
         self.lbl_finpos    = QLabel("Fin LE Position [m]:")
         self.lbl_fincount  = QLabel("Fin Count:")
+
+        self.lbl_mass.setBuddy(self.af_mass_input)
+        self.lbl_cg.setBuddy(self.af_cg_input)
+        self.lbl_len.setBuddy(self.af_len_input)
+        self.lbl_radius.setBuddy(self.af_radius_input)
+        self.lbl_nose.setBuddy(self.af_nose_input)
+        self.lbl_noseshape.setBuddy(self.af_noseshape_input)
+        self.lbl_finroot.setBuddy(self.af_finroot_input)
+        self.lbl_fintip.setBuddy(self.af_fintip_input)
+        self.lbl_finspan.setBuddy(self.af_finspan_input)
+        self.lbl_finpos.setBuddy(self.af_finpos_input)
+        self.lbl_fincount.setBuddy(self.af_fincount_input)
 
         frm.addRow(self.lbl_mass,      self.af_mass_input)
         frm.addRow(self.lbl_cg,        self.af_cg_input)
@@ -1125,6 +1142,11 @@ class AppWindow(QMainWindow):
         self.af_backfire_input.setValidator(validator)
         self.af_backfire_input.setPlaceholderText("入力必須")
         self.af_backfire_input.setClearButtonEnabled(True)
+        self.af_backfire_input.textChanged.connect(
+            lambda text, w=self.af_backfire_input: w.setStyleSheet(
+                "" if w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
         self.af_backfire_input.setText("")
         self._setup_splitter()
 
@@ -1674,6 +1696,11 @@ class AppWindow(QMainWindow):
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
             le.setClearButtonEnabled(True)
+            le.textChanged.connect(
+                lambda text, w=le: w.setStyleSheet(
+                    "" if w.hasAcceptableInput() else "border: 1px solid red;"
+                )
+            )
             le.setText("")
             return le
 
