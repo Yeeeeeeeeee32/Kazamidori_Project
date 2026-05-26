@@ -7,3 +7,6 @@
 ## 2024-05-17 - Button Tooltips and Shortcuts
 **Learning:** PySide6 UI elements inside modal dialogs (like `QDialog`) often hide features from users unless explicitly documented. Adding tooltips using `setToolTip` to secondary actions (like 'Load JSON' or 'Clear Curve') clarifies function without adding visual clutter. Associating a keyboard shortcut (like 'Esc') to close operations using `setShortcut` massively improves keyboard navigation inside modals.
 **Action:** When inspecting modal dialog UI patterns, check whether utility buttons have tooltips to explain their side effects, and verify keyboard shortcuts exist for modal dismissal.
+## 2026-05-26 - [Avoid Tooltips in High-Glare Environments]
+**Learning:** In outdoor, high-glare environments (like launch sites for rocket software), tooltips are completely ineffective and should be avoided.
+**Action:** Prioritize strong visual feedback (like red borders for validation errors) and robust keyboard navigation (using `setTabOrder`) to guide the user without relying on hover interactions.
