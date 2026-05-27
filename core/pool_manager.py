@@ -44,10 +44,10 @@ _global_pool = None
 def get_global_pool():
     global _global_pool
     if _global_pool is None:
-        # Reserve 2 cores for the Qt GUI thread and OS background tasks so the
-        # interface stays responsive during heavy Monte Carlo computation.
+        # Utilize all cores for maximum performance, since the GUI runs on a different
+        # thread and the background workers yield CPU timeslices to prevent starvation.
         # Minimum 1 worker even on single-core machines.
-        n_workers = max(1, (os.cpu_count() or 2) - 2)
+        n_workers = max(1, os.cpu_count() or 2)
 
         # 'spawn' context: child processes are created fresh without inheriting
         # the parent's memory (including any PySide6 / Qt state), which is the
@@ -59,6 +59,20 @@ def get_global_pool():
             mp_context=ctx,
         )
     return _global_pool
+
+
+def warmup_pool() -> None:
+    """
+    Submits dummy tasks to the pool to force worker processes to spawn and load
+    their heavy modules (like numpy, scipy, RocketPy) BEFORE the first actual
+    simulation. This removes the 5-10s cold-start latency from the UI thread.
+    """
+    pool = get_global_pool()
+    from core.mc_worker import _noop_warmup
+    # Submit one task per worker to ensure all processes in the pool are spawned
+    n_workers = pool._max_workers
+    for _ in range(n_workers):
+        pool.submit(_noop_warmup)
 
 
 def shutdown_global_pool(wait: bool = True) -> None:

@@ -3,7 +3,7 @@ import os
 
 os.environ["QT_API"] = "pyside6"
 import matplotlib
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.patches as patches
 
@@ -87,7 +87,7 @@ class MapView(QWidget):
         layout.setStackingMode(QStackedLayout.StackAll)
 
         # Bottom Layer: Matplotlib Canvas
-        self.figure = plt.figure(facecolor='#1e1e2e')
+        self.figure = Figure(facecolor='#1e1e2e')
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_facecolor('#1e1e2e')
@@ -271,14 +271,35 @@ class MapView(QWidget):
                 all_y.extend([cy - r_max, cy + r_max])
 
             # KDE Contours
-            if contours and getattr(self._state, 'show_kde', True):
-                for i, contour in enumerate(contours):
-                    points = contour['points_m'] if 'points_m' in contour else contour
-                    if points:
-                        poly = patches.Polygon(points, closed=True, edgecolor='#cc5500', facecolor='none', linewidth=1.5, zorder=4, label='KDE Contours' if i == 0 else "")
-                        self.ax.add_patch(poly)
-                        all_x.extend([p[0] for p in points])
-                        all_y.extend([p[1] for p in points])
+            kde_grid = result.get('kde')
+            if kde_grid and getattr(self._state, 'show_kde', True):
+                try:
+                    import numpy as np
+                    _X = np.asarray(kde_grid["X_m"], dtype=float)
+                    _Y = np.asarray(kde_grid["Y_m"], dtype=float)
+                    _Z = np.asarray(kde_grid["Z"],   dtype=float)
+
+                    z_flat = _Z.ravel()
+                    z_sorted = np.sort(z_flat)[::-1]
+                    cumsum = np.cumsum(z_sorted)
+                    cumsum /= cumsum[-1]
+
+                    levels_pm = [0.50, 0.70, prob / 100.0]
+                    levels_val = []
+                    for pm in levels_pm:
+                        idx = int(np.searchsorted(cumsum, pm))
+                        idx = min(idx, len(z_sorted) - 1)
+                        levels_val.append(float(z_sorted[idx]))
+
+                    levels_val = sorted(list(set(levels_val)))
+
+                    if len(levels_val) > 0:
+                        cs = self.ax.contour(_X, _Y, _Z, levels=levels_val, colors='#cc5500', linewidths=1.5, zorder=4)
+
+                        all_x.extend([float(kde_grid["x_min_m"]), float(kde_grid["x_max_m"])])
+                        all_y.extend([float(kde_grid["y_min_m"]), float(kde_grid["y_max_m"])])
+                except Exception as e:
+                    print(f"Drawing Error (KDE 2D Contours): {e}")
 
             # Impact Scatter (Filtered by KDE contours)
             if getattr(self._state, 'show_scatter', True):
@@ -297,6 +318,11 @@ class MapView(QWidget):
 
             # Legend
             handles, labels = self.ax.get_legend_handles_labels()
+            if kde_grid and getattr(self._state, 'show_kde', True):
+                from matplotlib.lines import Line2D
+                proxy = Line2D([0], [0], color='#cc5500', linewidth=1.5)
+                handles.append(proxy)
+                labels.append('KDE Contours')
             if handles:
                 by_label = dict(zip(labels, handles))
                 legend = self.ax.legend(by_label.values(), by_label.keys(), loc='upper right', facecolor='#1e1e2e', edgecolor='#45475a', labelcolor='#cdd6f4')
@@ -463,10 +489,15 @@ class MapView(QWidget):
             if getattr(self._state, 'offline_map_extent', None) != extent:
                 self._state.offline_map_extent = extent
 
-            img = Image.open(img_path)
+            # Cache the loaded image array to avoid slow disk read and conversion on every single redraw
+            if not hasattr(self, '_cached_img_path') or self._cached_img_path != img_path:
+                print(f"Loading and caching background map image: {img_path}")
+                img = Image.open(img_path)
+                self._cached_background_img = np.array(img)
+                self._cached_img_path = img_path
 
             # We strictly render it relative to the origin within the bounds
-            self.ax.imshow(np.array(img), extent=self._state.offline_map_extent, origin='upper', zorder=0, alpha=0.6)
+            self.ax.imshow(self._cached_background_img, extent=self._state.offline_map_extent, origin='upper', zorder=0, alpha=0.6)
 
         except Exception as e:
             import traceback

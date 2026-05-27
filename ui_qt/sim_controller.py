@@ -711,7 +711,6 @@ class SimController(QObject):
         # Force the canvas to commit its pending draw now, before the MC loop
         # (running at LowPriority on the worker thread) monopolises CPU.
         self._window.profile_canvas.draw_idle()
-        QApplication.processEvents()
 
     @Slot(int, int, str)
     def _on_progress_updated(self, current: int, total: int, msg: str) -> None:

@@ -491,135 +491,14 @@ def compute_kde_contours(
     scatter: list[tuple[float, float]],
     conf_pct: int = 90,
 ) -> list[dict]:
-    """Compute KDE probability-mass contours in the metric East-North frame.
-
-    All KDE fitting, grid evaluation, and contour extraction are performed
-    entirely in metres.  The function returns raw mathematical data with
-    no geographic coordinates and no rendering attributes (no colours,
-    no line widths, no alpha values).
-
-    Three probability levels are computed: 50 %, 70 %, and *conf_pct* %.
-
-    This function requires scipy.  If scipy or matplotlib is unavailable,
-    or if fewer than 5 points are provided, an empty list is returned.
-
-    Uses matplotlib.figure.Figure() directly (no pyplot / TkAgg canvas)
-    so it is safe to call from any thread, including background workers.
-
-    Args:
-        scatter:   list of (x_east_m, y_north_m) landing positions.
-        conf_pct:  Outer contour confidence percentage (default 90).
-
-    Returns:
-        list of contour dicts sorted outer → inner, each containing:
-            'points_m'  — list of (x_east_m, y_north_m) polygon vertices
-            'prob_frac' — probability mass fraction (e.g. 0.90)
-            'label'     — str like '90%' for the primary (largest) polygon
-                           at each level; None for secondary island polygons
+    """Deprecated: This function previously generated contours on a background thread
+    using Matplotlib, which is thread-unsafe and caused GUI hangs/freezes.
+    Contours are now rendered directly on the main thread in MapView using Matplotlib's
+    native axes.contour method on the computed KDE density grid.
+    
+    Returns an empty list for API compatibility.
     """
-    try:
-        from scipy.stats import gaussian_kde
-        from matplotlib.figure import Figure as _MplFigure
-        import numpy as _np
-    except ImportError:
-        return []
-
-    if len(scatter) < 5:
-        return []
-
-    xs = _np.array([p[0] for p in scatter], dtype=float)
-    ys = _np.array([p[1] for p in scatter], dtype=float)
-
-    try:
-        kde = gaussian_kde(_np.vstack([xs, ys]))
-    except Exception:
-        return []
-
-    x_range = float(xs.max() - xs.min())
-    y_range = float(ys.max() - ys.min())
-    pad     = max(x_range, y_range, 1.0) * 0.5
-
-    gx     = _np.linspace(float(xs.min()) - pad, float(xs.max()) + pad, 120)
-    gy     = _np.linspace(float(ys.min()) - pad, float(ys.max()) + pad, 120)
-    GX, GY = _np.meshgrid(gx, gy)
-    Z      = kde(_np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
-
-    # Convert probability-mass fractions to KDE density thresholds
-    z_flat   = Z.ravel()
-    z_sorted = _np.sort(z_flat)[::-1]
-    cumsum   = _np.cumsum(z_sorted)
-    cumsum  /= cumsum[-1]
-
-    outer_frac = max(min(conf_pct / 100.0, 0.999), 0.501)
-    levels_pm  = sorted({0.50, 0.70, outer_frac})
-
-    # Compute density thresholds; record pm → threshold for labels
-    level_vals: list[float] = []
-    lv_to_pm:   dict        = {}   # keyed by round(lv, 10)
-    for pm in levels_pm:
-        idx = int(_np.searchsorted(cumsum, pm))
-        idx = min(idx, len(z_sorted) - 1)
-        lv  = float(z_sorted[idx])
-        level_vals.append(lv)
-        key = round(lv, 10)
-        if key not in lv_to_pm:
-            lv_to_pm[key] = pm
-
-    seen:        set         = set()
-    unique_vals: list[float] = []
-    for v in level_vals:
-        key = round(v, 12)
-        if key not in seen:
-            seen.add(key)
-            unique_vals.append(v)
-
-    if len(unique_vals) < 2:
-        return []
-
-    # Figure() is not registered with pyplot — no TkAgg canvas, thread-safe
-    _fig = _MplFigure()
-    _ax  = _fig.add_subplot(111)
-    try:
-        cs = _ax.contour(GX, GY, Z, levels=sorted(unique_vals))
-    except Exception:
-        return []
-
-    sorted_lv = sorted(unique_vals)
-
-    # Extract contour path segments.
-    # allsegs removed in mpl 3.10; collections deprecated 3.8 — suppress both.
-    segs_by_level: list = []
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore', DeprecationWarning)
-        try:
-            segs_by_level = list(cs.allsegs)
-        except AttributeError:
-            try:
-                segs_by_level = [
-                    [p.vertices for p in c.get_paths()]
-                    for c in cs.collections
-                ]
-            except Exception:
-                pass
-
-    # _fig is not in pyplot's figure registry; GC handles cleanup.
-
-    contours: list[dict] = []
-    for seg_group, lv in zip(segs_by_level, sorted_lv):
-        pm         = lv_to_pm.get(round(lv, 10))
-        base_label = f'{int(round(pm * 100))}%' if pm is not None else None
-        first      = True
-        for verts in seg_group:
-            if len(verts) < 3:
-                continue
-            contours.append({
-                'points_m':  [(float(v[0]), float(v[1])) for v in verts],
-                'prob_frac': pm if pm is not None else 0.0,
-                'label':     base_label if first else None,
-            })
-            first = False
-
-    return contours
+    return []
 
 
 # ── KDE density grid ─────────────────────────────────────────────────────────

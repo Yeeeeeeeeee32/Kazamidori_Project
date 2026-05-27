@@ -21,6 +21,14 @@ etc.).  These are intentionally separate objects; the controller mediates
 writes to both.
 """
 
+import os
+# Cap BLAS/OMP threads in the parent process before any numpy/scipy import occurs
+os.environ.setdefault("OMP_NUM_THREADS",        "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS",   "1")
+os.environ.setdefault("MKL_NUM_THREADS",        "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS",    "1")
+
 import faulthandler
 import sys
 
@@ -54,9 +62,10 @@ if __name__ == "__main__":
 
     # Pre-warm the global ThreadPoolExecutor so all worker threads are alive
     # before the first simulation run — avoids any cold-start latency.
-    from core.pool_manager import get_global_pool, shutdown_global_pool
+    from core.pool_manager import get_global_pool, shutdown_global_pool, warmup_pool
     import atexit
     get_global_pool()
+    warmup_pool()
     atexit.register(shutdown_global_pool, False)
     def global_excepthook(exc_type, exc_value, exc_traceback):
         import traceback

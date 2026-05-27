@@ -64,9 +64,9 @@ from core.monte_carlo  import (
     compute_error_ellipse,
     compute_cep,
     compute_cep_circle,
-    compute_kde_contours,
     compute_kde_grid,
 )
+from core.mc_worker import _mc_worker_chunk
 
 # ── Airframe defaults (NO motor data) ────────────────────────────────────────
 # Only airframe geometry and recovery system have defaults.
@@ -104,89 +104,6 @@ _DEFAULT_AIRFRAME: dict[str, Any] = {
 # Number of MC runs per progress tick.  Smaller → finer progress granularity
 # but slightly more overhead per RocketPy call.
 _MC_BATCH_SIZE: int = 10
-
-
-def _mc_worker_chunk(
-    seeds: list[int],
-    trials: list[int],
-    sim_params: dict,
-    wind_unc: float,
-    gust_sigma: float,
-    tu: float,
-    raw_thrust: list,
-    elev: float,
-    azi: float,
-    base_u: list,
-    base_v: list,
-    flight_mode: str,
-    target_radius: float,
-    backfire_alt: float = 0.0,
-) -> list[dict | None]:
-    """
-    Top-level, picklable worker function for ProcessPoolExecutor.
-    Runs a chunk of perturbed Monte Carlo simulations.
-
-    If *backfire_alt* > 0 (provided by the nominal run), the fast
-    single-pass ``simulate_once_mc`` is used, halving ODE integrations.
-    Falls back to the full two-pass ``simulate_once`` otherwise.
-    """
-    results = []
-    for seed, trial_idx in zip(seeds, trials):
-        rng = _random.Random(seed)
-
-        # ── Wind perturbation
-        u_prof, v_prof, _ = _perturb_wind_profile(
-            base_u, base_v, rng,
-            wind_unc, gust_intensity=gust_sigma,
-        )
-
-        # ── Thrust perturbation
-        thrust_scale = max(0.1, 1.0 + rng.gauss(0.0, tu))
-        perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
-
-        trial_p = {
-            **sim_params,
-            "wind_u_prof": u_prof,
-            "wind_v_prof": v_prof,
-            "thrust_data": perturbed_thrust,
-        }
-
-        # Use fast single-pass variant when the nominal backfire_alt is known.
-        # Falls back to the full two-pass simulate_once if it was not provided.
-        if backfire_alt > 0.0:
-            r = simulate_once_mc(elev, azi, trial_p, backfire_alt, trial_idx=trial_idx)
-        else:
-            r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
-
-        if r["ok"]:
-            from core.optimization import p1_objective_score
-            score = p1_objective_score(r, flight_mode, target_radius)
-
-            h_time = float(r["hang_time"])
-            bf_t = float(r.get("bf_abs_time", 0.0))
-            if '有翼' in flight_mode or 'winged' in flight_mode.lower() or 'wing' in flight_mode.lower():
-                h_time = max(0.0, h_time - bf_t)
-
-            # Only return the scalars (no trajectory arrays — minimise IPC payload)
-            res = {
-                "x":           float(r["impact_x"]),
-                "y":           float(r["impact_y"]),
-                "apogee":      float(r["apogee_m"]),
-                "hang_time":   h_time,
-                # bf_abs_time: time of ejection charge firing (backfire).
-                # Required by p1_objective_score for Winged Hover mode:
-                #   score = hang_time - bf_abs_time  (payload airborne duration)
-                "bf_abs_time": bf_t,
-                "score": score,
-            }
-        else:
-            res = None
-
-        # Memory optimization
-        del r, trial_p, u_prof, v_prof, perturbed_thrust
-        results.append(res)
-
-    return results
 
 
 # ── Worker ────────────────────────────────────────────────────────────────────
@@ -473,18 +390,14 @@ class SimulationWorker(QThread):
             self.sig_mc_done.emit(self._package_mc(scatter, _fast_stats, prob_pct))
             QThread.yieldCurrentThread()   # let the GUI thread paint scatter + ellipse
 
-            # ── KDE contours — scipy + matplotlib (HEAVY, 2-5 s) ────────────
-            # Run AFTER the fast payload has been emitted so the map is already
-            # showing scatter dots and the ellipse during this long operation.
-            QThread.yieldCurrentThread()
-            self.progress.emit(96)
-            self.sig_status_text.emit("Computing KDE contours...")
-            kde_contours = compute_kde_contours(pts_tuples, conf_pct=prob_pct)
-
+            # ── KDE grid — scipy only (HEAVY, ~1 s) ───────────────────────────
+            # Grid evaluation is computed here on the background thread.
+            # Contours are drawn directly on the main thread in MapView.
             QThread.yieldCurrentThread()
             self.progress.emit(97)
             self.sig_status_text.emit("Computing KDE density grid...")
             kde_grid = compute_kde_grid(pts_tuples)
+            kde_contours = []
 
             # ── Assemble full stats dict with KDE ─────────────────────────────
             stats = {
@@ -506,6 +419,10 @@ class SimulationWorker(QThread):
 
 
             # Process KDE filtered scatter points to remove heavy math from UI
+            # We filter out scatter points inside the outer confidence contour (e.g. 90%).
+            # This is mathematically equivalent to filtering out points with density greater than
+            # the threshold corresponding to the confidence probability, which is 100% thread-safe
+            # and avoids any Matplotlib background imports.
             mc_scatter_x_filtered = []
             mc_scatter_y_filtered = []
 
@@ -513,22 +430,26 @@ class SimulationWorker(QThread):
                 sx = [p["x"] if isinstance(p, dict) else p[0] for p in scatter]
                 sy = [p["y"] if isinstance(p, dict) else p[1] for p in scatter]
 
-                if kde_contours and len(kde_contours) > 0:
-                    import matplotlib.path as mpath
-                    outer_contour = kde_contours[0]
-                    outer_points = outer_contour.get('points_m', []) if isinstance(outer_contour, dict) else outer_contour
-
-                    if outer_points and len(outer_points) > 2:
-                        path = mpath.Path(outer_points)
-                        pts = np.column_stack((sx, sy))
-                        mask = path.contains_points(pts)
-                        outside_mask = ~mask
-                        mc_scatter_x_filtered = np.array(sx)[outside_mask].tolist()[:500]
-                        mc_scatter_y_filtered = np.array(sy)[outside_mask].tolist()[:500]
-                    else:
-                        mc_scatter_x_filtered = sx[:500]
-                        mc_scatter_y_filtered = sy[:500]
-                else:
+                try:
+                    from scipy.stats import gaussian_kde
+                    pts_arr = np.vstack([sx, sy])
+                    kde_eval = gaussian_kde(pts_arr)
+                    densities = kde_eval(pts_arr)
+                    
+                    z_sorted = np.sort(densities)[::-1]
+                    cumsum = np.cumsum(z_sorted)
+                    cumsum /= cumsum[-1]
+                    
+                    outer_frac = max(min(prob_pct / 100.0, 0.999), 0.501)
+                    idx = int(np.searchsorted(cumsum, outer_frac))
+                    idx = min(idx, len(z_sorted) - 1)
+                    threshold = float(z_sorted[idx])
+                    
+                    outside_mask = densities < threshold
+                    mc_scatter_x_filtered = np.array(sx)[outside_mask].tolist()[:500]
+                    mc_scatter_y_filtered = np.array(sy)[outside_mask].tolist()[:500]
+                except Exception as e:
+                    print(f"KDE Filtering Error: {e}", flush=True)
                     mc_scatter_x_filtered = sx[:500]
                     mc_scatter_y_filtered = sy[:500]
 
@@ -937,7 +858,7 @@ class SimulationWorker(QThread):
             #   UI:   x, y, width (=2a), height (=2b), angle_deg
             "ellipse":      compute_error_ellipse(pts, prob_pct=prob_pct),
 
-            "kde_contours": compute_kde_contours(pts, conf_pct=prob_pct),
+            "kde_contours": [],
             # kde: {X_m, Y_m, Z, x_min_m, x_max_m, y_min_m, y_max_m}
             # All arrays are Python lists of lists — ready for heatmap rendering.
             "kde":          kde_grid,
