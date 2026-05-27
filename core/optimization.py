@@ -312,8 +312,8 @@ def optimize_launch_angle(
                     f"Phase 1: Coarse search ({done}/{N}) "
                     f"elev={e_:.0f}° azi={a_:.0f}°", frac)
 
-        from PySide6.QtCore import QThread
-        QThread.msleep(5)
+        import time
+        time.sleep(0.005)
 
     elapsed = time.perf_counter() - _t_start
     print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
