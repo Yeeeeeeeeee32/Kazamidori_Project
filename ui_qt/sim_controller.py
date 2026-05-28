@@ -10,7 +10,7 @@ import random
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMessageBox, QPushButton, QSystemTrayIcon, QStyle
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton, QSystemTrayIcon, QStyle
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
@@ -76,15 +76,11 @@ class SimController(QObject):
         # avoid silent disablement and provide user feedback.
         self._set_run_buttons_enabled(True)
 
-        # ── Cross-state signal bridge ──────────────────────────────────────────
-        # Drive the AppWindow canvases directly from the global AppState's
-        # needs_redraw signal.  Forwarding via ``window.state.needs_redraw``
-        # would self-loop here because ``bind_app_state`` has already replaced
-        # ``window.state`` with the global ``state`` instance — connecting a
-        # signal to itself produces unbounded recursion on first emit.
-        state.needs_redraw.connect(window.update_profile_plot)
-        state.needs_redraw.connect(window.update_map_plot)
-        state.needs_redraw.connect(window.update_wind_plot)
+        # NOTE: needs_redraw → update_profile_plot / update_map_plot / update_wind_plot
+        # connections are established inside AppWindow.bind_app_state() (called before
+        # SimController.__init__).  Connecting again here would cause every emit to
+        # trigger each canvas slot TWICE, producing a redraw storm on the GUI thread
+        # and causing the "Not Responding" freeze on Windows.
 
         # ── Bi-directional Map Sync ────────────────────────────────────────────
         if hasattr(self._window, 'map_widget') and hasattr(self._window.map_widget, 'coordinates_picked'):
@@ -220,16 +216,13 @@ class SimController(QObject):
             lambda pct: window.set_progress(pct, f"MC  {pct}%")
         )
 
-        # simulation_result_changed fires in _on_mc_done (after full MC) → render
-        # the 2-D landing map with scatter, CEP contours, and confidence ellipses.
-        # The signal carries the result dict as payload; update_map_plot reads from
-        # window.state directly so the payload is discarded here.
-        state.simulation_result_changed.connect(
-            lambda _: window.update_map_plot()
-        )
-        state.simulation_result_changed.connect(
-            lambda _: window.update_profile_plot()
-        )
+        # NOTE: simulation_result_changed → update_map_plot and update_profile_plot
+        # are NOT connected here.  The simulation_result.setter already emits
+        # needs_redraw which is wired (in AppWindow.bind_app_state) to all three
+        # canvas update slots.  Adding simulation_result_changed connections on
+        # top would cause each plot slot to execute twice per MC completion,
+        # doubling the GUI-thread work and causing "Not Responding" freezes.
+
 
         # ── Flight-mode → map circle switch ───────────────────────────────────
         # update_map_plot reads window.state.sim_mode (already kept in sync by
@@ -342,24 +335,16 @@ class SimController(QObject):
             missing.append("Motor Thrust Curve (.csv)")
 
         if missing:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(
-                self._window,
-                "Missing Parameters",
-                "Cannot start simulation. Please provide the following missing data:\n  • " + "\n  • ".join(missing),
-            )
+            self._window.set_status("Missing Parameters: " + ", ".join(missing), "#f38ba8")
             return False
 
         # ── 60-second surface wind buffer check ───────────────────────────────
         surface_hist = list(self._state.wind_history_for_alt(3.0))
         if len(surface_hist) < 5:
-            QMessageBox.warning(
-                self._window,
-                "Wind Buffer Insufficient",
-                f"Surface wind monitor has only {len(surface_hist)} sample(s) "
-                f"(minimum 5 required).\n\n"
-                "Wait a few seconds for the wind monitor to collect data, "
-                "then click RUN again.",
+            self._window.set_status(
+                f"Wind Buffer Insufficient: Surface wind monitor has only {len(surface_hist)} samples "
+                "(minimum 5 required). Please wait for the monitor to collect data.",
+                "#f38ba8"
             )
             return False
 
@@ -374,14 +359,14 @@ class SimController(QObject):
         lon_text = self._window.lon_input.cleanText()
 
         if not lat_text or not lon_text:
-            QMessageBox.warning(self._window, "Invalid Coordinates", "Coordinates are not entered. Please enter valid launch pad coordinates first.")
+            self._window.set_status("Invalid Coordinates: Coordinates are not entered. Please enter valid launch pad coordinates first.", "#f38ba8")
             return
 
         try:
             lat = float(lat_text)
             lon = float(lon_text)
         except ValueError:
-            QMessageBox.warning(self._window, "Invalid Coordinates", "Coordinates are not entered or invalid.")
+            self._window.set_status("Invalid Coordinates: Coordinates are not entered or invalid.", "#f38ba8")
             return
 
         self._state.launch_lat = lat
@@ -413,7 +398,7 @@ class SimController(QObject):
         # Let's just emit simulation_result_changed with None (or current result)
         self._state.simulation_result_changed.emit(None)
 
-        QMessageBox.information(self._window, "Download Complete", f"Offline map tiles downloaded.\nMagnetic Declination: {declination:.4f}°")
+        self._window.set_status(f"Download Complete: Offline map tiles downloaded. Magnetic Declination: {declination:.4f}°", "#a6e3a1")
 
         if self._worker and self._worker.isRunning():
             return
@@ -422,7 +407,7 @@ class SimController(QObject):
         lon = self._state.launch_lon
 
         if lat is None or lon is None:
-            QMessageBox.warning(self._window, "No Location", "Please enter valid launch coordinates before downloading the map.")
+            self._window.set_status("No Location: Please enter valid launch coordinates before downloading the map.", "#f38ba8")
             return
 
         from PySide6.QtCore import QThread, Signal
@@ -471,7 +456,7 @@ class SimController(QObject):
             return  # guard against double-click spam
 
         if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
-            QMessageBox.critical(self._window, "Validation Error", "Motor Physical Parameters must be set before running the simulation.")
+            self._window.set_status("Validation Error: Motor Physical Parameters must be set before running the simulation.", "#f38ba8")
             return
 
         if not self._validate_run_prerequisites():
@@ -518,7 +503,7 @@ class SimController(QObject):
             return  # guard against double-click spam
 
         if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
-            QMessageBox.critical(self._window, "Validation Error", "Motor Physical Parameters must be set before running the simulation.")
+            self._window.set_status("Validation Error: Motor Physical Parameters must be set before running the simulation.", "#f38ba8")
             return
 
         if not self._validate_run_prerequisites():
@@ -662,16 +647,19 @@ class SimController(QObject):
         main thread via Qt's automatic queued connection (different QThread
         affinity), so this slot always executes on the GUI thread.
         """
-        # Populate window state with the rich nominal payload BEFORE firing
-        # nominal_result.  nominal_result.setter emits nominal_needs_redraw →
-        # update_profile_plot, which reads window.state.simulation_result.
-        # _adapt_nominal_for_window preserves all original keys (phases, events,
-        # wind_nodes, …) so _draw_real_result gets full phase-colour data.
-        self._window.state.simulation_result = (
-            self._adapt_nominal_for_window(payload))
+        # Pre-populate _simulation_result without emitting needs_redraw so that
+        # update_profile_plot (triggered below by nominal_needs_redraw) can read
+        # the data.  Using the private field avoids the extra needs_redraw blast
+        # that the public setter would emit — _on_nominal_done must touch the
+        # profile plot exactly ONCE to keep the GUI thread responsive.
+        # simulation_result_changed is still emitted so any other subscriber
+        # (e.g. map_view) gets notified without triggering a full redraw cycle.
+        adapted_nominal = self._adapt_nominal_for_window(payload)
+        self._state._simulation_result = adapted_nominal
+        self._state.simulation_result_changed.emit(adapted_nominal)
 
         # Setting nominal_result fires nominal_result_changed and
-        # nominal_needs_redraw; the latter triggers update_profile_plot.
+        # nominal_needs_redraw; the latter triggers update_profile_plot (once).
         self._state.nominal_result = payload
         self._nominal_payload      = payload
 
@@ -783,12 +771,12 @@ class SimController(QObject):
             result["phases"] = self._nominal_payload.get("phases")
             result["events"] = self._nominal_payload.get("events")
 
-        # simulation_result_changed (fired on the next line) triggers
-        # update_map_plot via the __init__ connection.  update_map_plot reads
-        # from window.state, so that write must precede the signal.
-        self._window.state.simulation_result = self._adapt_for_window(result)
-        # ── Fire simulation_result_changed → update_map_plot + needs_redraw ───
-        self._state.simulation_result = result
+        # Write the adapted result exactly ONCE through the global AppState.
+        # AppWindow.bind_app_state() already replaced self._window.state with
+        # self._state, so both references are the same object.  Setting the
+        # property fires simulation_result_changed and needs_redraw exactly once
+        # each — no duplicate redraws, no GUI thread flooding.
+        self._state.simulation_result = self._adapt_for_window(result)
 
         # ── Phase A verification: CEP50 ≤ target_radius → SAFE → Phase B ────────
         cep50    = self._state.mc_cep
@@ -1082,26 +1070,45 @@ class SimController(QObject):
             if sb is None:
                 return
 
-            from PySide6.QtWidgets import QLineEdit, QDoubleSpinBox
+            from PySide6.QtWidgets import QLineEdit
             if isinstance(sb, QLineEdit):
                 # Text input handling
-                def safe_set(v, _p=prop, _f=to_si):
-                    if v.strip() == "":
-                        return
+                def validate_and_set(text: str, _sb=sb, _p=prop, _f=to_si):
+                    val_str = text.strip()
+                    if val_str == "":
+                        _sb.setStyleSheet("border: 1px solid red;")
+                        setattr(s, _p, None)
                     else:
                         try:
-                            setattr(s, _p, _f(float(v)))
+                            val_float = float(val_str)
+                            _sb.setStyleSheet("")
+                            setattr(s, _p, _f(val_float))
                         except ValueError:
-                            pass
-                sb.textChanged.connect(safe_set)
+                            _sb.setStyleSheet("border: 1px solid red;")
+                            setattr(s, _p, None)
+
+                sb.textChanged.connect(validate_and_set)
+                
                 sig = getattr(s, f"{prop}_changed", None)
                 if sig is not None:
                     def update_sb(v, _sb=sb, _g=from_si):
                         if v is None:
-                            _sb.setText("")
+                            if _sb.text() != "":
+                                _sb.setText("")
+                            _sb.setStyleSheet("border: 1px solid red;")
                         else:
-                            _sb.setText(str(round(_g(v), 5)))
+                            val_str = str(round(_g(v), 5))
+                            if _sb.text() != val_str:
+                                _sb.setText(val_str)
+                            _sb.setStyleSheet("")
                     sig.connect(update_sb)
+                
+                # Check initial state
+                init_val = getattr(s, prop, None)
+                if init_val is None:
+                    sb.setStyleSheet("border: 1px solid red;")
+                else:
+                    sb.setStyleSheet("")
             else:
                 # Sentinel -9999.0 means the field is blank; do not push to AppState.
                 sb.valueChanged.connect(
@@ -1178,11 +1185,6 @@ class SimController(QObject):
         try:
             cfg = load_rocket_config(path)
         except RocketConfigError as exc:
-            QMessageBox.critical(
-                self._window,
-                "Rocket Config Error",
-                f"Failed to load:\n{path}\n\n{exc}",
-            )
             self._window.set_status(f"Rocket JSON load failed: {exc}", "#f38ba8")
             return
 
@@ -1255,19 +1257,10 @@ class SimController(QObject):
             cfg = parse_rkt_file(path)
         except RocketConfigError as exc:
             print(f"[_on_load_rkt] RocketConfigError: {exc}")
-            QMessageBox.critical(
-                self._window, "RKT File Error",
-                f"Failed to parse:\n{path}\n\n{exc}",
-            )
             self._window.set_status(f".rkt parse failed: {exc}", "#f38ba8")
             return
         except Exception as exc:
             print(f"[_on_load_rkt] Unexpected error: {type(exc).__name__}: {exc}")
-            QMessageBox.critical(
-                self._window, "RKT File Error",
-                f"Unexpected error loading:\n{path}\n\n"
-                f"{type(exc).__name__}: {exc}",
-            )
             self._window.set_status(f".rkt load error: {exc}", "#f38ba8")
             return
 
@@ -1315,20 +1308,7 @@ class SimController(QObject):
             manual_fields.append("バックファイア遅延 (Backfire Delay)")
 
         if failed_fields or manual_fields:
-            msg = "ファイルの一部のデータ取得に失敗したか、または安全のため読み込みがブロックされました。\n"
-            msg += "以下の項目を確認し、手動設定（Manual Config）で正しい値を入力してください。\n"
-
-            if failed_fields:
-                msg += "\n【取得失敗 / 未対応の項目】\n"
-                for field in failed_fields:
-                    msg += f"・{field}\n"
-
-            if manual_fields:
-                msg += "\n【手動入力が必要な項目】\n"
-                for field in manual_fields:
-                    msg += f"・{field}\n"
-
-            QMessageBox.warning(self._window, "インポート警告", msg.strip())
+            self._window.set_status("RKT load warning: check Manual Config for missing parameters.", "#f9e2af")
 
         # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
         s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
@@ -1374,19 +1354,10 @@ class SimController(QObject):
             par = parse_parachute_json(path)
         except RocketConfigError as exc:
             print(f"[_on_load_para_json] RocketConfigError: {exc}")
-            QMessageBox.critical(
-                self._window, "Parachute JSON Error",
-                f"Failed to parse:\n{path}\n\n{exc}",
-            )
             self._window.set_status(f"Parachute JSON failed: {exc}", "#f38ba8")
             return
         except Exception as exc:
             print(f"[_on_load_para_json] Unexpected: {type(exc).__name__}: {exc}")
-            QMessageBox.critical(
-                self._window, "Parachute JSON Error",
-                f"Unexpected error:\n{path}\n\n"
-                f"{type(exc).__name__}: {exc}",
-            )
             self._window.set_status(f"Parachute JSON error: {exc}", "#f38ba8")
             return
 

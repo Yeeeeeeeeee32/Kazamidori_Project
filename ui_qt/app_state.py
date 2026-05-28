@@ -40,22 +40,22 @@ _SURFACE_ALT: float = 3.0   # 自作風速計 (hardware anemometer) altitude (m 
 class AppState(QObject):
 
     # ── Simulation configuration ───────────────────────────────────────────────
-    wind_uncertainty_changed   = Signal(float)
+    wind_uncertainty_changed   = Signal(object)
     magnetic_declination_changed = Signal(float)
     offline_map_extent_changed = Signal(list)
-    thrust_uncertainty_changed = Signal(float)
+    thrust_uncertainty_changed = Signal(object)
     landing_prob_changed       = Signal(int)
     mc_n_runs_changed          = Signal(int)
 
     # ── Launch site ────────────────────────────────────────────────────────────
 
     # ── Rocket / flight parameters ─────────────────────────────────────────────
-    mass_changed           = Signal(float)
-    drag_coeff_changed     = Signal(float)
-    ref_area_changed       = Signal(float)
-    target_radius_changed  = Signal(float)
-    launch_lat_changed     = Signal(float)
-    launch_lon_changed     = Signal(float)
+    mass_changed           = Signal(object)
+    drag_coeff_changed     = Signal(object)
+    ref_area_changed       = Signal(object)
+    target_radius_changed  = Signal(object)
+    launch_lat_changed     = Signal(object)
+    launch_lon_changed     = Signal(object)
     operation_mode_changed = Signal(str)
 
     # ── Aerodynamics & Motor (advanced settings, exposed in Phase B) ──────────
@@ -191,21 +191,21 @@ class AppState(QObject):
 
     # ── Rocket geometry parameters ─────────────────────────────────────────────
     # One signal per physical dimension so views can bind selectively.
-    rocket_dry_mass_changed = Signal(float)   # airframe dry mass (kg)
-    rocket_cg_changed       = Signal(float)   # airframe CG from nose (m)
-    rocket_length_changed   = Signal(float)   # total airframe length (m)
-    rocket_diameter_changed = Signal(float)   # body diameter in metres (= 2×radius)
-    nose_length_changed     = Signal(float)   # nose cone length (m)
-    fin_root_chord_changed  = Signal(float)   # fin root chord (m)
-    fin_tip_chord_changed   = Signal(float)   # fin tip chord (m)
-    fin_span_changed        = Signal(float)   # fin semi-span (m)
-    fin_position_changed    = Signal(float)   # fin leading-edge position from nose (m)
-    motor_cg_pos_changed    = Signal(float)   # motor CG from nose (m)
-    motor_dry_mass_changed  = Signal(float)   # motor dry mass (kg)
-    parachute_cd_changed    = Signal(float)   # parachute drag coefficient (dimensionless)
-    parachute_area_changed  = Signal(float)   # parachute reference area (m²)
-    parachute_lag_changed   = Signal(float)   # parachute deployment lag (s)
-    backfire_delay_changed  = Signal(float)   # ejection charge delay after burnout (s)
+    rocket_dry_mass_changed = Signal(object)   # airframe dry mass (kg)
+    rocket_cg_changed       = Signal(object)   # airframe CG from nose (m)
+    rocket_length_changed   = Signal(object)   # total airframe length (m)
+    rocket_diameter_changed = Signal(object)   # body diameter in metres (= 2×radius)
+    nose_length_changed     = Signal(object)   # nose cone length (m)
+    fin_root_chord_changed  = Signal(object)   # fin root chord (m)
+    fin_tip_chord_changed   = Signal(object)   # fin tip chord (m)
+    fin_span_changed        = Signal(object)   # fin semi-span (m)
+    fin_position_changed    = Signal(object)   # fin leading-edge position from nose (m)
+    motor_cg_pos_changed    = Signal(object)   # motor CG from nose (m)
+    motor_dry_mass_changed  = Signal(object)   # motor dry mass (kg)
+    parachute_cd_changed    = Signal(object)   # parachute drag coefficient (dimensionless)
+    parachute_area_changed  = Signal(object)   # parachute reference area (m²)
+    parachute_lag_changed   = Signal(object)   # parachute deployment lag (s)
+    backfire_delay_changed  = Signal(object)   # ejection charge delay after burnout (s)
 
     # ── Engine / motor metadata ────────────────────────────────────────────────
     # Emitted when load_engine() is called with a parsed motor CSV.
@@ -505,28 +505,28 @@ class AppState(QObject):
 
     # ── Simulation configuration ───────────────────────────────────────────────
 
-    @Property(float, notify=wind_uncertainty_changed)
-    def wind_uncertainty(self) -> float:
+    @Property(object, notify=wind_uncertainty_changed)
+    def wind_uncertainty(self) -> Optional[float]:
         return self._wind_uncertainty
 
     @wind_uncertainty.setter
-    def wind_uncertainty(self, value: float) -> None:
-        value = float(value)
-        if self._wind_uncertainty != value:
-            self._wind_uncertainty = value
-            self.wind_uncertainty_changed.emit(value)
+    def wind_uncertainty(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._wind_uncertainty != val:
+            self._wind_uncertainty = val
+            self.wind_uncertainty_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=thrust_uncertainty_changed)
-    def thrust_uncertainty(self) -> float:
+    @Property(object, notify=thrust_uncertainty_changed)
+    def thrust_uncertainty(self) -> Optional[float]:
         return self._thrust_uncertainty
 
     @thrust_uncertainty.setter
-    def thrust_uncertainty(self, value: float) -> None:
-        value = float(value)
-        if self._thrust_uncertainty != value:
-            self._thrust_uncertainty = value
-            self.thrust_uncertainty_changed.emit(value)
+    def thrust_uncertainty(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._thrust_uncertainty != val:
+            self._thrust_uncertainty = val
+            self.thrust_uncertainty_changed.emit(val)
             self._check_readiness()
 
     @Property(int, notify=landing_prob_changed)
@@ -574,28 +574,28 @@ class AppState(QObject):
             self._offline_map_extent = value
             self.offline_map_extent_changed.emit(value)
 
-    @Property(float, notify=launch_lat_changed)
-    def launch_lat(self) -> float:
+    @Property(object, notify=launch_lat_changed)
+    def launch_lat(self) -> Optional[float]:
         return self._launch_lat
 
     @launch_lat.setter
-    def launch_lat(self, value: float) -> None:
-        value = float(value)
-        if self._launch_lat != value:
-            self._launch_lat = value
-            self.launch_lat_changed.emit(value)
+    def launch_lat(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._launch_lat != val:
+            self._launch_lat = val
+            self.launch_lat_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=launch_lon_changed)
-    def launch_lon(self) -> float:
+    @Property(object, notify=launch_lon_changed)
+    def launch_lon(self) -> Optional[float]:
         return self._launch_lon
 
     @launch_lon.setter
-    def launch_lon(self, value: float) -> None:
-        value = float(value)
-        if self._launch_lon != value:
-            self._launch_lon = value
-            self.launch_lon_changed.emit(value)
+    def launch_lon(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._launch_lon != val:
+            self._launch_lon = val
+            self.launch_lon_changed.emit(val)
             self._check_readiness()
 
     # ── Rocket / flight parameters ─────────────────────────────────────────────
@@ -787,16 +787,16 @@ class AppState(QObject):
             self._ref_area = value
             self.ref_area_changed.emit(value)
 
-    @Property(float, notify=target_radius_changed)
-    def target_radius(self) -> float:
+    @Property(object, notify=target_radius_changed)
+    def target_radius(self) -> Optional[float]:
         return self._target_radius
 
     @target_radius.setter
-    def target_radius(self, value: float) -> None:
-        value = float(value)
-        if self._target_radius != value:
-            self._target_radius = value
-            self.target_radius_changed.emit(value)
+    def target_radius(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._target_radius != val:
+            self._target_radius = val
+            self.target_radius_changed.emit(val)
             self._check_readiness()
 
     @Property(str, notify=operation_mode_changed)
@@ -1307,186 +1307,186 @@ class AppState(QObject):
 
     # ── Rocket geometry parameters ─────────────────────────────────────────────
 
-    @Property(float, notify=rocket_dry_mass_changed)
-    def rocket_dry_mass(self) -> float:
+    @Property(object, notify=rocket_dry_mass_changed)
+    def rocket_dry_mass(self) -> Optional[float]:
         """Airframe dry mass in kg (maps to 'airframe_mass' in workers.py)."""
         return self._rocket_dry_mass
 
     @rocket_dry_mass.setter
-    def rocket_dry_mass(self, value: float) -> None:
-        value = float(value)
-        if self._rocket_dry_mass != value:
-            self._rocket_dry_mass = value
-            self.rocket_dry_mass_changed.emit(value)
+    def rocket_dry_mass(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._rocket_dry_mass != val:
+            self._rocket_dry_mass = val
+            self.rocket_dry_mass_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=rocket_cg_changed)
-    def rocket_cg(self) -> float:
+    @Property(object, notify=rocket_cg_changed)
+    def rocket_cg(self) -> Optional[float]:
         """Airframe centre of gravity from nose in m (maps to 'airframe_cg')."""
         return self._rocket_cg
 
     @rocket_cg.setter
-    def rocket_cg(self, value: float) -> None:
-        value = float(value)
-        if self._rocket_cg != value:
-            self._rocket_cg = value
-            self.rocket_cg_changed.emit(value)
+    def rocket_cg(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._rocket_cg != val:
+            self._rocket_cg = val
+            self.rocket_cg_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=rocket_length_changed)
-    def rocket_length(self) -> float:
+    @Property(object, notify=rocket_length_changed)
+    def rocket_length(self) -> Optional[float]:
         """Total airframe length in m (maps to 'airframe_len')."""
         return self._rocket_length
 
     @rocket_length.setter
-    def rocket_length(self, value: float) -> None:
-        value = float(value)
-        if self._rocket_length != value:
-            self._rocket_length = value
-            self.rocket_length_changed.emit(value)
+    def rocket_length(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._rocket_length != val:
+            self._rocket_length = val
+            self.rocket_length_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=rocket_diameter_changed)
-    def rocket_diameter(self) -> float:
+    @Property(object, notify=rocket_diameter_changed)
+    def rocket_diameter(self) -> Optional[float]:
         """Body diameter in m (= 2 × body radius; maps to 'radius' × 0.5 in workers)."""
         return self._rocket_diameter
 
     @rocket_diameter.setter
-    def rocket_diameter(self, value: float) -> None:
-        value = float(value)
-        if self._rocket_diameter != value:
-            self._rocket_diameter = value
-            self.rocket_diameter_changed.emit(value)
+    def rocket_diameter(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._rocket_diameter != val:
+            self._rocket_diameter = val
+            self.rocket_diameter_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=nose_length_changed)
-    def nose_length(self) -> float:
+    @Property(object, notify=nose_length_changed)
+    def nose_length(self) -> Optional[float]:
         """Nose cone length in m (maps to 'nose_len')."""
         return self._nose_length
 
     @nose_length.setter
-    def nose_length(self, value: float) -> None:
-        value = float(value)
-        if self._nose_length != value:
-            self._nose_length = value
-            self.nose_length_changed.emit(value)
+    def nose_length(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._nose_length != val:
+            self._nose_length = val
+            self.nose_length_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=fin_root_chord_changed)
-    def fin_root_chord(self) -> float:
+    @Property(object, notify=fin_root_chord_changed)
+    def fin_root_chord(self) -> Optional[float]:
         """Fin root chord length in m (maps to 'fin_root')."""
         return self._fin_root_chord
 
     @fin_root_chord.setter
-    def fin_root_chord(self, value: float) -> None:
-        value = float(value)
-        if self._fin_root_chord != value:
-            self._fin_root_chord = value
-            self.fin_root_chord_changed.emit(value)
+    def fin_root_chord(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._fin_root_chord != val:
+            self._fin_root_chord = val
+            self.fin_root_chord_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=fin_tip_chord_changed)
-    def fin_tip_chord(self) -> float:
+    @Property(object, notify=fin_tip_chord_changed)
+    def fin_tip_chord(self) -> Optional[float]:
         """Fin tip chord length in m (maps to 'fin_tip')."""
         return self._fin_tip_chord
 
     @fin_tip_chord.setter
-    def fin_tip_chord(self, value: float) -> None:
-        value = float(value)
-        if self._fin_tip_chord != value:
-            self._fin_tip_chord = value
-            self.fin_tip_chord_changed.emit(value)
+    def fin_tip_chord(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._fin_tip_chord != val:
+            self._fin_tip_chord = val
+            self.fin_tip_chord_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=fin_span_changed)
-    def fin_span(self) -> float:
+    @Property(object, notify=fin_span_changed)
+    def fin_span(self) -> Optional[float]:
         """Fin semi-span in m (maps to 'fin_span')."""
         return self._fin_span
 
     @fin_span.setter
-    def fin_span(self, value: float) -> None:
-        value = float(value)
-        if self._fin_span != value:
-            self._fin_span = value
-            self.fin_span_changed.emit(value)
+    def fin_span(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._fin_span != val:
+            self._fin_span = val
+            self.fin_span_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=fin_position_changed)
-    def fin_position(self) -> float:
+    @Property(object, notify=fin_position_changed)
+    def fin_position(self) -> Optional[float]:
         """Fin leading-edge position from nose in m (maps to 'fin_pos')."""
         return self._fin_position
 
     @fin_position.setter
-    def fin_position(self, value: float) -> None:
-        value = float(value)
-        if self._fin_position != value:
-            self._fin_position = value
-            self.fin_position_changed.emit(value)
+    def fin_position(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._fin_position != val:
+            self._fin_position = val
+            self.fin_position_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=motor_cg_pos_changed)
-    def motor_cg_pos(self) -> float:
+    @Property(object, notify=motor_cg_pos_changed)
+    def motor_cg_pos(self) -> Optional[float]:
         """Motor centre of gravity from nose in m (maps to 'motor_pos')."""
         return self._motor_cg_pos
 
     @motor_cg_pos.setter
-    def motor_cg_pos(self, value: float) -> None:
-        value = float(value)
-        if self._motor_cg_pos != value:
-            self._motor_cg_pos = value
-            self.motor_cg_pos_changed.emit(value)
+    def motor_cg_pos(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._motor_cg_pos != val:
+            self._motor_cg_pos = val
+            self.motor_cg_pos_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=motor_dry_mass_changed)
-    def motor_dry_mass(self) -> float:
+    @Property(object, notify=motor_dry_mass_changed)
+    def motor_dry_mass(self) -> Optional[float]:
         """Motor dry (post-burn) mass in kg (maps to 'motor_dry_mass')."""
         return self._motor_dry_mass
 
     @motor_dry_mass.setter
-    def motor_dry_mass(self, value: float) -> None:
-        value = float(value)
-        if self._motor_dry_mass != value:
-            self._motor_dry_mass = value
-            self.motor_dry_mass_changed.emit(value)
+    def motor_dry_mass(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._motor_dry_mass != val:
+            self._motor_dry_mass = val
+            self.motor_dry_mass_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=parachute_cd_changed)
-    def parachute_cd(self) -> float:
+    @Property(object, notify=parachute_cd_changed)
+    def parachute_cd(self) -> Optional[float]:
         """Parachute drag coefficient (dimensionless; maps to 'para_cd')."""
         return self._parachute_cd
 
     @parachute_cd.setter
-    def parachute_cd(self, value: float) -> None:
-        value = float(value)
-        if self._parachute_cd != value:
-            self._parachute_cd = value
-            self.parachute_cd_changed.emit(value)
+    def parachute_cd(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._parachute_cd != val:
+            self._parachute_cd = val
+            self.parachute_cd_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=parachute_area_changed)
-    def parachute_area(self) -> float:
+    @Property(object, notify=parachute_area_changed)
+    def parachute_area(self) -> Optional[float]:
         """Parachute reference area in m² (maps to 'para_area')."""
         return self._parachute_area
 
     @parachute_area.setter
-    def parachute_area(self, value: float) -> None:
-        value = float(value)
-        if self._parachute_area != value:
-            self._parachute_area = value
-            self.parachute_area_changed.emit(value)
+    def parachute_area(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._parachute_area != val:
+            self._parachute_area = val
+            self.parachute_area_changed.emit(val)
             self._check_readiness()
 
-    @Property(float, notify=parachute_lag_changed)
-    def parachute_lag(self) -> float:
+    @Property(object, notify=parachute_lag_changed)
+    def parachute_lag(self) -> Optional[float]:
         """Parachute deployment lag in seconds (maps to 'para_lag')."""
         return self._parachute_lag
 
     @parachute_lag.setter
-    def parachute_lag(self, value: float) -> None:
-        value = float(value)
-        if self._parachute_lag != value:
-            self._parachute_lag = value
-            self.parachute_lag_changed.emit(value)
+    def parachute_lag(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if self._parachute_lag != val:
+            self._parachute_lag = val
+            self.parachute_lag_changed.emit(val)
             self._check_readiness()
 
     @Property(object, notify=backfire_delay_changed)

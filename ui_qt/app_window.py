@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (    QLineEdit,
     QGroupBox, QLabel, QDoubleSpinBox, QSpinBox,
     QComboBox, QPushButton, QToolBar, QStatusBar,
     QSizePolicy, QProgressBar, QFrame, QFileDialog,
-    QMessageBox, QToolBox, QSplitter, QSlider,
+    QToolBox, QSplitter, QSlider,
     QDialog, QDialogButtonBox,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractButton
@@ -387,7 +387,6 @@ class CdCurvePreviewDialog(QDialog):
         layout.addWidget(self._canvas, 1)
 
         btn_close = QPushButton("Close")
-        btn_close.setToolTip("Close the preview (Esc)")
         btn_close.setShortcut("Esc")
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close, 0, Qt.AlignmentFlag.AlignRight)
@@ -516,11 +515,8 @@ class ManualSetupDialog(QDialog):
 
         # ── Load / Save JSON buttons ──────────────────────────────────────────
         btn_load = QPushButton("📂  Load JSON (rocket.json)")
-        btn_load.setToolTip("Load rocket geometry configuration from a JSON file")
         btn_save = QPushButton("💾  Save JSON")
-        btn_save.setToolTip("Save the current rocket geometry configuration to a JSON file")
         self.btn_reset = QPushButton("Reset Configuration")
-        self.btn_reset.setToolTip("Restore all tracking parameters back to the original values from the loaded .rkt file")
 
         self.btn_reset.clicked.connect(self.sig_reset.emit)
         btn_load.clicked.connect(self.sig_load_json.emit)
@@ -533,9 +529,25 @@ class ManualSetupDialog(QDialog):
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         btn_close = btns.button(QDialogButtonBox.StandardButton.Close)
         if btn_close:
-            btn_close.setToolTip("Close dialog (Esc)")
             btn_close.setShortcut("Esc")
         btns.rejected.connect(self.reject)
+
+        # ── Keyboard Navigation (Tab Order) for ManualSetupDialog ─────────────
+        QWidget.setTabOrder(self.af_mass_input, self.af_cg_input)
+        QWidget.setTabOrder(self.af_cg_input, self.af_len_input)
+        QWidget.setTabOrder(self.af_len_input, self.af_radius_input)
+        QWidget.setTabOrder(self.af_radius_input, self.af_nose_input)
+        QWidget.setTabOrder(self.af_nose_input, self.af_noseshape_input)
+        QWidget.setTabOrder(self.af_noseshape_input, self.af_finroot_input)
+        QWidget.setTabOrder(self.af_finroot_input, self.af_fintip_input)
+        QWidget.setTabOrder(self.af_fintip_input, self.af_finspan_input)
+        QWidget.setTabOrder(self.af_finspan_input, self.af_finpos_input)
+        QWidget.setTabOrder(self.af_finpos_input, self.af_fincount_input)
+        QWidget.setTabOrder(self.af_fincount_input, btn_load)
+        QWidget.setTabOrder(btn_load, btn_save)
+        QWidget.setTabOrder(btn_save, self.btn_reset)
+        if btn_close:
+            QWidget.setTabOrder(self.btn_reset, btn_close)
 
         root.addWidget(sa, stretch=1)
         root.addLayout(btn_row)
@@ -704,11 +716,8 @@ class AdvancedSettingsDialog(QDialog):
             row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(6)
             btn_load    = QPushButton("Load Cd Curve…")
-            btn_load.setToolTip("Load a Mach-dependent Cd curve from a CSV file")
             btn_preview = QPushButton("Preview")
-            btn_preview.setToolTip("Preview the currently loaded Cd curve")
             btn_clear   = QPushButton("Clear")
-            btn_clear.setToolTip("Clear the loaded Cd curve and fallback to the static scalar value")
             lbl         = QLabel("Using Static Value")
             lbl.setStyleSheet("color: #888888;")
             row.addWidget(btn_load)
@@ -1269,10 +1278,8 @@ class AppWindow(QMainWindow):
         btn_stop = QPushButton("⏹  Stop", tb); btn_stop.setObjectName("btn_stop")
 
         btn_run.setFixedWidth(90);  btn_run.clicked.connect(self._on_run)
-        btn_run.setToolTip("Run Simulation (F5)")
         btn_run.setShortcut("F5")
         btn_stop.setFixedWidth(74); btn_stop.clicked.connect(self._on_stop)
-        btn_stop.setToolTip("Stop Simulation (Esc)")
         btn_stop.setShortcut("Esc")
 
         tb.addWidget(btn_run)
@@ -1416,7 +1423,6 @@ class AppWindow(QMainWindow):
 
         azim_lay.addWidget(azim_lbl)
         reset_btn = QPushButton("Reset True North", azim_row)
-        reset_btn.setToolTip("Reset the 3D map view to point North (Azimuth -90°)")
         reset_btn.setStyleSheet("padding: 2px 6px; font-size: 7pt;")
         reset_btn.clicked.connect(lambda: self._azim_slider.setValue(-90))
 
@@ -1480,8 +1486,6 @@ class AppWindow(QMainWindow):
         self.rmax_input  = QDoubleSpinBox(mode_grp)
         self.rmax_input.setRange(0, 9999); self.rmax_input.setDecimals(1)
         self.rmax_input.setValue(50.0);    self.rmax_input.setSuffix(" m")
-        self.rmax_input.setToolTip(
-            "Target landing radius for GO/NO-GO assessment and map display")
         self.rmax_input.wheelEvent = lambda event: event.ignore()
 
         mode_lay.addRow("飛行モード:",    self.mode_combo)
@@ -1561,7 +1565,6 @@ class AppWindow(QMainWindow):
         btn_run.setObjectName("btn_phase1_run")
         btn_run.setMinimumHeight(48)
         btn_run.clicked.connect(self._on_phase1)
-        btn_run.setToolTip("Run Phase 1 Optimization (F6)")
         btn_run.setShortcut("F6")
         lay.addWidget(btn_run)
 
@@ -1585,7 +1588,6 @@ class AppWindow(QMainWindow):
 
         # ── Model loading buttons ─────────────────────────────────────────────
         btn_rkt = QPushButton("📂  Load .rkt File", w)
-        btn_rkt.setToolTip("Load an OpenRocket .rkt file")
         btn_rkt.clicked.connect(self.sig_load_rkt_clicked.emit)
 
         self.rkt_label = QLabel("No .rkt file loaded. Click 'Load .rkt File' to begin.", w)
@@ -1595,11 +1597,9 @@ class AppWindow(QMainWindow):
         self.rkt_label.setWordWrap(True)
 
         btn_manual = QPushButton("⚙  Manual Config…", w)
-        btn_manual.setToolTip("Manually enter all rocket geometry parameters")
         btn_manual.clicked.connect(self._on_manual_config)
 
         btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
-        btn_motor.setToolTip("Load a custom motor thrust curve from a CSV file")
         btn_motor.clicked.connect(self._on_load_motor)
 
         self.motor_label = QLabel("No motor loaded. Click 'Load Thrust Curve' to begin.", w)
@@ -1638,11 +1638,6 @@ class AppWindow(QMainWindow):
         self.motor_cg_input.setPlaceholderText("入力必須")
         self.motor_cg_input.setClearButtonEnabled(True)
         self.motor_cg_input.setText("")
-        self.motor_cg_input.textChanged.connect(
-            lambda text: self.motor_cg_input.setStyleSheet(
-                "" if self.motor_cg_input.hasAcceptableInput() else "border: 1px solid red;"
-            )
-        )
 
         self.motor_dry_mass_input = QLineEdit(grp_motor)
         validator_mass = QDoubleValidator(0.001, 1000.0, 4, self.motor_dry_mass_input)
@@ -1651,11 +1646,6 @@ class AppWindow(QMainWindow):
         self.motor_dry_mass_input.setPlaceholderText("入力必須")
         self.motor_dry_mass_input.setClearButtonEnabled(True)
         self.motor_dry_mass_input.setText("")
-        self.motor_dry_mass_input.textChanged.connect(
-            lambda text: self.motor_dry_mass_input.setStyleSheet(
-                "" if self.motor_dry_mass_input.hasAcceptableInput() else "border: 1px solid red;"
-            )
-        )
 
         grp_motor_lay.addRow("Motor CG Pos. [m]:", self.motor_cg_input)
         grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
@@ -1686,7 +1676,6 @@ class AppWindow(QMainWindow):
         frm_para.addRow("Deployment Lag [s]:", self.para_lag_input)
 
         btn_para_json = QPushButton("📂  Load Parachute JSON", w)
-        btn_para_json.setToolTip("Load a parachute-only JSON config file")
         btn_para_json.clicked.connect(self.sig_load_para_json_clicked.emit)
         frm_para.addRow(btn_para_json)
 
@@ -1700,6 +1689,17 @@ class AppWindow(QMainWindow):
         lay.addWidget(self.motor_label)
         lay.addWidget(grp_motor)
         lay.addWidget(grp_para)
+
+        # ── Keyboard Navigation (Tab Order) for Airframe panel ───────────────
+        QWidget.setTabOrder(btn_rkt, btn_manual)
+        QWidget.setTabOrder(btn_manual, btn_motor)
+        QWidget.setTabOrder(btn_motor, self.motor_cg_input)
+        QWidget.setTabOrder(self.motor_cg_input, self.motor_dry_mass_input)
+        QWidget.setTabOrder(self.motor_dry_mass_input, self.af_backfire_input)
+        QWidget.setTabOrder(self.af_backfire_input, self.para_cd_input)
+        QWidget.setTabOrder(self.para_cd_input, self.para_area_input)
+        QWidget.setTabOrder(self.para_area_input, self.para_lag_input)
+        QWidget.setTabOrder(self.para_lag_input, btn_para_json)
 
         sa = QScrollArea()
         sa.setWidgetResizable(True)
@@ -1781,10 +1781,8 @@ class AppWindow(QMainWindow):
 
         self.btn_download_map = QPushButton("🗺️  Download Offline Map", w)
         self.btn_download_map.setObjectName("btn_download_map")
-        self.btn_download_map.setToolTip("Download OSM tiles for the current coordinates to use offline")
 
         btn_gps = QPushButton("📍  Get Current Location", w)
-        btn_gps.setToolTip("Attempt to fetch launch coordinates using IP-based geolocation")
         btn_gps.clicked.connect(self._on_get_location)
 
         form_lay1 = QFormLayout()
@@ -1806,6 +1804,16 @@ class AppWindow(QMainWindow):
         form_lay2.addRow("Hellmann Preset:", self.hellmann_preset)
         form_lay2.addRow("Hellmann α:", self.hellmann_alpha_input)
         lay.addLayout(form_lay2)
+
+        # ── Keyboard Navigation (Tab Order) for Launch Settings panel ────────
+        QWidget.setTabOrder(self.lat_input, self.lon_input)
+        QWidget.setTabOrder(self.lon_input, btn_gps)
+        QWidget.setTabOrder(btn_gps, self.btn_download_map)
+        QWidget.setTabOrder(self.btn_download_map, self.elev_input)
+        QWidget.setTabOrder(self.elev_input, self.rail_len_input)
+        QWidget.setTabOrder(self.rail_len_input, self.azim_input)
+        QWidget.setTabOrder(self.azim_input, self.hellmann_preset)
+        QWidget.setTabOrder(self.hellmann_preset, self.hellmann_alpha_input)
 
         return w
 
@@ -2728,9 +2736,7 @@ class AppWindow(QMainWindow):
 
     def _on_load_cd_curve(self, which: str) -> None:
         if getattr(self, "state", None) is None:
-            QMessageBox.warning(
-                self, "Cd Curve Loader",
-                "AppState is not yet wired. The Cd curve cannot be stored.")
+            self.set_status("Cd Curve Loader: AppState is not yet wired. The Cd curve cannot be stored.", "#f38ba8")
             return
 
         title = ("Load Power-On Cd Curve" if which == "power_on"
@@ -2744,12 +2750,7 @@ class AppWindow(QMainWindow):
             from utils.data_loader import parse_cd_curve_csv
             curve = parse_cd_curve_csv(filepath)
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(
-                self, "Cd Curve Parse Error",
-                f"""Failed to load Cd curve from:
-{filepath}
-
-{exc}""")
+            self.set_status(f"Cd Curve Parse Error: Failed to load from {filepath}. Error: {exc}", "#f38ba8")
             return
 
         attr = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
@@ -2763,18 +2764,14 @@ class AppWindow(QMainWindow):
 
     def _on_preview_cd_curve(self, which: str) -> None:
         if getattr(self, "state", None) is None:
-            QMessageBox.warning(
-                self, "Cd Curve Preview",
-                "AppState is not yet wired.")
+            self.set_status("Cd Curve Preview: AppState is not yet wired.", "#f38ba8")
             return
 
         attr  = "cd_curve_power_on" if which == "power_on" else "cd_curve_power_off"
         curve = getattr(self.state, attr, None)
 
         if curve is None or len(curve) < 2:
-            QMessageBox.information(
-                self, "Cd Curve Preview",
-                "No curve loaded. Using static scalar value.")
+            self.set_status("Cd Curve Preview: No curve loaded. Using static scalar value.", "#f9e2af")
             return
 
         title = ("Power-On Cd Curve" if which == "power_on"
@@ -2806,6 +2803,16 @@ class AppWindow(QMainWindow):
         print(f"=== AppWindow.bind_app_state === Forwarding global State: id={id(state)}")
         self.state = state  # Overwrite with the true global instance
         self._app_state = state            # cached for the session menu slots
+
+        # Re-wire canvas redraw slots to the global AppState's needs_redraw.
+        # _bind_state() connected needs_redraw on the OLD local AppState(); once
+        # self.state is replaced above that connection is dead.  We must connect
+        # the global state here so that simulation_result.setter (which emits
+        # needs_redraw) drives the three plot canvases correctly.
+        state.needs_redraw.connect(self.update_profile_plot)
+        state.needs_redraw.connect(self.update_map_plot)
+        state.needs_redraw.connect(self.update_wind_plot)
+
 
         # Bind advanced settings directly
         from PySide6.QtCore import QSignalBlocker
@@ -2905,10 +2912,7 @@ class AppWindow(QMainWindow):
         direct widget access happens here.
         """
         if getattr(self, "_app_state", None) is None:
-            QMessageBox.warning(
-                self, "Save Session",
-                "AppState is not yet wired to AppWindow; session save is "
-                "unavailable.")
+            self.set_status("Save Session: AppState is not yet wired to AppWindow; session save is unavailable.", "#f38ba8")
             return
 
         filepath, _ = QFileDialog.getSaveFileName(
@@ -2921,14 +2925,10 @@ class AppWindow(QMainWindow):
             from utils.session_manager import save_session
             save_session(self._app_state, filepath)
         except OSError as exc:
-            QMessageBox.warning(
-                self, "Save Session",
-                f"Failed to write session file:\n{filepath}\n\n{exc}")
+            self.set_status(f"Save Session Error: Failed to write session file to {filepath}. Error: {exc}", "#f38ba8")
             return
 
-        QMessageBox.information(
-            self, "Save Session",
-            f"Session saved successfully to:\n{filepath}")
+        self.set_status(f"Session saved successfully to: {filepath}", "#a6e3a1")
 
     def _on_load_session(self) -> None:
         """Prompt for a JSON path and restore advanced settings from it.
@@ -2939,10 +2939,7 @@ class AppWindow(QMainWindow):
         via Qt signals — no manual UI refresh is needed.
         """
         if getattr(self, "_app_state", None) is None:
-            QMessageBox.warning(
-                self, "Load Session",
-                "AppState is not yet wired to AppWindow; session load is "
-                "unavailable.")
+            self.set_status("Load Session: AppState is not yet wired to AppWindow; session load is unavailable.", "#f38ba8")
             return
 
         filepath, _ = QFileDialog.getOpenFileName(
@@ -2955,14 +2952,10 @@ class AppWindow(QMainWindow):
             from utils.session_manager import load_session, SessionError
             load_session(self._app_state, filepath)
         except (OSError, SessionError) as exc:
-            QMessageBox.warning(
-                self, "Load Session",
-                f"Failed to load session file:\n{filepath}\n\n{exc}")
+            self.set_status(f"Load Session Error: Failed to load session file from {filepath}. Error: {exc}", "#f38ba8")
             return
 
-        QMessageBox.information(
-            self, "Load Session",
-            f"Session loaded successfully from:\n{filepath}")
+        self.set_status(f"Session loaded successfully from: {filepath}", "#a6e3a1")
 
     def _on_advanced_settings(self) -> None:
         """Open the Advanced Settings dialog modally."""
@@ -3162,18 +3155,14 @@ class AppWindow(QMainWindow):
         self._update_results_layout(mode)
 
     def _on_about(self) -> None:
-        QMessageBox.information(
-            self, "About Kazamidori",
-            "Kazamidori  —  Trajectory & Landing Point Simulator\n\n"
-            "Qt6 / PySide6  (ui_qt/)   |   Tkinter legacy (ui/)\n\n"
-            "Both UIs share the same core/ simulation engine.")
+        self.set_status("Kazamidori — Trajectory & Landing Point Simulator (Qt6/PySide6 | legacy Tkinter). Shares core/ engine.", "#cba6f7")
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
     @Slot(str)
     def show_error_message(self, message: str) -> None:
-        """Display a critical error dialog. Called by the Controller on file-parse failures."""
-        QMessageBox.critical(self, "Error", message)
+        """Display a critical error message. Called by the Controller on file-parse failures."""
+        self.set_status(message, "#f38ba8")
 
     def set_status(self, msg: str, color: Optional[str] = None) -> None:
         self._status_label.setText(msg)

@@ -104,7 +104,6 @@ class MapView(QWidget):
         btn_layout = QHBoxLayout()
         self.btn_reset = QPushButton("🔄 Reset View", top_widget)
         self.btn_reset.setAttribute(Qt.WA_TransparentForMouseEvents, False)
-        self.btn_reset.setToolTip("Reset map view to default bounds (Home)")
         self.btn_reset.setShortcut("Home")
         self.btn_reset.clicked.connect(self._on_reset_view)
         self.btn_reset.setStyleSheet("""

@@ -41,13 +41,34 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS",    "1")
 _global_pool = None
 
 
+def _init_child_process() -> None:
+    """Initializer run once in every spawned worker process.
+
+    Sets the process scheduling priority to BELOW_NORMAL so that the Qt /
+    OS GUI thread is never fully starved when all cores are busy with MC
+    simulations.  Silently ignores any failure (e.g. on Linux where the
+    Windows constant is irrelevant).
+    """
+    import sys
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+            ctypes.windll.kernel32.SetPriorityClass(
+                ctypes.windll.kernel32.GetCurrentProcess(),
+                BELOW_NORMAL_PRIORITY_CLASS,
+            )
+        except Exception:
+            pass
+
+
 def get_global_pool():
     global _global_pool
     if _global_pool is None:
-        # Utilize all cores for maximum performance, since the GUI runs on a different
-        # thread and the background workers yield CPU timeslices to prevent starvation.
-        # Minimum 1 worker even on single-core machines.
-        n_workers = max(1, os.cpu_count() or 2)
+        # Reserve 1 core for the OS and Qt GUI event loop so the window
+        # remains responsive while workers run.  Minimum 1 worker even on
+        # single-core machines.
+        n_workers = max(1, (os.cpu_count() or 2) - 1)
 
         # 'spawn' context: child processes are created fresh without inheriting
         # the parent's memory (including any PySide6 / Qt state), which is the
@@ -57,8 +78,10 @@ def get_global_pool():
         _global_pool = concurrent.futures.ProcessPoolExecutor(
             max_workers=n_workers,
             mp_context=ctx,
+            initializer=_init_child_process,
         )
     return _global_pool
+
 
 
 def warmup_pool() -> None:
