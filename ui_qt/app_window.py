@@ -525,11 +525,14 @@ class ManualSetupDialog(QDialog):
         btn_row.addWidget(btn_load)
         btn_row.addWidget(btn_save)
 
-        # ── Close ─────────────────────────────────────────────────────────────
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        btn_close = btns.button(QDialogButtonBox.StandardButton.Close)
-        if btn_close:
-            btn_close.setShortcut("Esc")
+        # ── Apply / Cancel ────────────────────────────────────────────────────
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_apply = btns.button(QDialogButtonBox.StandardButton.Ok)
+        btn_apply.setText("Apply")
+        btn_cancel = btns.button(QDialogButtonBox.StandardButton.Cancel)
+        if btn_cancel:
+            btn_cancel.setShortcut("Esc")
+        btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
 
         # ── Keyboard Navigation (Tab Order) for ManualSetupDialog ─────────────
@@ -546,8 +549,10 @@ class ManualSetupDialog(QDialog):
         QWidget.setTabOrder(self.af_fincount_input, btn_load)
         QWidget.setTabOrder(btn_load, btn_save)
         QWidget.setTabOrder(btn_save, self.btn_reset)
-        if btn_close:
-            QWidget.setTabOrder(self.btn_reset, btn_close)
+        if btn_apply:
+            QWidget.setTabOrder(self.btn_reset, btn_apply)
+            if btn_cancel:
+                QWidget.setTabOrder(btn_apply, btn_cancel)
 
         root.addWidget(sa, stretch=1)
         root.addLayout(btn_row)
@@ -2968,7 +2973,9 @@ class AppWindow(QMainWindow):
     def _on_manual_config(self) -> None:
         """Open the ManualSetupDialog modally."""
         self._evaluate_config_deltas()
-        self._manual_dialog.exec()
+        result = self._manual_dialog.exec()
+        if result != QDialog.DialogCode.Accepted:
+            self._on_manual_config_reset()
 
     def _evaluate_config_deltas(self, *args) -> None:
         """Evaluate current widget values against AppState.original_rocket_config."""
