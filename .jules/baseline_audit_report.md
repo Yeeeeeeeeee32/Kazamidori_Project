@@ -3,14 +3,14 @@
 ## 1. Physics & Math Validation
 
 ### Magic Numbers in Formulas
-*   `utils/map_downloader.py`: `math.pi / 180.0` and `180.0 / math.pi` are heavily used instead of `math.radians()` and `math.degrees()`. Examples: lines 64, 65, 73, 74, 277, 278.
-*   `utils/geo_math.py`: `math.pi / 180.0` and `180.0 / math.pi` are used instead of `math.radians()` and `math.degrees()`. Examples: lines 86, 87.
-*   `utils/map_downloader.py` and `utils/geo_math.py`: Hardcoded `R_EARTH` and the magic numbers for WGS-84 `meters_per_degree` approximation.
+*   `utils/map_downloader.py`: `math.pi / 180.0` and `180.0 / math.pi` are heavily used instead of `math.radians()` and `math.degrees()`.
+*   `utils/geo_math.py`: `math.pi / 180.0` and `180.0 / math.pi` are used instead of `math.radians()` and `math.degrees()`.
+*   `utils/map_downloader.py` and `utils/geo_math.py`: Hardcoded `R_EARTH` (6378137.0).
 
 ## 2. Strict Unit Consistency
 
 ### Missing/Incorrect Conversions
-*   `ui_qt/app_state.py`: Variable names are sometimes missing units. In `app_state.py` line 1041-1042: `live_u = speed * math.sin(math.radians(direction))` and `live_v = speed * math.cos(math.radians(direction))`. Although the math is correct, the parameter names `speed` and `direction` do not indicate units (e.g. `speed_mps`, `direction_deg`).
+*   `ui_qt/app_state.py`: Variable names are missing explicit units. Specifically, `speed` and `direction` in `check_tolerance` do not indicate units (e.g., `speed_mps`, `direction_deg`).
 
 ## 3. Coordinate System Integrity
 
@@ -21,12 +21,10 @@
 
 ### Duplicated Constants
 *   `R_EARTH` is duplicated in multiple places:
-    *   `utils/map_downloader.py`: `R_EARTH = 6378137.0` (line 55)
-    *   `utils/geo_math.py`: `R_EARTH = 6_378_137.0` (line 80)
-    It should be consolidated in a constants file like `core/constants.py` or similar.
+    *   `utils/map_downloader.py`: `R_EARTH = 6378137.0`
+    *   `utils/geo_math.py`: `R_EARTH = 6_378_137.0`
 
-### Duplicated Logic
-*   `meters_per_degree` calculation logic is duplicated.
-    *   `utils/geo_math.py` has a dedicated `meters_per_degree` function using constants like `111132.92`, `559.82`, etc.
-    *   `utils/map_downloader.py` (lines 207-208) implements the *exact same formula* manually.
-    *   `utils/map_downloader.py` should import and use `meters_per_degree` from `utils/geo_math.py`.
+### Proposed Cleanup Plan (Not to be executed yet)
+1. **Extract `R_EARTH`:** Add `R_EARTH_M = 6378137.0` to `core/constants.py` and import it into `utils/map_downloader.py` and `utils/geo_math.py`.
+2. **Fix Magic Numbers:** Replace `180.0 / math.pi` and `math.pi / 180.0` in `utils/map_downloader.py` and `utils/geo_math.py` with `math.degrees()` and `math.radians()`.
+3. **Fix Explicit Unit Naming:** In `ui_qt/app_state.py`, rename the `speed` and `direction` parameters in the `check_tolerance` function to `speed_mps` and `direction_deg` respectively.
