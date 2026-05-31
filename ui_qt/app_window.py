@@ -458,6 +458,12 @@ class ManualSetupDialog(QDialog):
             le.setPlaceholderText("入力必須")
             le.setClearButtonEnabled(True)
             le.setText("")
+            le.setStyleSheet("border: 1px solid red;")
+            le.editingFinished.connect(
+                lambda w=le: w.setStyleSheet(
+                    "" if w.text().strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+                )
+            )
             return le
 
         self.af_mass_input      = _dsb(50.0, 4, 0.001, " kg")
@@ -1135,6 +1141,12 @@ class AppWindow(QMainWindow):
         self.af_backfire_input.setPlaceholderText("入力必須")
         self.af_backfire_input.setClearButtonEnabled(True)
         self.af_backfire_input.setText("")
+        self.af_backfire_input.setStyleSheet("border: 1px solid red;")
+        self.af_backfire_input.editingFinished.connect(
+            lambda w=self.af_backfire_input: w.setStyleSheet(
+                "" if w.text().strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
         self._setup_splitter()
 
         # Backfire delay explicitly isolated from the dirty/modified flag
@@ -1638,6 +1650,12 @@ class AppWindow(QMainWindow):
         self.motor_cg_input.setPlaceholderText("入力必須")
         self.motor_cg_input.setClearButtonEnabled(True)
         self.motor_cg_input.setText("")
+        self.motor_cg_input.setStyleSheet("border: 1px solid red;")
+        self.motor_cg_input.editingFinished.connect(
+            lambda w=self.motor_cg_input: w.setStyleSheet(
+                "" if w.text().strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
 
         self.motor_dry_mass_input = QLineEdit(grp_motor)
         validator_mass = QDoubleValidator(0.001, 1000.0, 4, self.motor_dry_mass_input)
@@ -1646,6 +1664,12 @@ class AppWindow(QMainWindow):
         self.motor_dry_mass_input.setPlaceholderText("入力必須")
         self.motor_dry_mass_input.setClearButtonEnabled(True)
         self.motor_dry_mass_input.setText("")
+        self.motor_dry_mass_input.setStyleSheet("border: 1px solid red;")
+        self.motor_dry_mass_input.editingFinished.connect(
+            lambda w=self.motor_dry_mass_input: w.setStyleSheet(
+                "" if w.text().strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
 
         grp_motor_lay.addRow("Motor CG Pos. [m]:", self.motor_cg_input)
         grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
@@ -1665,6 +1689,12 @@ class AppWindow(QMainWindow):
             le.setPlaceholderText("入力必須")
             le.setClearButtonEnabled(True)
             le.setText("")
+            le.setStyleSheet("border: 1px solid red;")
+            le.editingFinished.connect(
+                lambda w=le: w.setStyleSheet(
+                    "" if w.text().strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+                )
+            )
             return le
 
         self.para_cd_input   = _psb(2.00,  2, 0.01,  "")
