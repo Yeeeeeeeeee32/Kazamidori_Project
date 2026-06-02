@@ -1,0 +1,3 @@
+## 2024-05-17 - Visual Safety Nets for Empty Required Inputs
+**Learning:** Replacing sentinel values (like `-9999.0`) with visually signaling empty `QLineEdit` inputs is highly effective for required numeric fields, especially in outdoor/high-glare apps where tooltips are impractical. However, syncing UI styles bi-directionally can cause recursive cursor resets if bound to `textChanged`.
+**Action:** Use `QLineEdit` with `QDoubleValidator`. Apply a red border (`border: 1px solid red;`) initially and whenever empty/invalid. Bind validation logic exclusively to `editingFinished` to avoid recursive cursor resets while typing.
