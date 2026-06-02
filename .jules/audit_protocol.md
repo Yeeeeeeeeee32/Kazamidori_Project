@@ -1,26 +1,20 @@
 # Codebase Health & Physics Integrity Audit Protocol
 
-**Purpose:** Ensure ongoing code health by preventing technical debt, unit mismatch errors, and coordinate system confusion in the Kazamidori Project.
+This checklist serves as the Standard Operating Procedure (SOP) for running a manual or automated health audit on the codebase, specifically targeting physics integrity, math validation, unit consistency, coordinate system rules, and the DRY principle.
 
-**Execution:** Run this audit protocol before major pull requests or when manually triggered by the user with the prompt "Run Health Audit".
+## 1. Physics & Math Validation
+- [ ] **Algorithm Verification**: Check algorithms in `core/` for logical correctness.
+- [ ] **No Magic Numbers**: Flag any magic numbers hidden in formulas; extract them to named constants in `core/constants.py` or use explicitly named local variables.
 
-## Checklist
+## 2. Strict Unit Consistency
+- [ ] **Explicit Naming Conventions**: Ensure variables are named with explicit units where applicable (e.g., `angle_deg` vs `angle_rad`, `velocity_mps`).
+- [ ] **Conversion Safety**: Flag any missing conversions (e.g., passing degrees into trigonometric functions like `math.cos()` without using `math.radians()`).
 
-### 1. Physics & Math Validation
-- [ ] Check algorithms in `core/` for logical correctness.
-- [ ] Flag any magic numbers hidden in formulas. Replace them with named constants.
+## 3. Coordinate System Integrity
+- [ ] **WGS84 vs. ENU Separation**: Verify strict separation between WGS84 (Latitude/Longitude) and local ENU (East/North/Up in meters).
+- [ ] **UI Rendering Compliance**: Ensure the UI and Map views strictly render in ENU coordinates. Latitude/Longitude should only be used for data loading, coordinate transformations, or text display.
 
-### 2. Strict Unit Consistency
-- [ ] Ensure explicit naming conventions for physical quantities (e.g., `angle_deg` vs `angle_rad`, `velocity_mps`, `length_m`).
-- [ ] Flag any missing conversions (e.g., passing degrees into `math.cos()` without `math.radians()`).
-- [ ] Ensure standard units are used throughout the simulation and math routines (SI units preferred unless otherwise specified).
-
-### 3. Coordinate System Integrity
-- [ ] Verify strict separation between WGS84 (Latitude/Longitude) and local ENU (East/North/Up in meters).
-- [ ] Ensure the UI/Map strictly renders in ENU. Lat/Lon should ONLY be used for data loading or text display.
-- [ ] Confirm that Navigational Standard math conventions are followed (Azimuth 0° is True North +Y, 90° is East +X, angles increase clockwise). `x = r * math.sin(angle)` (East), `y = r * math.cos(angle)` (North), and azimuth recovery uses `math.atan2(x, y)`.
-
-### 4. DRY Principle (Don't Repeat Yourself)
-- [ ] Scan for duplicated constants across multiple files. Centralize them in `core/constants.py` or similar.
-- [ ] Identify overlapping helper functions or redundant class definitions (e.g., math utilities defined in both `core/` and `utils/`).
-- [ ] Flag unused imports or dead code. Remove them or comment on why they are kept.
+## 4. DRY Principle (Don't Repeat Yourself)
+- [ ] **Centralized Constants**: Scan for duplicated constants across multiple files. Universal physical and mathematical constants must be strictly centralized in `core/constants.py`.
+- [ ] **No Overlapping Helpers**: Identify overlapping helper functions or redundant class definitions (e.g., math utilities defined in both `core/` and `utils/`).
+- [ ] **Dead Code & Unused Imports**: Flag unused imports, redundant variables, or dead code blocks.
