@@ -392,8 +392,6 @@ class SimController(QObject):
 
     @Slot(dict)
     def _on_download_map_finished(self, meta: dict) -> None:
-        self._worker.deleteLater()
-        self._worker = None
         self._state.is_calculating = False
         self._state.status_text = "Map Download Complete"
 
@@ -517,19 +515,22 @@ class SimController(QObject):
 
         self._worker = SimulationWorker(collected, parent=self)
         print(f"[DIAG] SimulationWorker created: {self._worker}")
-        self._worker.progress.connect(self._on_progress)
+        
+        from PySide6.QtCore import Qt
+        
+        self._worker.progress.connect(self._on_progress, Qt.QueuedConnection)
         # ── Two-stage routing ──────────────────────────────────────────────────
         # sig_nominal_done fires before any MC runs start; renders trajectory now.
-        self._worker.sig_nominal_done.connect(self._on_nominal_done)
+        self._worker.sig_nominal_done.connect(self._on_nominal_done, Qt.QueuedConnection)
         # sig_progress fires after every single MC iteration (current, total, msg).
-        self._worker.sig_progress.connect(self._on_progress_updated)
+        self._worker.sig_progress.connect(self._on_progress_updated, Qt.QueuedConnection)
         # sig_finished covers both cancelled and full-MC-done paths (replaces _on_finished).
-        self._worker.sig_finished.connect(self._on_mc_done)
-        self._worker.error.connect(self._on_error)
-        self._worker.sig_status_text.connect(self._on_worker_status)
-        self._worker.sig_early_warning.connect(self._on_early_warning)
+        self._worker.sig_finished.connect(self._on_mc_done, Qt.QueuedConnection)
+        self._worker.error.connect(self._on_error, Qt.QueuedConnection)
+        self._worker.sig_status_text.connect(self._on_worker_status, Qt.QueuedConnection)
+        self._worker.sig_early_warning.connect(self._on_early_warning, Qt.QueuedConnection)
         # Auto-cleanup the QThread object once the run completes.
-        self._worker.finished.connect(self._worker.deleteLater)
+        self._worker.finished.connect(self._worker.deleteLater, Qt.QueuedConnection)
         print("[DIAG] Calling self._worker.start()...")
         self._worker.start()
         print(f"[DIAG] worker.start() called — isRunning={self._worker.isRunning()}")
@@ -584,28 +585,29 @@ class SimController(QObject):
             self._set_run_buttons_enabled(True)
             return
 
+        from PySide6.QtCore import Qt
         if self._state.is_free_mode:
             self._worker = SimulationWorker(collected, parent=self)
-            self._worker.progress.connect(self._on_progress)
-            self._worker.sig_nominal_done.connect(self._on_nominal_done)
-            self._worker.sig_progress.connect(self._on_progress_updated)
-            self._worker.sig_finished.connect(self._on_mc_done)
-            self._worker.error.connect(self._on_error)
-            self._worker.sig_status_text.connect(self._on_worker_status)
-            self._worker.sig_early_warning.connect(self._on_early_warning)
-            self._worker.finished.connect(self._worker.deleteLater)
+            self._worker.progress.connect(self._on_progress, Qt.QueuedConnection)
+            self._worker.sig_nominal_done.connect(self._on_nominal_done, Qt.QueuedConnection)
+            self._worker.sig_progress.connect(self._on_progress_updated, Qt.QueuedConnection)
+            self._worker.sig_finished.connect(self._on_mc_done, Qt.QueuedConnection)
+            self._worker.error.connect(self._on_error, Qt.QueuedConnection)
+            self._worker.sig_status_text.connect(self._on_worker_status, Qt.QueuedConnection)
+            self._worker.sig_early_warning.connect(self._on_early_warning, Qt.QueuedConnection)
+            self._worker.finished.connect(self._worker.deleteLater, Qt.QueuedConnection)
             self._worker.start()
         else:
             self._worker = OptimizationWorker(collected, parent=self)
-            self._worker.progress.connect(self._on_progress)
-            self._worker.sig_nominal_done.connect(self._on_nominal_done)
-            self._worker.sig_progress.connect(self._on_progress_updated)
-            self._worker.sig_finished.connect(self._on_mc_done)
-            self._worker.error.connect(self._on_error)
-            self._worker.sig_status_text.connect(self._on_worker_status)
-            self._worker.sig_early_warning.connect(self._on_early_warning)
-            self._worker.sig_optimization_done.connect(self._on_optimization_done)
-            self._worker.finished.connect(self._worker.deleteLater)
+            self._worker.progress.connect(self._on_progress, Qt.QueuedConnection)
+            self._worker.sig_nominal_done.connect(self._on_nominal_done, Qt.QueuedConnection)
+            self._worker.sig_progress.connect(self._on_progress_updated, Qt.QueuedConnection)
+            self._worker.sig_finished.connect(self._on_mc_done, Qt.QueuedConnection)
+            self._worker.error.connect(self._on_error, Qt.QueuedConnection)
+            self._worker.sig_status_text.connect(self._on_worker_status, Qt.QueuedConnection)
+            self._worker.sig_early_warning.connect(self._on_early_warning, Qt.QueuedConnection)
+            self._worker.sig_optimization_done.connect(self._on_optimization_done, Qt.QueuedConnection)
+            self._worker.finished.connect(self._worker.deleteLater, Qt.QueuedConnection)
             self._worker.start()
         # Note: LowPriority was removed — see _on_run_clicked for rationale.
 
@@ -796,7 +798,6 @@ class SimController(QObject):
             self._state.progress_percentage = 0   # clear progress bar
             self._window.set_status("Simulation cancelled.", "#a6adc8")
             self._window.set_progress(0, "Idle")
-            self._worker = None
             self._set_run_buttons_enabled(True)
             # Resume 1 Hz wind monitor now that the run has ended.
             self._wind_timer.start()
@@ -909,7 +910,6 @@ class SimController(QObject):
         self._window.set_progress(0, "Idle")
         self._state.is_calculating = False
 
-        self._worker = None
         self._set_run_buttons_enabled(True)
 
         # Resume 1 Hz wind monitor now that the simulation run has ended.
@@ -937,7 +937,6 @@ class SimController(QObject):
         self._state.is_calculating = False
         self._window.set_status(f"Simulation error: {msg}", "#f38ba8")
         self._window.set_progress(0, "Error")
-        self._worker = None
         self._set_run_buttons_enabled(True)
 
         # Resume 1 Hz wind monitor even on error so telemetry is not lost.
@@ -1114,6 +1113,16 @@ class SimController(QObject):
             "env_pressure":   s.env_pressure,
             "env_temp":       s.env_temp,
             "env_humidity":   s.env_humidity,
+            
+            # ── Advanced config passed directly into params to decouple UI ─────
+            "I_z":            s.moi_roll if s.moi_roll > 0.0 else None,
+            "I_xy":           s.moi_pitch if s.moi_pitch > 0.0 else None,
+            "power_on_cd":    s.power_on_cd,
+            "power_off_cd":   s.power_off_cd,
+            "motor_isp":      s.motor_isp,
+            "motor_propellant_density": s.motor_propellant_density,
+            "cd_curve_power_on":  s.cd_curve_power_on,
+            "cd_curve_power_off": s.cd_curve_power_off,
         }
 
     @Slot(str)

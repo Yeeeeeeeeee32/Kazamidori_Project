@@ -78,8 +78,7 @@ if __name__ == "__main__":
     print(f"=== main_qt.py === Created global AppState: id={id(app_state)}")
 
     # Inject the global app_state to unify instances and resolve the map view unresponsiveness
-    window = AppWindow()
-    window.bind_app_state(app_state)
+    window = AppWindow(app_state)
     window.show()
 
     # Controller wires the run/stop buttons to the background worker.

@@ -134,17 +134,10 @@ class SimulationWorker(QThread):
         self,
         params: dict[str, Any],
         parent=None,
-        *,
-        app_state: "object | None" = None,
     ) -> None:
         super().__init__(parent)
         self._params     = dict(params)
         self._stop_event = threading.Event()
-        # Optional reference to the global AppState.  Used read-only from
-        # within ``run()`` to pull MoI / late-binding parameters into the
-        # simulation params dict.  ``None`` means "no AppState wired" — the
-        # physics core then falls back to its built-in approximations.
-        self._app_state = app_state
 
     # ── Public control ─────────────────────────────────────────────────────────
 
@@ -194,21 +187,19 @@ class SimulationWorker(QThread):
             #   AppState.moi_pitch (Iyy, lateral)       → params['I_xy']
             # Skip injection when AppState is absent or MoI is still zero
             # (no .rkt loaded yet) — the Phase A fallback then takes over.
-            if self._app_state is not None:
-                _ixx = float(getattr(self._app_state, "moi_roll",  0.0))
-                _iyy = float(getattr(self._app_state, "moi_pitch", 0.0))
-                if _ixx > 0.0 and _iyy > 0.0:
-                    sim_params["I_z"]  = _ixx
-                    sim_params["I_xy"] = _iyy
+            # ── Phase D: forward advanced parameters from AppState ───────────
+            _ixx = p.get("I_z")
+            _iyy = p.get("I_xy")
+            if _ixx is not None and _iyy is not None:
+                sim_params["I_z"]  = float(_ixx)
+                sim_params["I_xy"] = float(_iyy)
 
-                # ── Forward Mach-dependent Cd curves (Phase C) ───────────────
-                # ``None`` means "no curve loaded" → simulate_once falls back
-                # to the scalar power_on_cd / power_off_cd values.  A list of
-                # ``(Mach, Cd)`` tuples is consumed directly by RocketPy.
-                sim_params["cd_curve_power_on"]  = getattr(
-                    self._app_state, "cd_curve_power_on",  None)
-                sim_params["cd_curve_power_off"] = getattr(
-                    self._app_state, "cd_curve_power_off", None)
+            # ── Forward Mach-dependent Cd curves (Phase C) ───────────────
+            # ``None`` means "no curve loaded" → simulate_once falls back
+            # to the scalar power_on_cd / power_off_cd values.  A list of
+            # ``(Mach, Cd)`` tuples is consumed directly by RocketPy.
+            sim_params["cd_curve_power_on"]  = p.get("cd_curve_power_on")
+            sim_params["cd_curve_power_off"] = p.get("cd_curve_power_off")
 
             self.progress.emit(10)
             self.sig_status_text.emit("Simulating...")
@@ -1092,16 +1083,10 @@ class OptimizationWorker(QThread):
         self,
         params: dict[str, Any],
         parent=None,
-        *,
-        app_state: "object | None" = None,
     ) -> None:
         super().__init__(parent)
         self._params     = dict(params)
         self._stop_event = threading.Event()
-        # Same read-only AppState reference contract as SimulationWorker.
-        # Used to forward MoI / Cd / motor parameters into the params dict
-        # that feeds optimize_launch_angle and the subsequent MC pipeline.
-        self._app_state = app_state
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -1126,26 +1111,19 @@ class OptimizationWorker(QThread):
             # motor chemistry, and Mach-dependent drag curves.  All keys are
             # preserved through ``dict(base_params)`` copies inside
             # core/optimization.py (p1_params_at_wind, p1_mc_points, ...).
-            if self._app_state is not None:
-                _ixx = float(getattr(self._app_state, "moi_roll",  0.0))
-                _iyy = float(getattr(self._app_state, "moi_pitch", 0.0))
-                if _ixx > 0.0 and _iyy > 0.0:
-                    sim_params["I_z"]  = _ixx
-                    sim_params["I_xy"] = _iyy
+            _ixx = p.get("I_z")
+            _iyy = p.get("I_xy")
+            if _ixx is not None and _iyy is not None:
+                sim_params["I_z"]  = float(_ixx)
+                sim_params["I_xy"] = float(_iyy)
 
-                sim_params["power_on_cd"]   = float(getattr(
-                    self._app_state, "power_on_cd",  0.45))
-                sim_params["power_off_cd"]  = float(getattr(
-                    self._app_state, "power_off_cd", 0.40))
-                sim_params["motor_isp"]     = float(getattr(
-                    self._app_state, "motor_isp", 80.0))
-                sim_params["motor_propellant_density"] = float(getattr(
-                    self._app_state, "motor_propellant_density", 1700.0))
+            sim_params["power_on_cd"]   = float(p.get("power_on_cd", 0.45))
+            sim_params["power_off_cd"]  = float(p.get("power_off_cd", 0.40))
+            sim_params["motor_isp"]     = float(p.get("motor_isp", 80.0))
+            sim_params["motor_propellant_density"] = float(p.get("motor_propellant_density", 1700.0))
 
-                sim_params["cd_curve_power_on"]  = getattr(
-                    self._app_state, "cd_curve_power_on",  None)
-                sim_params["cd_curve_power_off"] = getattr(
-                    self._app_state, "cd_curve_power_off", None)
+            sim_params["cd_curve_power_on"]  = p.get("cd_curve_power_on")
+            sim_params["cd_curve_power_off"] = p.get("cd_curve_power_off")
 
             # Important parameter routing
             target_r = p.get("target_radius", 50.0)

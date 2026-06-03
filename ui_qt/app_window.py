@@ -47,7 +47,7 @@ from PySide6.QtWidgets import (    QLineEdit,
 )
 from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
-
+from ui_qt.app_state import AppState
 
 # ── Constants ───────────────────────────────────────────────────────────────
 DEFAULT_AZIMUTH: int = -90
@@ -57,135 +57,9 @@ SCROLL_STEP: int = 5
 MAX_SCATTER_POINTS: int = 500
 WIND_HISTORY_SAMPLES: int = 60
 
-# ── Window-local reactive state ───────────────────────────────────────────────
-
-class AppState(QObject):
-    """
-    Lightweight reactive state driving AppWindow's plot canvases.
-
-    Every property setter emits ``needs_redraw`` on change so all three
-    canvases stay in sync without polling.
-    """
-
-    needs_redraw: Signal = Signal()
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._wind_speed:        float          = 4.0
-        self._wind_dir:          float          = 100.0
-        self._cep_prob:          int            = 90
-        self._sim_mode:          str            = "Point-Return"
-        self._simulation_result: Optional[dict] = None
-        self._wind_profile:      list           = []
-        self._wind_history:      list           = []
-        self._show_kde = True
-        self._show_cep = True
-        self._show_scatter = True
-        self._show_burnout = True
-        self._show_apogee = True
+# ── Global dark theme ─────────────────────────────────────────────────────────
 
 
-    # ── View Toggles ───────────────────────────────────────────────────────────
-    @property
-    def show_kde(self) -> bool: return self._show_kde
-    @show_kde.setter
-    def show_kde(self, v: bool) -> None:
-        if self._show_kde != v:
-            self._show_kde = v
-            self.needs_redraw.emit()
-
-    @property
-    def show_cep(self) -> bool: return self._show_cep
-    @show_cep.setter
-    def show_cep(self, v: bool) -> None:
-        if self._show_cep != v:
-            self._show_cep = v
-            self.needs_redraw.emit()
-
-    @property
-    def show_scatter(self) -> bool: return self._show_scatter
-    @show_scatter.setter
-    def show_scatter(self, v: bool) -> None:
-        if self._show_scatter != v:
-            self._show_scatter = v
-            self.needs_redraw.emit()
-
-    @property
-    def show_burnout(self) -> bool: return self._show_burnout
-    @show_burnout.setter
-    def show_burnout(self, v: bool) -> None:
-        if self._show_burnout != v:
-            self._show_burnout = v
-            self.needs_redraw.emit()
-
-    @property
-    def show_apogee(self) -> bool: return self._show_apogee
-    @show_apogee.setter
-    def show_apogee(self, v: bool) -> None:
-        if self._show_apogee != v:
-            self._show_apogee = v
-            self.needs_redraw.emit()
-
-    @property
-    def wind_speed(self) -> float: return self._wind_speed
-
-    @wind_speed.setter
-    def wind_speed(self, v: float) -> None:
-        if self._wind_speed != v:
-            self._wind_speed = float(v)
-            self.needs_redraw.emit()
-
-    @property
-    def wind_dir(self) -> float: return self._wind_dir
-
-    @wind_dir.setter
-    def wind_dir(self, v: float) -> None:
-        if self._wind_dir != v:
-            self._wind_dir = float(v)
-            self.needs_redraw.emit()
-
-    @property
-    def cep_prob(self) -> int: return self._cep_prob
-
-    @cep_prob.setter
-    def cep_prob(self, v: int) -> None:
-        if self._cep_prob != v:
-            self._cep_prob = int(v)
-            self.needs_redraw.emit()
-
-    @property
-    def sim_mode(self) -> str: return self._sim_mode
-
-    @sim_mode.setter
-    def sim_mode(self, v: str) -> None:
-        if self._sim_mode != v:
-            self._sim_mode = str(v)
-            self.needs_redraw.emit()
-
-    @property
-    def simulation_result(self) -> Optional[dict]:
-        return self._simulation_result
-
-    @simulation_result.setter
-    def simulation_result(self, v: Optional[dict]) -> None:
-        self._simulation_result = v
-        self.needs_redraw.emit()
-
-    @property
-    def wind_profile(self) -> list: return self._wind_profile
-
-    @wind_profile.setter
-    def wind_profile(self, v: list) -> None:
-        self._wind_profile = list(v) if v is not None else []
-        self.needs_redraw.emit()
-
-    @property
-    def wind_history(self) -> list: return self._wind_history
-
-    @wind_history.setter
-    def wind_history(self, v: list) -> None:
-        self._wind_history = list(v) if v is not None else []
-        self.needs_redraw.emit()
 
 
 # ── Global dark theme ─────────────────────────────────────────────────────────
@@ -1062,10 +936,10 @@ class AppWindow(QMainWindow):
 
     OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, state: AppState, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.state = AppState()
-        print(f"=== AppWindow.__init__ === Created local AppWindow State: id={id(self.state)}")
+        self.state = state
+        self._app_state = state
 
         self.setWindowTitle("Kazamidori Project")
         self.resize(1600, 900)
@@ -1977,8 +1851,73 @@ class AppWindow(QMainWindow):
 
         s.needs_redraw.connect(self.update_profile_plot)
         s.needs_redraw.connect(self.update_map_plot)
-
         s.needs_redraw.connect(self.update_wind_plot)
+
+        # ── Advanced Settings Binding ──
+        from PySide6.QtCore import QSignalBlocker
+        for widget, attr in (
+            (self.power_on_cd_input,              "power_on_cd"),
+            (self.power_off_cd_input,             "power_off_cd"),
+            (self.motor_isp_input,                "motor_isp"),
+            (self.motor_propellant_density_input, "motor_propellant_density"),
+        ):
+            with QSignalBlocker(widget):
+                widget.setValue(float(getattr(s, attr)))
+
+        self.power_on_cd_input.valueChanged.connect(lambda v: setattr(s, "power_on_cd", float(v)))
+        self.power_off_cd_input.valueChanged.connect(lambda v: setattr(s, "power_off_cd", float(v)))
+        self.motor_isp_input.valueChanged.connect(lambda v: setattr(s, "motor_isp", float(v)))
+        self.motor_propellant_density_input.valueChanged.connect(lambda v: setattr(s, "motor_propellant_density", float(v)))
+
+        def _push(widget, value):
+            if widget.value() != float(value):
+                with QSignalBlocker(widget):
+                    widget.setValue(float(value))
+
+        s.power_on_cd_changed.connect(lambda v: _push(self.power_on_cd_input, v))
+        s.power_off_cd_changed.connect(lambda v: _push(self.power_off_cd_input, v))
+        s.motor_isp_changed.connect(lambda v: _push(self.motor_isp_input, v))
+        s.motor_propellant_density_changed.connect(lambda v: _push(self.motor_propellant_density_input, v))
+
+        s.cd_curve_power_on_changed.connect(
+            lambda curve: self._refresh_curve_label(self.power_on_cd_curve_label, curve))
+        s.cd_curve_power_off_changed.connect(
+            lambda curve: self._refresh_curve_label(self.power_off_cd_curve_label, curve))
+        self._refresh_curve_label(self.power_on_cd_curve_label,  s.cd_curve_power_on)
+        self._refresh_curve_label(self.power_off_cd_curve_label, s.cd_curve_power_off)
+
+        with QSignalBlocker(self.cep_prob_input):
+            if s.landing_prob is not None:
+                self.cep_prob_input.setValue(s.landing_prob)
+        self.cep_prob_input.valueChanged.connect(lambda v: setattr(s, "landing_prob", int(v)))
+        s.landing_prob_changed.connect(lambda v: _push(self.cep_prob_input, v))
+
+        with QSignalBlocker(self.mc_runs_input):
+            if s.mc_n_runs is not None:
+                self.mc_runs_input.setValue(s.mc_n_runs)
+        self.mc_runs_input.valueChanged.connect(lambda v: setattr(s, "mc_n_runs", int(v)))
+        s.mc_n_runs_changed.connect(lambda v: _push(self.mc_runs_input, v))
+
+        with QSignalBlocker(self.wind_unc_input):
+            self.wind_unc_input.setValue(float(s.wind_uncertainty) if s.wind_uncertainty is not None else 0.2)
+        self.wind_unc_input.valueChanged.connect(lambda v: setattr(s, "wind_uncertainty", float(v)))
+        s.wind_uncertainty_changed.connect(lambda v: _push(self.wind_unc_input, v))
+
+        with QSignalBlocker(self.thrust_unc_input):
+            self.thrust_unc_input.setValue(float(s.thrust_uncertainty) if s.thrust_uncertainty is not None else 0.05)
+        self.thrust_unc_input.valueChanged.connect(lambda v: setattr(s, "thrust_uncertainty", float(v)))
+        s.thrust_uncertainty_changed.connect(lambda v: _push(self.thrust_unc_input, v))
+
+        self._adv_dialog._bind_wind_profile_table(s)
+
+        if hasattr(s, 'launch_lat_changed'):
+            try: s.launch_lat_changed.disconnect(self._on_state_lat_changed)
+            except Exception: pass
+            s.launch_lat_changed.connect(self._on_state_lat_changed)
+        if hasattr(s, 'launch_lon_changed'):
+            try: s.launch_lon_changed.disconnect(self._on_state_lon_changed)
+            except Exception: pass
+            s.launch_lon_changed.connect(self._on_state_lon_changed)
 
         self.update_profile_plot()
         self.update_map_plot()
@@ -2781,134 +2720,13 @@ class AppWindow(QMainWindow):
         preview = CdCurvePreviewDialog(title, list(curve), parent=self)
         preview.exec()
 
-    @staticmethod
-    def _refresh_curve_label(label: QLabel, curve) -> None:
+    def _refresh_curve_label(self, label: QLabel, curve) -> None:
         if curve is not None and len(curve) >= 2:
             label.setText(f"Curve Loaded ({len(curve)} pts)")
             label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
         else:
             label.setText("Using Static Value")
             label.setStyleSheet("color: #888888;")
-
-    def bind_app_state(self, state) -> None:
-        """Forward the global :class:`AppState` to nested dialogs that need it.
-
-        AppWindow itself is constructed before the global ``AppState`` exists
-        (see ``main_qt.py``), so widgets that require bi-directional binding
-        receive their state reference here, once both objects are alive.
-
-        Wires:
-          *  Advanced Settings dialog (Phase B aero/motor + Phase C Cd curves)
-          *  File menu Save / Load Session actions (Phase E session manager)
-          *  Phase 2 Map View (for global coordinates and target radius)
-        """
-        print(f"=== AppWindow.bind_app_state === Forwarding global State: id={id(state)}")
-        self.state = state  # Overwrite with the true global instance
-        self._app_state = state            # cached for the session menu slots
-
-        # Re-wire canvas redraw slots to the global AppState's needs_redraw.
-        # _bind_state() connected needs_redraw on the OLD local AppState(); once
-        # self.state is replaced above that connection is dead.  We must connect
-        # the global state here so that simulation_result.setter (which emits
-        # needs_redraw) drives the three plot canvases correctly.
-        # Guard each connect with a prior disconnect() so this method is safe to
-        # call more than once (e.g. session reload) without creating duplicate
-        # signal fans that trigger each canvas slot multiple times per emit.
-        for _slot in (self.update_profile_plot, self.update_map_plot, self.update_wind_plot):
-            try:
-                state.needs_redraw.disconnect(_slot)
-            except RuntimeError:
-                pass  # was not connected yet — that is fine
-            state.needs_redraw.connect(_slot)
-
-
-        # Bind advanced settings directly
-        from PySide6.QtCore import QSignalBlocker
-        for widget, attr in (
-            (self.power_on_cd_input,              "power_on_cd"),
-            (self.power_off_cd_input,             "power_off_cd"),
-            (self.motor_isp_input,                "motor_isp"),
-            (self.motor_propellant_density_input, "motor_propellant_density"),
-        ):
-            with QSignalBlocker(widget):
-                widget.setValue(float(getattr(state, attr)))
-
-        self.power_on_cd_input.valueChanged.connect(
-            lambda v: setattr(state, "power_on_cd", float(v)))
-        self.power_off_cd_input.valueChanged.connect(
-            lambda v: setattr(state, "power_off_cd", float(v)))
-        self.motor_isp_input.valueChanged.connect(
-            lambda v: setattr(state, "motor_isp", float(v)))
-        self.motor_propellant_density_input.valueChanged.connect(
-            lambda v: setattr(state, "motor_propellant_density", float(v)))
-
-        def _push(widget, value):
-            if widget.value() != float(value):
-                with QSignalBlocker(widget):
-                    widget.setValue(float(value))
-
-        state.power_on_cd_changed.connect(
-            lambda v: _push(self.power_on_cd_input, v))
-        state.power_off_cd_changed.connect(
-            lambda v: _push(self.power_off_cd_input, v))
-        state.motor_isp_changed.connect(
-            lambda v: _push(self.motor_isp_input, v))
-        state.motor_propellant_density_changed.connect(
-            lambda v: _push(self.motor_propellant_density_input, v))
-
-        state.cd_curve_power_on_changed.connect(
-            lambda curve: self._refresh_curve_label(
-                self.power_on_cd_curve_label, curve))
-        state.cd_curve_power_off_changed.connect(
-            lambda curve: self._refresh_curve_label(
-                self.power_off_cd_curve_label, curve))
-        self._refresh_curve_label(
-            self.power_on_cd_curve_label,  state.cd_curve_power_on)
-        self._refresh_curve_label(
-            self.power_off_cd_curve_label, state.cd_curve_power_off)
-
-        # We also need to bind MC inputs:
-        with QSignalBlocker(self.cep_prob_input):
-            if state.landing_prob is not None:
-                self.cep_prob_input.setValue(state.landing_prob)
-        self.cep_prob_input.valueChanged.connect(lambda v: setattr(state, "landing_prob", int(v)))
-        state.landing_prob_changed.connect(lambda v: _push(self.cep_prob_input, v))
-
-        with QSignalBlocker(self.mc_runs_input):
-            if state.mc_n_runs is not None:
-                self.mc_runs_input.setValue(state.mc_n_runs)
-        self.mc_runs_input.valueChanged.connect(lambda v: setattr(state, "mc_n_runs", int(v)))
-        state.mc_n_runs_changed.connect(lambda v: _push(self.mc_runs_input, v))
-
-        with QSignalBlocker(self.wind_unc_input):
-            self.wind_unc_input.setValue(float(state.wind_uncertainty) if state.wind_uncertainty is not None else 0.2)
-        self.wind_unc_input.valueChanged.connect(lambda v: setattr(state, "wind_uncertainty", float(v)))
-        state.wind_uncertainty_changed.connect(lambda v: _push(self.wind_unc_input, v))
-
-        with QSignalBlocker(self.thrust_unc_input):
-            self.thrust_unc_input.setValue(float(state.thrust_uncertainty) if state.thrust_uncertainty is not None else 0.05)
-        self.thrust_unc_input.valueChanged.connect(lambda v: setattr(state, "thrust_uncertainty", float(v)))
-        state.thrust_uncertainty_changed.connect(lambda v: _push(self.thrust_unc_input, v))
-
-        self._adv_dialog._bind_wind_profile_table(state)
-
-
-        if hasattr(state, 'launch_lat_changed'):
-            try: state.launch_lat_changed.disconnect()
-            except Exception: pass
-            state.launch_lat_changed.connect(self._on_state_lat_changed)
-        if hasattr(state, 'launch_lon_changed'):
-            try: state.launch_lon_changed.disconnect()
-            except Exception: pass
-            state.launch_lon_changed.connect(self._on_state_lon_changed)
-
-        # Re-inject current UI values to state
-        state.launch_lat = self.lat_input.value()
-        state.launch_lon = self.lon_input.value()
-        if hasattr(self, 'map_view') and self.map_view:
-            self.map_view.bind_app_state(state)
-        if hasattr(self, 'profile_canvas') and self.profile_canvas:
-            self.profile_canvas.bind_app_state(state)
 
     # ── Session persistence (Phase E) ────────────────────────────────────────
 
