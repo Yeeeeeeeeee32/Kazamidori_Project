@@ -122,17 +122,17 @@ class SimController(QObject):
         # ── Launch Coordinates → AppState.launch_lat / launch_lon ──────────────
         _lat_input = getattr(window, 'lat_input', None)
         if _lat_input is not None:
-            state.launch_lat = float(_lat_input.value())
-            _lat_input.valueChanged.connect(
-                lambda v: setattr(state, 'launch_lat', float(v))
-            )
+            try:
+                state.launch_lat = float(_lat_input.text())
+            except ValueError:
+                state.launch_lat = None
 
         _lon_input = getattr(window, 'lon_input', None)
         if _lon_input is not None:
-            state.launch_lon = float(_lon_input.value())
-            _lon_input.valueChanged.connect(
-                lambda v: setattr(state, 'launch_lon', float(v))
-            )
+            try:
+                state.launch_lon = float(_lon_input.text())
+            except ValueError:
+                state.launch_lon = None
 
         # ── rmax_input → AppState.target_radius ────────────────────────────────
         # Bidirectional: spinbox drives target_radius; external writes (JSON load)
@@ -305,8 +305,8 @@ class SimController(QObject):
             missing.append("Backfire Delay (Must be filled manually)")
 
         print("=== COORDINATE FORENSICS ===")
-        print(f"1. UI SpinBox LAT: {self._window.lat_input.value()} (Type: {type(self._window.lat_input.value())})")
-        print(f"2. UI SpinBox LON: {self._window.lon_input.value()} (Type: {type(self._window.lon_input.value())})")
+        print(f"1. UI LAT text: {self._window.lat_input.text()}")
+        print(f"2. UI LON text: {self._window.lon_input.text()}")
         print(f"3. AppState Getter LAT: {self._state.launch_lat} (Type: {type(self._state.launch_lat)})")
         print(f"4. AppState Getter LON: {self._state.launch_lon} (Type: {type(self._state.launch_lon)})")
         try:
@@ -317,12 +317,12 @@ class SimController(QObject):
 
         # Launch Coordinates
         if any(v is None for v in (s._launch_lat, s._launch_lon)) or \
-           self._window.lat_input.value() == -9999.0 or \
-           self._window.lon_input.value() == -9999.0:
+           self._window.lat_input.text().strip() == "" or \
+           self._window.lon_input.text().strip() == "":
             missing.append("Launch Coordinates (Latitude/Longitude)")
 
         # Rail Azimuth
-        if self._window.azim_input.value() == -9999.0:
+        if self._window.azim_input.text().strip() == "":
             missing.append("Rail Azimuth")
 
         # Simulation Uncertainty Params
@@ -805,8 +805,14 @@ class SimController(QObject):
 
         # ── Convert metric impact offsets -> geographic coordinates ───────────
         # impact_x = East offset (m), impact_y = North offset (m) from launch.
-        lat     = self._window.lat_input.value()
-        lon     = self._window.lon_input.value()
+        try:
+            lat = float(self._window.lat_input.text())
+        except ValueError:
+            lat = 0.0
+        try:
+            lon = float(self._window.lon_input.text())
+        except ValueError:
+            lon = 0.0
         off_e   = result.get("impact_x", 0.0)
         off_n   = result.get("impact_y", 0.0)
         cos_lat = math.cos(math.radians(lat))
@@ -1060,11 +1066,11 @@ class SimController(QObject):
             # main-window cep_prob_input widget and the Advanced Settings dialog.
             # Reading the widget directly would silently ignore Advanced Settings.
             "cep_prob":   int(s.landing_prob) if s.landing_prob is not None else 90,
-            "launch_lat": w.lat_input.value()  if w.lat_input.value()  != -9999.0 else 35.6828,
-            "launch_lon": w.lon_input.value()  if w.lon_input.value()  != -9999.0 else 139.7590,
+            "launch_lat": (float(w.lat_input.text()) if w.lat_input.text().strip() else 35.6828) if w.lat_input else 35.6828,
+            "launch_lon": (float(w.lon_input.text()) if w.lon_input.text().strip() else 139.7590) if w.lon_input else 139.7590,
             "elev":       s.launch_angle,   # degrees — AppState, default 85.0
             "rail":       s.launch_rail,    # m       — AppState, default 1.0
-            "azim":       w.azim_input.value() if w.azim_input.value() != -9999.0 else 0.0,
+            "azim":       (float(w.azim_input.text()) if w.azim_input.text().strip() else 0.0) if w.azim_input else 0.0,
             "wind_profile_data": s.wind_profile_data,
             "mc_runs":    w.mc_runs_input.value(),
             "wind_unc":   w.wind_unc_input.value(),
