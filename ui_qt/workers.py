@@ -54,7 +54,6 @@ import numpy as np
 import os
 import random as _random
 import traceback
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from PySide6.QtCore import QThread, Signal
 
 from core.simulation   import simulate_once, simulate_once_mc
@@ -66,7 +65,7 @@ from core.monte_carlo  import (
     compute_cep_circle,
     compute_kde_grid,
 )
-from core.mc_worker import _mc_worker_chunk
+from core.optimization import p1_objective_score
 
 # ── Airframe defaults (NO motor data) ────────────────────────────────────────
 # Only airframe geometry and recovery system have defaults.
@@ -161,6 +160,7 @@ class SimulationWorker(QThread):
         All data crosses the thread boundary exclusively through Qt signals —
         no shared mutable state is accessed from the GUI thread during a run.
         """
+        print("[DIAG] SimulationWorker.run() ENTERED on thread", flush=True)
         try:
             p = self._params
 
@@ -171,13 +171,18 @@ class SimulationWorker(QThread):
             # ════════════════════════════════════════════════════════════════
 
             self.progress.emit(2)
+            print("[DIAG] Calling _build_wind_profiles...", flush=True)
             u_prof, v_prof = self._build_wind_profiles(p)
+            print(f"[DIAG] _build_wind_profiles OK — u_prof len={len(u_prof)}, v_prof len={len(v_prof)}", flush=True)
             # sample_wind_nodes reads the 5 explicit grid points inserted into
             # the profile by create_wind_profile (3, 10, 150, 300, 600 m AGL)
             wind_nodes = sample_wind_nodes(u_prof, v_prof)
 
             self.progress.emit(5)
+            print("[DIAG] Calling _build_sim_params...", flush=True)
             sim_params = self._build_sim_params(p, u_prof, v_prof)
+            print("[DIAG] _build_sim_params OK", flush=True)
+
 
             # ── Inject accurate Moment of Inertia from AppState ──────────────
             # ``core/geometry_math.py`` computes (Ixx, Iyy, Izz) when the
@@ -207,11 +212,13 @@ class SimulationWorker(QThread):
 
             self.progress.emit(10)
             self.sig_status_text.emit("Simulating...")
+            print("[DIAG] Calling simulate_once...", flush=True)
             nominal = simulate_once(
                 elev=float(p.get("elev", 85.0)),
                 azi=float(p.get("azim",  0.0)),
                 params=sim_params,
             )
+            print(f"[DIAG] simulate_once returned — ok={nominal.get('ok')}, error={nominal.get('error')}", flush=True)
             if not nominal["ok"]:
                 raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
             self.progress.emit(25)
@@ -226,7 +233,9 @@ class SimulationWorker(QThread):
             })
 
             # Cross thread boundary: UI renders trajectory immediately
+            print("[DIAG] Emitting sig_nominal_done...", flush=True)
             self.sig_nominal_done.emit(nom_pkg)
+            print("[DIAG] sig_nominal_done emitted.", flush=True)
 
             # ── Mandatory stage boundary ──────────────────────────────────
             # sig_nominal_done is a queued signal: it was posted to the GUI
@@ -669,125 +678,133 @@ class SimulationWorker(QThread):
         sim_params: dict,
         p: dict,
         nominal_backfire_alt: float = 0.0,
-    ) -> list[tuple[float, float]]:
-        """Run the MC scatter inline — O(1) peak memory per iteration.
+    ) -> list[dict]:
+        """Run the Monte Carlo scatter sequentially on the worker thread.
 
-        The perturbation and simulation are inlined directly rather than
-        delegated to run_mc_scatter.  This eliminates three per-call
-        overheads that compound at large n_runs:
-          - no fresh Random() instance per call
-          - no wind_profiles accumulation list
-          - simulate_once result dict (full trajectory arrays) is explicitly
-            deleted at the end of each iteration via `del r`, so Python's
-            reference-counter frees the arrays before the next run starts
-            rather than waiting for the next GC cycle.
+        Architecture
+        ------------
+        This is a plain synchronous for-loop — no ProcessPoolExecutor,
+        no IPC, no subprocess spawning.  Every trial runs in this thread
+        back-to-back.  Failed trials (r["ok"] == False) are silently
+        skipped so one bad integration never aborts the whole loop.
 
-        Only the two scalar landing coordinates are retained per run —
-        the scatter list grows O(n_runs) in scalar tuples (~40 bytes each).
+        Memory
+        ------
+        The full trajectory arrays returned by simulate_once / simulate_once_mc
+        are explicitly deleted at the end of each iteration (``del r, trial_p``)
+        so Python's reference-counter reclaims them immediately rather than
+        waiting for the next GC cycle.  Only the scalar landing coordinate
+        dict is kept per successful run — O(n_runs × ~100 bytes) total.
 
-        sig_progress_updated(i+1, n_total) fires after every iteration.
-        Progress moves from 25 % to 90 % as runs complete.
+        Progress
+        --------
+        sig_progress(i+1, n_total, msg) and the coarse progress bar are
+        emitted at most _MAX_PROG_SIGNALS times so signal overhead is bounded.
         """
-        import random as _random
-
-        n_total      = int(p.get("mc_runs",    50))
-        wind_unc     = float(p.get("wind_unc",  0.20))
-        thrust_unc   = float(p.get("thrust_unc", 0.05))
+        n_total       = int(p.get("mc_runs",      50))
+        wind_unc      = float(p.get("wind_unc",    0.20))
+        thrust_unc    = float(p.get("thrust_unc",  0.05))
         # Gust noise priority:
-        #   1. auto_gust_ms: σ computed from the 60s surface wind history buffer
+        #   1. auto_gust_ms: σ computed from the 60 s surface wind history buffer
         #   2. gust_speed / gust_intensity: manual UI value, fallback only.
-        auto_gust    = float(p.get("auto_gust_ms", 0.0))
-        manual_gust  = float(p.get("gust_speed", p.get("gust_intensity", 0.0)))
-        gust_sigma   = auto_gust if auto_gust > 0.0 else manual_gust
+        auto_gust     = float(p.get("auto_gust_ms", 0.0))
+        manual_gust   = float(p.get("gust_speed", p.get("gust_intensity", 0.0)))
+        gust_sigma    = auto_gust if auto_gust > 0.0 else manual_gust
 
-        # Extract sim_params invariants once — avoids repeated dict lookup
-        tu         = max(thrust_unc, 0.0)
-        raw_thrust = sim_params["thrust_data"]
-        elev       = sim_params["elev"]
-        azi        = sim_params["azi"]
-        base_u: list = sim_params.get("wind_u_prof", [])
-        base_v: list = sim_params.get("wind_v_prof", [])
-        flight_mode = p.get("flight_mode", "Altitude Competition")
-        target_radius = p.get("target_radius", float('inf'))
+        # Cache loop-invariant values from sim_params once.
+        tu            = max(thrust_unc, 0.0)
+        raw_thrust    = sim_params["thrust_data"]
+        elev          = sim_params["elev"]
+        azi           = sim_params["azi"]
+        base_u: list  = sim_params.get("wind_u_prof", [])
+        base_v: list  = sim_params.get("wind_v_prof", [])
+        flight_mode   = p.get("flight_mode",   "Altitude Competition")
+        target_radius = p.get("target_radius", float("inf"))
 
-        scatter: list[tuple[float, float]] = []
+        scatter: list[dict] = []
 
-        # Throttle progress signal emissions to at most _MAX_PROG_SIGNALS
-        # cross-thread events regardless of n_total.
+        # Emit progress at most _MAX_PROG_SIGNALS times so signal overhead
+        # stays constant regardless of n_total.
         _MAX_PROG_SIGNALS = 20
         _emit_every = max(1, n_total // _MAX_PROG_SIGNALS)
 
-        with open("mc_diagnostics.log", "w", encoding="utf-8") as f:
-            f.write("--- Kazamidori Diagnostics Log ---\n")
-
-        # ── ProcessPoolExecutor for CPU-bound Monte Carlo ─────────────────────
-        # max_workers=os.cpu_count() fully utilizes available CPU cores,
-        # completely bypassing the Python GIL for heavy RocketPy math.
-        from core.pool_manager import get_global_pool
-        import concurrent.futures
-
-        executor = get_global_pool()
         base_seed = _random.randint(0, 2**31 - 1)
-        
-        all_seeds = list(range(base_seed, base_seed + n_total))
-        all_trials = list(range(1, n_total + 1))
-        
-        # ── Chunk sizing ────────────────────────────────────────────────────
-        # One chunk per worker process: each worker gets a contiguous slice of
-        # trials and the IPC round-trip (pickle → subprocess → result) happens
-        # exactly n_workers times instead of n_total times.
-        # Previous formula (n_total // cpu_count*4) produced ~3-trial micro-
-        # chunks with 60+ IPC trips on a 16-core machine, wasting ~40 % of
-        # wall-time on serialisation overhead.
-        _n_workers = max(1, (os.cpu_count() or 2) - 2)
-        chunksize = max(1, n_total // _n_workers)
-        chunks_seeds  = [all_seeds[i:i + chunksize]  for i in range(0, n_total, chunksize)]
-        chunks_trials = [all_trials[i:i + chunksize] for i in range(0, n_total, chunksize)]
 
-        
-        futures = []
-        for c_seeds, c_trials in zip(chunks_seeds, chunks_trials):
-            futures.append(executor.submit(
-                _mc_worker_chunk,
-                c_seeds, c_trials,
-                sim_params, wind_unc, gust_sigma, tu, raw_thrust,
-                elev, azi, base_u, base_v, flight_mode, target_radius,
-                nominal_backfire_alt,   # D: skip Pass 1 in each MC trial
-            ))
-            
-        _done = 0
+        with open("mc_diagnostics.log", "w", encoding="utf-8") as _diag:
+            _diag.write("--- Kazamidori Diagnostics Log ---\n")
 
-        # Use concurrent.futures.wait instead of as_completed to prevent QThread
-        # from blocking the event loop and deadlocking the QueueManagerThread
-        while futures:
+        # ── Sequential Monte Carlo loop ───────────────────────────────────────
+        for i in range(n_total):
+            # Check for user-requested cancellation before each trial.
             if self._stop_event.is_set():
-                for f in futures:
-                    f.cancel()
                 break
 
-            done, futures = concurrent.futures.wait(
-                futures, timeout=0.1, return_when=concurrent.futures.FIRST_COMPLETED
+            rng = _random.Random(base_seed + i)
+
+            # ── Wind perturbation (ENU: U = East, V = North) ──────────────
+            u_prof, v_prof, _ = _perturb_wind_profile(
+                base_u, base_v, rng,
+                wind_unc, gust_intensity=gust_sigma,
             )
 
-            for future in done:
-                try:
-                    chunk_results = future.result()
-                    for res in chunk_results:
-                        _done += 1
-                        if res is not None:
-                            scatter.append(res)
-                except Exception as e:
-                    print(f"MC Chunk Error: {e}", flush=True)
+            # ── Thrust perturbation ───────────────────────────────────────
+            thrust_scale     = max(0.1, 1.0 + rng.gauss(0.0, tu))
+            perturbed_thrust = [[t, T * thrust_scale] for t, T in raw_thrust]
 
-                # Emit progress signals at most _MAX_PROG_SIGNALS times total.
-                # Always emit on the final iteration so the bar reaches 90%.
-                if _done % _emit_every == 0 or _done == n_total:
-                    self.sig_progress.emit(_done, n_total, f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})")
-                    self.progress.emit(min(25 + int(_done / n_total * 65), 90))
+            trial_p = {
+                **sim_params,
+                "wind_u_prof": u_prof,
+                "wind_v_prof": v_prof,
+                "thrust_data": perturbed_thrust,
+            }
 
-            # Explicitly yield thread execution back to the OS so Qt events and
-            # the multiprocessing QueueManagerThread can breathe.
-            QThread.msleep(5)
+            # Use the fast single-pass variant when nominal backfire_alt is known;
+            # fall back to the full two-pass simulate_once otherwise.
+            try:
+                if nominal_backfire_alt > 0.0:
+                    r = simulate_once_mc(elev, azi, trial_p, nominal_backfire_alt, trial_idx=i + 1)
+                else:
+                    r = simulate_once(elev, azi, trial_p, trial_idx=i + 1)
+            except Exception as _exc:
+                # A fatal integrator error on one trial must not abort the loop.
+                print(f"MC trial {i + 1} raised an exception: {_exc}", flush=True)
+                del trial_p, u_prof, v_prof, perturbed_thrust
+                continue
+
+            # Gracefully skip failed trials — r["ok"] == False means the ODE
+            # integrator diverged or produced non-physical output.  Appending
+            # invalid coordinates would corrupt the scatter statistics.
+            if not r.get("ok", False):
+                del r, trial_p, u_prof, v_prof, perturbed_thrust
+                continue
+
+            # ── Score and extract scalars ─────────────────────────────────
+            score  = p1_objective_score(r, flight_mode, target_radius)
+            h_time = float(r["hang_time"])
+            bf_t   = float(r.get("bf_abs_time", 0.0))
+            if "有翼" in flight_mode or "winged" in flight_mode.lower() or "wing" in flight_mode.lower():
+                h_time = max(0.0, h_time - bf_t)
+
+            scatter.append({
+                "x":          float(r["impact_x"]),
+                "y":          float(r["impact_y"]),
+                "apogee":     float(r["apogee_m"]),
+                "hang_time":  h_time,
+                "bf_abs_time": bf_t,
+                "score":      score,
+            })
+
+            # Free trajectory arrays immediately — only scalars are kept.
+            del r, trial_p, u_prof, v_prof, perturbed_thrust
+
+            # ── Progress signals (throttled) ──────────────────────────────
+            _done = i + 1
+            if _done % _emit_every == 0 or _done == n_total:
+                self.sig_progress.emit(
+                    _done, n_total,
+                    f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})",
+                )
+                self.progress.emit(min(25 + int(_done / n_total * 65), 90))
 
         return scatter
 

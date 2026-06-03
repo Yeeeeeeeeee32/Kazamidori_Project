@@ -535,6 +535,9 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=True,
             # Mode-aware ODE tolerances (Proposal F)
+            # max_time: 安全上限 — Pass 1 は最高点で終了するので通常数十秒で完了する。
+            # この上限は積分器がパラシュート未展開などで発散した場合のタイムアウト。
+            max_time=120,
             max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
         )
         t1_arr = fl1.z[:, 0]
@@ -602,6 +605,10 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             rocket=rk2, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=False,
+            # max_time: Pass 2 (フル飛行) の上限。競技用ロケットの最長飛行時間は
+            # パラシュート降下込みで 120 秒以内に収まる。トリガーが発火しない異常
+            # ケースでも 120 秒で積分を打ち切り、次の MC 試行へ移行させる。
+            max_time=120,
             max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
         )
 
@@ -918,6 +925,9 @@ def simulate_once_mc(
             rocket=rk, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=False,
+            # max_time: simulate_once_mc (MC 高速バリアント) 用の安全上限。
+            # 1 試行あたり最大 120 秒で強制終了し、MC ループを詰まらせない。
+            max_time=120,
             max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
         )
 

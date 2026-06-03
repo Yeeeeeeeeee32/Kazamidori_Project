@@ -60,13 +60,6 @@ if __name__ == "__main__":
     from ui_qt.app_window import AppWindow, GLOBAL_QSS
     from ui_qt.sim_controller import SimController
 
-    # Pre-warm the global ThreadPoolExecutor so all worker threads are alive
-    # before the first simulation run — avoids any cold-start latency.
-    from core.pool_manager import get_global_pool, shutdown_global_pool, warmup_pool
-    import atexit
-    get_global_pool()
-    warmup_pool()
-    atexit.register(shutdown_global_pool, False)
     def global_excepthook(exc_type, exc_value, exc_traceback):
         import traceback
         import sys
@@ -95,3 +88,6 @@ if __name__ == "__main__":
     controller = SimController(window, app_state)
 
     sys.exit(app.exec())
+
+
+

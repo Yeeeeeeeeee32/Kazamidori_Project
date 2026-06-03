@@ -596,8 +596,6 @@ class AdvancedSettingsDialog(QDialog):
         self.wind_inputs = []
         alts = [3.0, 10.0, 150.0, 300.0, 600.0]
 
-        prev_widget = None
-
         for i, alt in enumerate(alts):
             row = i + 1
             alt_lbl = QLabel(f"{alt}")
@@ -629,11 +627,6 @@ class AdvancedSettingsDialog(QDialog):
             self.wind_grid.addWidget(alt_lbl, row, 0)
             self.wind_grid.addWidget(spd_edit, row, 1)
             self.wind_grid.addWidget(dir_edit, row, 2)
-            
-            if prev_widget is not None:
-                QWidget.setTabOrder(prev_widget, spd_edit)
-            QWidget.setTabOrder(spd_edit, dir_edit)
-            prev_widget = dir_edit
 
             self.wind_inputs.append((alt, spd_edit, dir_edit))
 
@@ -753,6 +746,15 @@ class AdvancedSettingsDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
+
+        # ── Keyboard Navigation (Tab Order) for AdvancedSettingsDialog ────────
+        # Chain all wind profile line edits sequentially after they are added to layout
+        prev_widget = None
+        for _, spd_edit, dir_edit in self.wind_inputs:
+            if prev_widget is not None:
+                QWidget.setTabOrder(prev_widget, spd_edit)
+            QWidget.setTabOrder(spd_edit, dir_edit)
+            prev_widget = dir_edit
 
     def _bind_wind_profile_table(self, state) -> None:
         self.state = state
@@ -2809,9 +2811,15 @@ class AppWindow(QMainWindow):
         # self.state is replaced above that connection is dead.  We must connect
         # the global state here so that simulation_result.setter (which emits
         # needs_redraw) drives the three plot canvases correctly.
-        state.needs_redraw.connect(self.update_profile_plot)
-        state.needs_redraw.connect(self.update_map_plot)
-        state.needs_redraw.connect(self.update_wind_plot)
+        # Guard each connect with a prior disconnect() so this method is safe to
+        # call more than once (e.g. session reload) without creating duplicate
+        # signal fans that trigger each canvas slot multiple times per emit.
+        for _slot in (self.update_profile_plot, self.update_map_plot, self.update_wind_plot):
+            try:
+                state.needs_redraw.disconnect(_slot)
+            except RuntimeError:
+                pass  # was not connected yet — that is fine
+            state.needs_redraw.connect(_slot)
 
 
         # Bind advanced settings directly

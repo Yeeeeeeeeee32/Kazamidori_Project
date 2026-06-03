@@ -972,20 +972,23 @@ class AppState(QObject):
 
     @Property(object, notify=wind_profile_data_changed)
     def wind_profile_data(self) -> list:
-        return self._wind_profile
+        """Wind profile data for the simulation (5 altitude levels).
 
-    @wind_profile_data.setter
-    def wind_profile_data(self, value: list) -> None:
-        self.wind_profile = value
-
-    @Property(object, notify=wind_profile_data_changed)
-    def wind_profile_data(self) -> list:
+        The authoritative list used by SimulationWorker — set by
+        AdvancedSettingsDialog and read by SimController._collect_params().
+        Writing this property also emits wind_profile_changed so any
+        dialog that listens on that signal stays in sync.
+        """
         return self._wind_profile_data
 
     @wind_profile_data.setter
     def wind_profile_data(self, value: list) -> None:
         self._wind_profile_data = value
         self.wind_profile_data_changed.emit(value)
+        # Keep wind_profile_changed subscribers (e.g. AdvancedSettingsDialog)
+        # in sync so they can reflect the new values without a separate
+        # update call.
+        self.wind_profile_changed.emit(value)
 
     @Property(float, notify=gust_speed_changed)
     def gust_speed(self) -> float:

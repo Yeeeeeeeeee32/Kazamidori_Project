@@ -278,6 +278,10 @@ class SimController(QObject):
     # ── Run ────────────────────────────────────────────────────────────────────
 
     def _validate_run_prerequisites(self) -> bool:
+        print("[DIAG] _validate_run_prerequisites CALLED! Stack trace follows:", flush=True)
+        import traceback
+        traceback.print_stack()
+        
         missing = []
         s = self._state
 
@@ -340,7 +344,9 @@ class SimController(QObject):
 
         # ── 60-second surface wind buffer check ───────────────────────────────
         surface_hist = list(self._state.wind_history_for_alt(3.0))
+        print(f"[DIAG] wind_history_for_alt(3.0) sample count: {len(surface_hist)}")
         if len(surface_hist) < 5:
+            print(f"[DIAG] BLOCKED: Wind buffer insufficient ({len(surface_hist)} samples < 5). Returning False.")
             self._window.set_status(
                 f"Wind Buffer Insufficient: Surface wind monitor has only {len(surface_hist)} samples "
                 "(minimum 5 required). Please wait for the monitor to collect data.",
@@ -348,6 +354,7 @@ class SimController(QObject):
             )
             return False
 
+        print("[DIAG] _validate_run_prerequisites: PASSED — returning True")
         return True
 
     @Slot()
@@ -377,9 +384,10 @@ class SimController(QObject):
 
         # Instantiate and start the worker
         self._worker = MapDownloadWorker(lat, lon, parent=self)
-        self._worker.sig_progress.connect(self._on_worker_progress)
+        self._worker.sig_progress.connect(self._on_progress_updated)
         self._worker.sig_finished.connect(self._on_download_map_finished)
-        self._worker.error.connect(self._on_worker_error)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     @Slot(dict)
@@ -447,20 +455,34 @@ class SimController(QObject):
 
         self._map_worker.sig_status_update.connect(on_status_update)
         self._map_worker.sig_finished.connect(on_finished)
+        self._map_worker.finished.connect(self._map_worker.deleteLater)
         self._map_worker.start()
 
     @Slot()
     def _on_run_clicked(self) -> None:
-        print(f"=== SimController._on_run_clicked === Current AppState: id={id(self._state)}")
+        print(f"\n{'='*60}")
+        print(f"[DIAG] _on_run_clicked ENTERED")
+        print(f"[DIAG]   AppState id        : {id(self._state)}")
+        print(f"[DIAG]   _worker running?   : {self._worker.isRunning() if self._worker else 'None'}")
         if self._worker and self._worker.isRunning():
+            print("[DIAG] EARLY RETURN: worker already running")
             return  # guard against double-click spam
 
+        print(f"[DIAG]   motor_cg_pos       : {self._state.motor_cg_pos}")
+        print(f"[DIAG]   motor_dry_mass     : {self._state.motor_dry_mass}")
         if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
+            print("[DIAG] EARLY RETURN: motor params missing")
             self._window.set_status("Validation Error: Motor Physical Parameters must be set before running the simulation.", "#f38ba8")
             return
 
+        print("[DIAG] Calling _validate_run_prerequisites...")
         if not self._validate_run_prerequisites():
+            print("[DIAG] EARLY RETURN: _validate_run_prerequisites returned False")
             return
+
+        print("[DIAG] Prerequisites PASSED — stopping wind timer")
+        # Pause the 1 Hz wind monitor during the simulation run.
+        self._wind_timer.stop()
 
         self._state.mc_running = True
         self._state.simulation_started.emit()
@@ -470,12 +492,31 @@ class SimController(QObject):
         self._window.set_progress(0, "Simulating...")
 
         # Clear stale data from the previous run.
+        # IMPORTANT: bypass the public setter to avoid emitting needs_redraw
+        # which would trigger synchronous Matplotlib redraws (~1 s) on the GUI
+        # thread and block progress-bar updates from the worker.
         self._nominal_payload                 = None
-        self._state.simulation_result = None
+        self._state._simulation_result = None
         self._state.current_playback_index = 0
         self._window.update_map_plot()
 
-        self._worker = SimulationWorker(self._collect_params(), parent=self)
+        print("[DIAG] Creating SimulationWorker...")
+        try:
+            collected = self._collect_params()
+            print(f"[DIAG] _collect_params() succeeded — keys: {list(collected.keys())}")
+        except Exception as _cp_exc:
+            import traceback as _tb
+            print(f"[DIAG] _collect_params() RAISED: {_cp_exc}")
+            print(_tb.format_exc())
+            self._window.set_status(f"Parameter collection failed: {_cp_exc}", "#f38ba8")
+            self._wind_timer.start()
+            self._state.is_calculating = False
+            self._state.mc_running = False
+            self._set_run_buttons_enabled(True)
+            return
+
+        self._worker = SimulationWorker(collected, parent=self)
+        print(f"[DIAG] SimulationWorker created: {self._worker}")
         self._worker.progress.connect(self._on_progress)
         # ── Two-stage routing ──────────────────────────────────────────────────
         # sig_nominal_done fires before any MC runs start; renders trajectory now.
@@ -489,12 +530,14 @@ class SimController(QObject):
         self._worker.sig_early_warning.connect(self._on_early_warning)
         # Auto-cleanup the QThread object once the run completes.
         self._worker.finished.connect(self._worker.deleteLater)
+        print("[DIAG] Calling self._worker.start()...")
         self._worker.start()
-        # Lower priority so the GUI thread wins CPU time at the stage boundary
-        # (after sig_nominal_done is emitted) and can drain its event queue
-        # before the MC loop starts.  Combined with the msleep(0) in workers.py
-        # this ensures the trajectory canvas paints before MC progress begins.
-        self._worker.setPriority(QThread.Priority.LowPriority)
+        print(f"[DIAG] worker.start() called — isRunning={self._worker.isRunning()}")
+        print(f"{'='*60}\n")
+        # Note: LowPriority was removed — on Windows, LowPriority causes the
+        # OS scheduler to starve the worker thread (practically 0 CPU time),
+        # making the MC loop appear to never finish. Default (InheritPriority)
+        # ensures fair scheduling between the GUI thread and the worker.
 
 
     @Slot()
@@ -509,6 +552,9 @@ class SimController(QObject):
         if not self._validate_run_prerequisites():
             return
 
+        # Pause the 1 Hz wind monitor during optimisation + MC run.
+        self._wind_timer.stop()
+
         self._state.mc_running = True
         self._state.simulation_started.emit()
         self._state.is_calculating = True
@@ -517,13 +563,29 @@ class SimController(QObject):
         self._window.set_progress(0, "Optimising...")
 
         # Clear stale data from the previous run.
+        # IMPORTANT: bypass the public setter to avoid emitting needs_redraw
+        # which would trigger synchronous Matplotlib redraws (~1 s) on the GUI
+        # thread and block progress-bar updates from the worker.
         self._nominal_payload                 = None
-        self._state.simulation_result = None
+        self._state._simulation_result = None
         self._state.current_playback_index = 0
         self._window.update_map_plot()
 
+        try:
+            collected = self._collect_params()
+        except Exception as _cp_exc:
+            import traceback as _tb
+            print(f"[DIAG] _on_phase1_clicked: _collect_params() RAISED: {_cp_exc}")
+            print(_tb.format_exc())
+            self._window.set_status(f"Parameter collection failed: {_cp_exc}", "#f38ba8")
+            self._wind_timer.start()
+            self._state.is_calculating = False
+            self._state.mc_running = False
+            self._set_run_buttons_enabled(True)
+            return
+
         if self._state.is_free_mode:
-            self._worker = SimulationWorker(self._collect_params(), parent=self)
+            self._worker = SimulationWorker(collected, parent=self)
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
             self._worker.sig_progress.connect(self._on_progress_updated)
@@ -531,8 +593,10 @@ class SimController(QObject):
             self._worker.error.connect(self._on_error)
             self._worker.sig_status_text.connect(self._on_worker_status)
             self._worker.sig_early_warning.connect(self._on_early_warning)
+            self._worker.finished.connect(self._worker.deleteLater)
+            self._worker.start()
         else:
-            self._worker = OptimizationWorker(self._collect_params(), parent=self)
+            self._worker = OptimizationWorker(collected, parent=self)
             self._worker.progress.connect(self._on_progress)
             self._worker.sig_nominal_done.connect(self._on_nominal_done)
             self._worker.sig_progress.connect(self._on_progress_updated)
@@ -541,11 +605,9 @@ class SimController(QObject):
             self._worker.sig_status_text.connect(self._on_worker_status)
             self._worker.sig_early_warning.connect(self._on_early_warning)
             self._worker.sig_optimization_done.connect(self._on_optimization_done)
-
-        # Auto-cleanup the QThread object once the run completes.
-        self._worker.finished.connect(self._worker.deleteLater)
-        self._worker.start()
-        self._worker.setPriority(QThread.Priority.LowPriority)
+            self._worker.finished.connect(self._worker.deleteLater)
+            self._worker.start()
+        # Note: LowPriority was removed — see _on_run_clicked for rationale.
 
     @Slot(float, float)
     def _on_optimization_done(self, elev: float, azi: float) -> None:
@@ -652,9 +714,19 @@ class SimController(QObject):
         # the data.  Using the private field avoids the extra needs_redraw blast
         # that the public setter would emit — _on_nominal_done must touch the
         # profile plot exactly ONCE to keep the GUI thread responsive.
+        print("[DIAG] _on_nominal_done ENTERED on GUI thread", flush=True)
+
         # simulation_result_changed is still emitted so any other subscriber
         # (e.g. map_view) gets notified without triggering a full redraw cycle.
         adapted_nominal = self._adapt_nominal_for_window(payload)
+        # Write the adapted nominal result into AppState WITHOUT emitting
+        # needs_redraw.  The public setter fires needs_redraw → update_profile_plot,
+        # and then nominal_result (set below) fires nominal_needs_redraw →
+        # update_profile_plot AGAIN — two consecutive 3D redraws on the GUI thread
+        # that block progress-bar updates for ~1 second.  By using the private
+        # field + manual simulation_result_changed, MapView and other subscribers
+        # still get notified, but update_profile_plot fires only ONCE via
+        # nominal_needs_redraw below.
         self._state._simulation_result = adapted_nominal
         self._state.simulation_result_changed.emit(adapted_nominal)
 
@@ -681,9 +753,6 @@ class SimController(QObject):
                 f"⏳  CALCULATING — Nominal {_nom_dist:.0f} m / {_target_r:.0f} m  |  MC running…"
             )
 
-        # Populate all 5 altitude wind-history deques with the nominal snapshot
-        # and immediately refresh the Current Wind Speed table with the
-        # instantaneous values that were just sampled from the simulation wind
         # profile — one call covers all 5 altitudes at once.
         wind_nodes = payload.get("wind_nodes", [])
         if wind_nodes:
@@ -697,8 +766,9 @@ class SimController(QObject):
             "#f9e2af",
         )
         # Force the canvas to commit its pending draw now, before the MC loop
-        # (running at LowPriority on the worker thread) monopolises CPU.
+        # (running on the worker thread) monopolises CPU.
         self._window.profile_canvas.draw_idle()
+
 
     @Slot(int, int, str)
     def _on_progress_updated(self, current: int, total: int, msg: str) -> None:
@@ -718,6 +788,7 @@ class SimController(QObject):
 
     @Slot(dict)
     def _on_mc_done(self, result: dict) -> None:
+        print(f"[DIAG] _on_mc_done ENTERED — cancelled={result.get('cancelled')}", flush=True)
         self._state.mc_running = False
 
         if result.get("cancelled"):
@@ -727,6 +798,8 @@ class SimController(QObject):
             self._window.set_progress(0, "Idle")
             self._worker = None
             self._set_run_buttons_enabled(True)
+            # Resume 1 Hz wind monitor now that the run has ended.
+            self._wind_timer.start()
             return
 
         # ── Convert metric impact offsets -> geographic coordinates ───────────
@@ -839,6 +912,9 @@ class SimController(QObject):
         self._worker = None
         self._set_run_buttons_enabled(True)
 
+        # Resume 1 Hz wind monitor now that the simulation run has ended.
+        self._wind_timer.start()
+
         # Trigger completion notification
         self._tray_icon.showMessage(
             "Kazamidori Simulation",
@@ -852,6 +928,7 @@ class SimController(QObject):
         # Surface the worker traceback on stderr so silent-window failures
         # produced by background QThread exceptions become diagnosable.
         import sys as _sys
+        print("[DIAG] _on_error ENTERED:", flush=True)
         print("--- SIMULATION WORKER ERROR ---", file=_sys.stderr, flush=True)
         print(msg, file=_sys.stderr, flush=True)
         print("-------------------------------", file=_sys.stderr, flush=True)
@@ -863,6 +940,9 @@ class SimController(QObject):
         self._worker = None
         self._set_run_buttons_enabled(True)
 
+        # Resume 1 Hz wind monitor even on error so telemetry is not lost.
+        self._wind_timer.start()
+
         self._tray_icon.showMessage(
             "Simulation Error",
             msg,
@@ -872,6 +952,7 @@ class SimController(QObject):
 
     @Slot(str)
     def _on_worker_status(self, msg: str) -> None:
+        print(f"[DIAG] _on_worker_status: {msg!r}", flush=True)
         # Update the main status bar (colour-coded amber for in-progress stages).
         self._window.set_status(msg, "#f9e2af")
         # Mirror the same label onto the progress bar format string so the
