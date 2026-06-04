@@ -4,7 +4,7 @@ Two-layer launch-angle optimisation and Phase-1 limit-margin search.
 
 Public API
 ----------
-p1_objective_score(res, mode) -> float
+p1_objective_score(res, mode, r_max, target_x, target_y) -> float
     Compute the scalar objective from a simulation result dict.
 
 optimize_launch_angle(mode, base_params, r_max, sim_fn, mc_r90_fn,
@@ -209,7 +209,13 @@ def build_perturbed_wind_prof(
 
 # ── Objective helpers ─────────────────────────────────────────────────────────
 
-def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> float:
+def p1_objective_score(
+    res: dict,
+    mode: str,
+    r_max: float = float('inf'),
+    target_x: float = 0.0,
+    target_y: float = 0.0,
+) -> float:
     """Return the scalar objective for a simulation result in the given mode.
 
     Higher is always better.  Free Mode is never penalised by r_max;
@@ -219,19 +225,29 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
     GO/NOGO logic
     -------------
     1. Simulation failed  → -inf  (always)
-    2. Not Free Mode AND r_horiz > r_max  → -inf  (disqualified)
+    2. Not Free Mode AND dist_to_target > r_max  → -inf  (disqualified)
+       where dist_to_target = hypot(impact_x - target_x, impact_y - target_y)
     3. Free Mode ignores r_max entirely  → score based on hang_time/distance
+
+    Args:
+        res:      Simulation result dict (keys: ok, impact_x, impact_y,
+                  r_horiz, hang_time, apogee_m, bf_abs_time).
+        mode:     Competition mode string (Japanese or English).
+        r_max:    Landing-zone radius in metres.
+        target_x: East offset of the target centre from the launch pad (m).
+        target_y: North offset of the target centre from the launch pad (m).
 
     Score definitions
     -----------------
     自由    (Free)              : hang_time  (maximise time aloft)
-    定点滞空 (Precision Landing) : (r_max - r_horiz) + hang_time
+    定点滞空 (Precision Landing) : (r_max - dist_to_target) + hang_time
     高度    (Altitude)          : apogee_m
     有翼    (Winged)            : hang_time  (payload air time; bf_abs_time
                                              subtracted when available)
     """
     # ── Step 1: simulation failure is always NOGO ─────────────────────────────
     if not res.get('ok', False):
+        print("[DIAG] NOGO: Simulation Failed (ok=False)", flush=True)
         return float('-inf')
 
     # ── Step 2: mode identification ───────────────────────────────────────────
@@ -240,8 +256,23 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
     is_altitude  = "altitude"  in mode.lower() or "高度" in mode
     is_winged    = "winged"    in mode.lower() or "有翼" in mode
 
-    # ── Step 3: r_max hard constraint (non-Free modes only) ───────────────────
-    if not is_free and res['r_horiz'] > r_max:
+    # ── Step 3: target-relative distance boundary check (non-Free modes only) ─
+    # Use the Euclidean distance from the actual impact point to the TARGET
+    # CENTRE (target_x, target_y) — NOT the distance from the launch pad.
+    # This fixes the origin-mismatch bug where a target 400 m away with r_max
+    # 50 m would always evaluate to NOGO because hypot(400, 0) = 400 > 50.
+    impact_x = float(res.get('impact_x', 0.0))
+    impact_y = float(res.get('impact_y', 0.0))
+    dist_to_target = math.hypot(impact_x - target_x, impact_y - target_y)
+
+    if not is_free and dist_to_target > r_max:
+        print(
+            f"[DIAG] NOGO: Target Missed "
+            f"(impact=({impact_x:.1f},{impact_y:.1f}) "
+            f"target=({target_x:.1f},{target_y:.1f}) "
+            f"Dist={dist_to_target:.1f}m > r_max={r_max:.1f}m)",
+            flush=True,
+        )
         return float('-inf')
 
     # ── Step 4: mode-specific scoring ─────────────────────────────────────────
@@ -251,8 +282,8 @@ def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> flo
         return res.get('hang_time', res.get('r_horiz', 0.0))
 
     if is_precision:
-        # Minimise landing radius; hang_time breaks ties.
-        return (r_max - res['r_horiz']) + res.get('hang_time', 0.0)
+        # Minimise landing distance to target; hang_time breaks ties.
+        return (r_max - dist_to_target) + res.get('hang_time', 0.0)
 
     if is_altitude:
         return res.get('apogee_m', 0.0)
@@ -301,12 +332,19 @@ def optimize_launch_angle(
     thrust_uncertainty: float,
     stop_flag: threading.Event,
     progress_cb: Callable[[str, float], None],
+    target_x: float = 0.0,
+    target_y: float = 0.0,
 ) -> dict:
     """Coarse grid-search + MC verification optimiser.
 
     Phase 1: grid search over (elev, azi) to find feasible candidates.
     Phase 2: MC r90 check on the top-5 candidates.
     Phase 3: Final MC analysis on the winner.
+
+    Args:
+        target_x: East offset of the target centre from the launch pad (m).
+                  Default 0.0 (target IS the launch pad — backward compat).
+        target_y: North offset of the target centre from the launch pad (m).
     """
     is_free = "free" in mode.lower() or "自由" in mode
 
@@ -327,16 +365,22 @@ def optimize_launch_angle(
     def objective(res, mc_r=None):
         if not res.get('ok', False):
             return float('-inf')
-        r = res['r_horiz']
 
-        # Hard constraint check incorporating MC radius if available
+        # Target-relative distance — this is the canonical boundary metric.
+        # Do NOT use r_horiz (distance from origin/launch-pad) here; the target
+        # centre may be offset by (target_x, target_y) from the launch pad.
+        ix = float(res.get('impact_x', 0.0))
+        iy = float(res.get('impact_y', 0.0))
+        dist = math.hypot(ix - target_x, iy - target_y)
+
+        # Hard constraint check incorporating MC spread radius if available.
         # Phase 2 passes mc_r to verify the 90% ellipse stays within target.
         if not is_free:
-            check_r = r if mc_r is None else r + mc_r
-            if check_r > r_max:
+            check_dist = dist if mc_r is None else dist + mc_r
+            if check_dist > r_max:
                 return float('-inf')
 
-        return p1_objective_score(res, mode, r_max)
+        return p1_objective_score(res, mode, r_max, target_x, target_y)
 
     candidates = []
     N       = len(elev_grid) * len(azi_grid)
@@ -602,7 +646,7 @@ def p1_ellipse_breaches_circle(
     for i in range(n_pts):
         t  = 2.0 * math.pi * i / n_pts
         xe = a * math.cos(t) * ca - b * math.sin(t) * sa
-        ye = a * math.cos(t) * sa + b * math.cos(t) * ca
+        ye = a * math.cos(t) * sa + b * math.sin(t) * ca  # BUG-01 FIX: sin(t), not cos(t)
         if math.hypot(cx + xe, cy + ye) > R:
             return True
     return False
