@@ -117,6 +117,69 @@ def build_wind_profile(
 
 # ── Perturbed wind profile for MC ────────────────────────────────────────────
 
+def _perturb_wind_profile(
+    base_u: list,
+    base_v: list,
+    rng: _random_mod.Random,
+    wu: float,
+    gust_intensity: float = 0.0,
+) -> tuple[list, list, list]:
+    """Apply stochastic perturbations to a (u, v) wind profile.
+
+    Each altitude level has its wind speed multiplied by a lognormal factor
+    drawn from N(0, wu) in log-space (i.e. speed_scale = exp(N(0,wu))).
+    An additional short-timescale gust component scaled by ``gust_intensity``
+    is added on top.
+
+    Args:
+        base_u:         List of (altitude_m, u_m_s) tuples (eastward component).
+        base_v:         List of (altitude_m, v_m_s) tuples (northward component).
+        rng:            Seeded :class:`random.Random` instance.
+        wu:             Fractional wind uncertainty (std-dev in log-space).
+        gust_intensity: Extra additive gust std-dev as a fraction of local
+                        speed (0.0 disables gusts, used during optimisation MC).
+
+    Returns:
+        (u_prof, v_prof, spd_prof) where each element is a list of
+        (altitude_m, value) tuples and spd_prof contains the perturbed
+        scalar speed at each level.
+    """
+    if not base_u:
+        return [], [], []
+
+    u_prof: list = []
+    v_prof: list = []
+    spd_prof: list = []
+
+    # Draw a single correlated "bulk" scale factor that shifts the whole
+    # column together (captures synoptic-scale uncertainty), then add a
+    # smaller independent perturbation at each level.
+    bulk_log_scale = rng.gauss(0.0, wu * 0.7) if wu > 0 else 0.0
+
+    for (z_u, u), (_, v) in zip(base_u, base_v):
+        spd = math.hypot(u, v)
+
+        # Per-level independent component
+        local_log_scale = rng.gauss(0.0, wu * 0.5) if wu > 0 else 0.0
+        scale = math.exp(bulk_log_scale + local_log_scale)
+
+        # Optional high-frequency gust (zero during optimisation MC)
+        if gust_intensity > 0.0 and spd > 1e-6:
+            gust_u = rng.gauss(0.0, gust_intensity * spd)
+            gust_v = rng.gauss(0.0, gust_intensity * spd)
+        else:
+            gust_u = gust_v = 0.0
+
+        pu = u * scale + gust_u
+        pv = v * scale + gust_v
+
+        u_prof.append((z_u, pu))
+        v_prof.append((z_u, pv))
+        spd_prof.append((z_u, math.hypot(pu, pv)))
+
+    return u_prof, v_prof, spd_prof
+
+
 def build_perturbed_wind_prof(
     params: dict,
     rng: _random_mod.Random,
