@@ -1198,7 +1198,7 @@ class SimController(QObject):
                             _sb.setStyleSheet("border: 1px solid red;")
                             setattr(s, _p, None)
 
-                sb.textChanged.connect(validate_and_set)
+                sb.editingFinished.connect(lambda _sb=sb, _p=prop, _f=to_si: validate_and_set(_sb.text(), _sb, _p, _f))
                 
                 sig = getattr(s, f"{prop}_changed", None)
                 if sig is not None:
