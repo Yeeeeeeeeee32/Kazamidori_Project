@@ -677,10 +677,18 @@ def _parse_rocksim_xml(root: _ET.Element) -> dict:
             "length":         extracted["total_length_m"],
             "radius":         extracted["body_radius_m"],
             "nose_length":    extracted["nose_length_m"],
-            "fin_root":       extracted["fin_root_m"]        or _AIRFRAME_DEFAULTS["fin_root"],
-            "fin_tip":        extracted["fin_tip_m"]         or _AIRFRAME_DEFAULTS["fin_tip"],
-            "fin_span":       extracted["fin_span_m"]        or _AIRFRAME_DEFAULTS["fin_span"],
-            "fin_pos":        extracted["fin_pos_m"]         or _AIRFRAME_DEFAULTS["fin_pos"],
+            "fin_root":       (extracted["fin_root_m"] if extracted["fin_root_m"] is not None
+                               else _AIRFRAME_DEFAULTS["fin_root"]),
+            "fin_tip":        (extracted["fin_tip_m"]  if extracted["fin_tip_m"]  is not None
+                               else _AIRFRAME_DEFAULTS["fin_tip"]),
+            "fin_span":       (extracted["fin_span_m"] if extracted["fin_span_m"] is not None
+                               else _AIRFRAME_DEFAULTS["fin_span"]),
+            # NOTE: fin_pos_m is the leading-edge distance from the nose tip (m).
+            # A value of 0.0 from the parser most likely means <Xb> was absent;
+            # in that case fall back to the aft default so the guard in
+            # simulation._build_rocket produces a corrected, stable position.
+            "fin_pos":        (extracted["fin_pos_m"] if extracted["fin_pos_m"] is not None
+                               else _AIRFRAME_DEFAULTS["fin_pos"]),
             "motor_pos":      None,
             "motor_dry_mass": None,
             "backfire_delay": extracted["backfire_delay_s"],

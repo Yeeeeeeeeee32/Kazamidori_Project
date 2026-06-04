@@ -461,8 +461,14 @@ class SimController(QObject):
         print(f"\n{'='*60}")
         print(f"[DIAG] _on_run_clicked ENTERED")
         print(f"[DIAG]   AppState id        : {id(self._state)}")
-        print(f"[DIAG]   _worker running?   : {self._worker.isRunning() if self._worker else 'None'}")
-        if self._worker and self._worker.isRunning():
+        try:
+            _is_running = self._worker.isRunning() if self._worker else False
+        except RuntimeError:
+            # C++ object already deleted by deleteLater — treat as idle
+            self._worker = None
+            _is_running = False
+        print(f"[DIAG]   _worker running?   : {_is_running}")
+        if _is_running:
             print("[DIAG] EARLY RETURN: worker already running")
             return  # guard against double-click spam
 
@@ -529,8 +535,10 @@ class SimController(QObject):
         self._worker.error.connect(self._on_error, Qt.QueuedConnection)
         self._worker.sig_status_text.connect(self._on_worker_status, Qt.QueuedConnection)
         self._worker.sig_early_warning.connect(self._on_early_warning, Qt.QueuedConnection)
-        # Auto-cleanup the QThread object once the run completes.
+        # Auto-cleanup: schedule C++ deletion, then null the Python wrapper so
+        # subsequent isRunning() guards don't hit a dangling shiboken pointer.
         self._worker.finished.connect(self._worker.deleteLater, Qt.QueuedConnection)
+        self._worker.finished.connect(lambda: setattr(self, '_worker', None), Qt.QueuedConnection)
         print("[DIAG] Calling self._worker.start()...")
         self._worker.start()
         print(f"[DIAG] worker.start() called — isRunning={self._worker.isRunning()}")
@@ -543,8 +551,12 @@ class SimController(QObject):
 
     @Slot()
     def _on_phase1_clicked(self) -> None:
-        if self._worker and self._worker.isRunning():
-            return  # guard against double-click spam
+        try:
+            if self._worker and self._worker.isRunning():
+                return  # guard against double-click spam
+        except RuntimeError:
+            # C++ object already deleted by deleteLater — treat as idle
+            self._worker = None
 
         if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
             self._window.set_status("Validation Error: Motor Physical Parameters must be set before running the simulation.", "#f38ba8")
@@ -596,6 +608,7 @@ class SimController(QObject):
             self._worker.sig_status_text.connect(self._on_worker_status, Qt.QueuedConnection)
             self._worker.sig_early_warning.connect(self._on_early_warning, Qt.QueuedConnection)
             self._worker.finished.connect(self._worker.deleteLater, Qt.QueuedConnection)
+            self._worker.finished.connect(lambda: setattr(self, '_worker', None), Qt.QueuedConnection)
             self._worker.start()
         else:
             self._worker = OptimizationWorker(collected, parent=self)
@@ -608,6 +621,7 @@ class SimController(QObject):
             self._worker.sig_early_warning.connect(self._on_early_warning, Qt.QueuedConnection)
             self._worker.sig_optimization_done.connect(self._on_optimization_done, Qt.QueuedConnection)
             self._worker.finished.connect(self._worker.deleteLater, Qt.QueuedConnection)
+            self._worker.finished.connect(lambda: setattr(self, '_worker', None), Qt.QueuedConnection)
             self._worker.start()
         # Note: LowPriority was removed — see _on_run_clicked for rationale.
 
@@ -952,11 +966,18 @@ class SimController(QObject):
     @Slot(str)
     def _on_worker_status(self, msg: str) -> None:
         print(f"[DIAG] _on_worker_status: {msg!r}", flush=True)
-        # Update the main status bar (colour-coded amber for in-progress stages).
-        self._window.set_status(msg, "#f9e2af")
-        # Mirror the same label onto the progress bar format string so the
-        # "Simulating..." / "Monte Carlo..." text appears next to the bar value.
-        self._window.set_progress(self._state.progress_percentage, msg)
+        # SAFE-ONLY UPDATE: touch ONLY plain QLabel widgets via setText().
+        # Do NOT call set_status() or set_progress() here — those methods call
+        # QProgressBar.setValue() / setFormat() which enqueue a Qt repaint event.
+        # If this slot fires while Matplotlib's Qt backend (backend_qt.py) is
+        # initialising its canvas, the repaint re-enters the Qt event loop from
+        # within an active paint handler, producing the observed GUI deadlock.
+        # Text labels are synchronous property writes that bypass the render queue.
+        self._window._status_label.setText(msg)
+        self._window._status_label.setStyleSheet("color: #f9e2af; padding-left: 8px;")
+        _phase_lbl = getattr(self._window, '_phase_label', None)
+        if _phase_lbl is not None:
+            _phase_lbl.setText(msg)
 
     # ── Phase 2 tolerance slots ────────────────────────────────────────────────
 

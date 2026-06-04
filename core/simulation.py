@@ -377,6 +377,21 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             I_z  = 0.5 * airframe_mass * (radius ** 2)
             I_xy = (1 / 12) * airframe_mass * (3 * (radius ** 2) + airframe_len ** 2)
 
+        # ── [GUARD 2] Mass & inertia validation ──────────────────────────────
+        _dry_mass_total = airframe_mass + motor_dry_mass
+        for _mname, _mval in (
+            ('airframe_mass', airframe_mass),
+            ('motor_dry_mass', motor_dry_mass),
+            ('dry_mass_total', _dry_mass_total),
+            ('I_11 (I_xy)', I_xy),
+            ('I_22 (I_xy)', I_xy),
+            ('I_33 (I_z)',  I_z),
+        ):
+            if _mval is None or not math.isfinite(_mval) or _mval <= 0.0:
+                print(f"[FATAL] Bad Parameter: {_mname}={_mval} — must be finite and > 0.",
+                      flush=True)
+                return {"ok": False, "error": f"Bad Parameter: {_mname}={_mval}"}
+
         # ── Atmosphere ───────────────────────────────────────────────────────
         # Use RocketPy's standard atmosphere (ISA) for pressure AND temperature
         # so air-density / drag calculations respect the lapse rate at apogee.
@@ -391,6 +406,28 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         u_vals = [pt[1] for pt in wind_u_prof]
         v_alts = [pt[0] for pt in wind_v_prof]
         v_vals = [pt[1] for pt in wind_v_prof]
+
+        # ── [GUARD 1] Wind profile validation ────────────────────────────────
+        # CubicSpline / LSODA will hang forever on empty, NaN, or unsorted data.
+        for _wlabel, _walts in (('u_profile', u_alts), ('v_profile', v_alts)):
+            if len(_walts) < 2:
+                print(f"[FATAL] Bad Wind Data: {_wlabel} has fewer than 2 altitude points.",
+                      flush=True)
+                return {"ok": False, "error": "Bad Wind Data: too few altitude points"}
+            if any(math.isnan(a) for a in _walts):
+                print(f"[FATAL] Bad Wind Data: {_wlabel} contains NaN altitudes.",
+                      flush=True)
+                return {"ok": False, "error": "Bad Wind Data: NaN altitude"}
+            for _i in range(1, len(_walts)):
+                if _walts[_i] <= _walts[_i - 1]:
+                    print("[FATAL] Bad Wind Data: Altitudes must be strictly increasing.",
+                          flush=True)
+                    return {"ok": False, "error": "Bad Wind Data"}
+        for _wlabel, _wvals in (('u_profile_vals', u_vals), ('v_profile_vals', v_vals)):
+            if any(math.isnan(v) for v in _wvals):
+                print(f"[FATAL] Bad Wind Data: {_wlabel} contains NaN wind-speed values.",
+                      flush=True)
+                return {"ok": False, "error": "Bad Wind Data: NaN wind value"}
 
         u_spline = CubicSpline(u_alts, u_vals, bc_type='natural')
         v_spline = CubicSpline(v_alts, v_vals, bc_type='natural')
@@ -508,9 +545,43 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             )
             rk.add_motor(motor, position=motor_pos)
             rk.add_nose(length=nose_len, kind=params.get("nose_kind", "vonKarman"), position=0.0)
+            # ── Fin position sanity guard ─────────────────────────────────────
+            # In nose_to_tail orientation `position` is the distance from the
+            # nose tip to the fin root-chord leading edge (m).
+            # A valid fin position MUST be:
+            #   (a) greater than nose_len  — fins cannot be inside the nose cone
+            #   (b) less than airframe_len — fins cannot extend beyond the tail
+            # If either bound fails the .rkt parser most likely returned the
+            # body-tube top coordinate instead of the Xb-offset fin position.
+            # Auto-correct to the aft default: leading edge = tail - root_chord.
+            _fin_pos_raw  = fin_pos
+            _fin_pos_safe = _fin_pos_raw
+
+            if _fin_pos_safe <= nose_len or _fin_pos_safe >= airframe_len:
+                # Place fin leading edge so trailing edge is flush with the tail
+                _fin_pos_safe = max(nose_len + 0.001,
+                                    airframe_len - fin_root)
+                print(
+                    f"[WARN] FIN POSITION OUT-OF-RANGE: raw={_fin_pos_raw:.4f} m "
+                    f"(nose_len={nose_len:.4f} m, airframe_len={airframe_len:.4f} m). "
+                    f"Auto-corrected to {_fin_pos_safe:.4f} m (aft default).",
+                    flush=True,
+                )
+
+            print(
+                f"[DIAG] FIN_BUILD: n={params.get('fin_count', 4)}  "
+                f"root={fin_root:.4f} m  tip={fin_tip:.4f} m  "
+                f"span={fin_span:.4f} m  pos={_fin_pos_safe:.4f} m  "
+                f"(raw_pos={_fin_pos_raw:.4f} m)",
+                flush=True,
+            )
+
             rk.add_trapezoidal_fins(
-                n=params.get("fin_count", 4), root_chord=fin_root, tip_chord=fin_tip,
-                span=fin_span, position=fin_pos,
+                n=params.get("fin_count", 4),
+                root_chord=fin_root,
+                tip_chord=fin_tip,
+                span=fin_span,
+                position=_fin_pos_safe,
             )
 
             try:
@@ -530,15 +601,61 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         # ── Pass 1: find backfire altitude ───────────────────────────────────
         rk1, _motor1 = _build_rocket()
         _diag("PASS1_START", elev_deg=elev, azi_deg=azi, rail_m=rail)
+
+        # ── [GUARD 3] Pre-flight diagnostic dump ──────────────────────────────
+        try:
+            _pf_mass  = float(rk1.total_mass(0))
+        except Exception:
+            _pf_mass  = float('nan')
+        _pf_wind_pts = len(u_alts)   # same count for u and v profiles
+        _pf_para_cds = para_cd * para_area   # CdS product used in Pass 2
+        print(
+            f"[DIAG] PRE-FLIGHT CHECK (Pass 1): "
+            f"Mass={_pf_mass:.4f} kg, "
+            f"Wind points={_pf_wind_pts}, "
+            f"Parachute Cd*S={_pf_para_cds:.4f} m², "
+            f"elev={elev}° azi={azi}° rail={rail} m, "
+            f"I_xy={I_xy:.6f} I_z={I_z:.6f} kg·m²",
+            flush=True,
+        )
+
+        # ── [GUARD 4] Aerodynamic stability check (Pass 1) ───────────────────
+        # A negative static margin means CP is ahead of CG — the rocket will
+        # tumble violently, driving LSODA to picosecond steps and hanging.
+        # In nose_to_tail orientation: CP > CG (numerically) → stable.
+        try:
+            _p1_cg = float(rk1.center_of_mass(0))
+            _p1_cp = float(rk1.cp_position(0))
+        except Exception as _sm_exc:
+            _p1_cg = float('nan')
+            _p1_cp = float('nan')
+            print(f"[WARN] Could not evaluate CG/CP for stability check: {_sm_exc}",
+                  flush=True)
+        print(
+            f"[DIAG] STABILITY (Pass 1): CG={_p1_cg:.4f} m, CP={_p1_cp:.4f} m "
+            f"(nose_to_tail; CP>CG → stable)",
+            flush=True,
+        )
+        _p1_cal = (2.0 * radius)  # calibre = 1 body diameter
+        if math.isfinite(_p1_cg) and math.isfinite(_p1_cp) and _p1_cal > 0:
+            _p1_sm = (_p1_cp - _p1_cg) / _p1_cal   # static margin in calibres
+            if _p1_sm < 0.0:
+                print(
+                    f"[FATAL] Rocket is aerodynamically unstable "
+                    f"(Static Margin={_p1_sm:.3f} cal). "
+                    "Check CG/CP/Motor position.",
+                    flush=True,
+                )
+                return {"ok": False, "error": "Unstable Rocket"}
+
+        # Anti-hang ODE limiters: force a minimum step size and loose tolerances
+        # so LSODA cannot stall on chaotic tumbling or extreme AoA transients.
         fl1 = Flight(
             rocket=rk1, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=True,
-            # Mode-aware ODE tolerances (Proposal F)
-            # max_time: 安全上限 — Pass 1 は最高点で終了するので通常数十秒で完了する。
-            # この上限は積分器がパラシュート未展開などで発散した場合のタイムアウト。
             max_time=120,
-            max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
+            max_time_step=0.05, rtol=1e-3, atol=1e-3,
         )
         t1_arr = fl1.z[:, 0]
         z1_arr = fl1.z[:, 1]
@@ -593,6 +710,31 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
 
         # ── Pass 2: full flight with parachute ───────────────────────────────
         rk2, _motor2 = _build_rocket()
+
+        # ── [GUARD 4b] Aerodynamic stability check (Pass 2) ──────────────────
+        try:
+            _p2_cg = float(rk2.center_of_mass(0))
+            _p2_cp = float(rk2.cp_position(0))
+        except Exception as _sm2_exc:
+            _p2_cg = float('nan')
+            _p2_cp = float('nan')
+            print(f"[WARN] Could not evaluate CG/CP (Pass 2): {_sm2_exc}", flush=True)
+        print(
+            f"[DIAG] STABILITY (Pass 2): CG={_p2_cg:.4f} m, CP={_p2_cp:.4f} m "
+            f"(nose_to_tail; CP>CG → stable)",
+            flush=True,
+        )
+        if math.isfinite(_p2_cg) and math.isfinite(_p2_cp) and (2.0 * radius) > 0:
+            _p2_sm = (_p2_cp - _p2_cg) / (2.0 * radius)
+            if _p2_sm < 0.0:
+                print(
+                    f"[FATAL] Rocket is aerodynamically unstable "
+                    f"(Static Margin={_p2_sm:.3f} cal). "
+                    "Check CG/CP/Motor position.",
+                    flush=True,
+                )
+                return {"ok": False, "error": "Unstable Rocket"}
+
         trig = make_backfire_trigger(backfire_alt)
         rk2.add_parachute(
             "Main",
@@ -601,15 +743,14 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
             sampling_rate=105,
             lag=para_lag,
         )
+
+        # Anti-hang ODE limiters (mirrors Pass 1)
         fl2 = Flight(
             rocket=rk2, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=False,
-            # max_time: Pass 2 (フル飛行) の上限。競技用ロケットの最長飛行時間は
-            # パラシュート降下込みで 120 秒以内に収まる。トリガーが発火しない異常
-            # ケースでも 120 秒で積分を打ち切り、次の MC 試行へ移行させる。
             max_time=120,
-            max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
+            max_time_step=0.05, rtol=1e-3, atol=1e-3,
         )
 
         t_vals  = fl2.z[:, 0]
@@ -847,11 +988,47 @@ def simulate_once_mc(
             I_z  = 0.5 * airframe_mass * (radius ** 2)
             I_xy = (1 / 12) * airframe_mass * (3 * (radius ** 2) + airframe_len ** 2)
 
+        # ── [GUARD 2-MC] Mass & inertia validation ────────────────────────────
+        _dry_mass_total = airframe_mass + motor_dry_mass
+        for _mname, _mval in (
+            ('airframe_mass', airframe_mass),
+            ('motor_dry_mass', motor_dry_mass),
+            ('dry_mass_total', _dry_mass_total),
+            ('I_11 (I_xy)', I_xy),
+            ('I_22 (I_xy)', I_xy),
+            ('I_33 (I_z)',  I_z),
+        ):
+            if _mval is None or not math.isfinite(_mval) or _mval <= 0.0:
+                print(f"[FATAL] Bad Parameter: {_mname}={_mval} — must be finite and > 0.",
+                      flush=True)
+                return {"ok": False, "error": f"Bad Parameter: {_mname}={_mval}"}
+
         # ── Atmosphere ────────────────────────────────────────────────────────
         u_alts = [pt[0] for pt in wind_u_prof]
         u_vals = [pt[1] for pt in wind_u_prof]
         v_alts = [pt[0] for pt in wind_v_prof]
         v_vals = [pt[1] for pt in wind_v_prof]
+
+        # ── [GUARD 1-MC] Wind profile validation ──────────────────────────────
+        for _wlabel, _walts in (('u_profile', u_alts), ('v_profile', v_alts)):
+            if len(_walts) < 2:
+                print(f"[FATAL] Bad Wind Data: {_wlabel} has fewer than 2 altitude points.",
+                      flush=True)
+                return {"ok": False, "error": "Bad Wind Data: too few altitude points"}
+            if any(math.isnan(a) for a in _walts):
+                print(f"[FATAL] Bad Wind Data: {_wlabel} contains NaN altitudes.",
+                      flush=True)
+                return {"ok": False, "error": "Bad Wind Data: NaN altitude"}
+            for _i in range(1, len(_walts)):
+                if _walts[_i] <= _walts[_i - 1]:
+                    print("[FATAL] Bad Wind Data: Altitudes must be strictly increasing.",
+                          flush=True)
+                    return {"ok": False, "error": "Bad Wind Data"}
+        for _wlabel, _wvals in (('u_profile_vals', u_vals), ('v_profile_vals', v_vals)):
+            if any(math.isnan(v) for v in _wvals):
+                print(f"[FATAL] Bad Wind Data: {_wlabel} contains NaN wind-speed values.",
+                      flush=True)
+                return {"ok": False, "error": "Bad Wind Data: NaN wind value"}
 
         u_spline = CubicSpline(u_alts, u_vals, bc_type='natural')
         v_spline = CubicSpline(v_alts, v_vals, bc_type='natural')
@@ -906,13 +1083,69 @@ def simulate_once_mc(
         )
         rk.add_motor(motor, position=motor_pos)
         rk.add_nose(length=nose_len, kind=params.get("nose_kind", "vonKarman"), position=0.0)
+        # ── Fin position sanity guard (MC path mirrors simulate_once) ─────────
+        _fin_pos_raw_mc  = fin_pos
+        _fin_pos_safe_mc = _fin_pos_raw_mc
+
+        if _fin_pos_safe_mc <= nose_len or _fin_pos_safe_mc >= airframe_len:
+            _fin_pos_safe_mc = max(nose_len + 0.001, airframe_len - fin_root)
+            print(
+                f"[WARN][MC] FIN POSITION OUT-OF-RANGE: raw={_fin_pos_raw_mc:.4f} m "
+                f"(nose_len={nose_len:.4f} m, airframe_len={airframe_len:.4f} m). "
+                f"Auto-corrected to {_fin_pos_safe_mc:.4f} m (aft default).",
+                flush=True,
+            )
+
         rk.add_trapezoidal_fins(
-            n=params.get("fin_count", 4), root_chord=fin_root, tip_chord=fin_tip,
-            span=fin_span, position=fin_pos,
+            n=params.get("fin_count", 4),
+            root_chord=fin_root,
+            tip_chord=fin_tip,
+            span=fin_span,
+            position=_fin_pos_safe_mc,
         )
 
         # ── Single-pass flight with pre-known backfire altitude ───────────────
         safe_backfire_alt = max(float(backfire_alt), 1.0)
+
+        # ── [GUARD 3-MC] Pre-flight diagnostic dump ───────────────────────────
+        try:
+            _pf_mass_mc = float(rk.total_mass(0))
+        except Exception:
+            _pf_mass_mc = float('nan')
+        print(
+            f"[DIAG] PRE-FLIGHT CHECK (MC): "
+            f"Mass={_pf_mass_mc:.4f} kg, "
+            f"Wind points={len(u_alts)}, "
+            f"Parachute Cd*S={para_cd * para_area:.4f} m², "
+            f"elev={elev}° azi={azi}° rail={rail} m, "
+            f"I_xy={I_xy:.6f} I_z={I_z:.6f} kg·m²",
+            flush=True,
+        )
+
+        # ── [GUARD 4-MC] Aerodynamic stability check ──────────────────────────
+        try:
+            _mc_cg = float(rk.center_of_mass(0))
+            _mc_cp = float(rk.cp_position(0))
+        except Exception as _sm_mc_exc:
+            _mc_cg = float('nan')
+            _mc_cp = float('nan')
+            print(f"[WARN] Could not evaluate CG/CP (MC): {_sm_mc_exc}", flush=True)
+        print(
+            f"[DIAG] STABILITY (MC trial={trial_idx}): CG={_mc_cg:.4f} m, "
+            f"CP={_mc_cp:.4f} m (nose_to_tail; CP>CG → stable)",
+            flush=True,
+        )
+        if math.isfinite(_mc_cg) and math.isfinite(_mc_cp) and (2.0 * radius) > 0:
+            _mc_sm = (_mc_cp - _mc_cg) / (2.0 * radius)
+            if _mc_sm < 0.0:
+                print(
+                    f"[FATAL] Rocket is aerodynamically unstable "
+                    f"(Static Margin={_mc_sm:.3f} cal, trial={trial_idx}). "
+                    "Check CG/CP/Motor position.",
+                    flush=True,
+                )
+                return {"ok": False, "error": "Unstable Rocket"}
+
         trig = make_backfire_trigger(safe_backfire_alt)
         rk.add_parachute(
             "Main",
@@ -921,14 +1154,14 @@ def simulate_once_mc(
             sampling_rate=105,
             lag=para_lag,
         )
+
+        # Anti-hang ODE limiters: force step floor and loose tolerances.
         fl = Flight(
             rocket=rk, environment=env,
             rail_length=rail, inclination=elev, heading=azi,
             terminate_on_apogee=False,
-            # max_time: simulate_once_mc (MC 高速バリアント) 用の安全上限。
-            # 1 試行あたり最大 120 秒で強制終了し、MC ループを詰まらせない。
             max_time=120,
-            max_time_step=_ode_max_dt, rtol=_ode_rtol, atol=_ode_atol,
+            max_time_step=0.05, rtol=1e-3, atol=1e-3,
         )
 
         t_vals  = fl.z[:, 0]
