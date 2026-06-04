@@ -212,49 +212,59 @@ def build_perturbed_wind_prof(
 def p1_objective_score(res: dict, mode: str, r_max: float = float('inf')) -> float:
     """Return the scalar objective for a simulation result in the given mode.
 
-    Higher is always better (even for Precision Landing where we return
-    the negative landing radius).
+    Higher is always better.  Free Mode is never penalised by r_max;
+    all other competition modes (Precision, Altitude, Winged) are strictly
+    bounded by r_max.
 
-    Implements hard constraint:
-    If mode is not 'Free' (自由) and r_horiz > r_max, return -inf.
+    GO/NOGO logic
+    -------------
+    1. Simulation failed  → -inf  (always)
+    2. Not Free Mode AND r_horiz > r_max  → -inf  (disqualified)
+    3. Free Mode ignores r_max entirely  → score based on hang_time/distance
 
     Score definitions
     -----------------
+    自由    (Free)              : hang_time  (maximise time aloft)
     定点滞空 (Precision Landing) : (r_max - r_horiz) + hang_time
-        Minimise landing radius; hang_time tie-breaks equal-radius results.
-    高度 (Altitude Competition)  : apogee_m
-        Maximise peak altitude.
-    有翼 (Winged Hover)          : hang_time - bf_abs_time
-        Maximise payload hangtime — time from backfire ejection to landing.
-        bf_abs_time is the absolute time at which the ejection charge fires,
-        so (hang_time - bf_abs_time) is the duration the payload is airborne
-        after being released from the rocket body.
-    自由 (Free)                  : apogee_m (default fallback)
+    高度    (Altitude)          : apogee_m
+    有翼    (Winged)            : hang_time  (payload air time; bf_abs_time
+                                             subtracted when available)
     """
+    # ── Step 1: simulation failure is always NOGO ─────────────────────────────
     if not res.get('ok', False):
         return float('-inf')
 
-    # Hard constraint: disqualify if r > r_max and not Free mode
-    is_free = "free" in mode.lower() or "自由" in mode
+    # ── Step 2: mode identification ───────────────────────────────────────────
+    is_free      = "free"      in mode.lower() or "自由" in mode
+    is_precision = "precision" in mode.lower() or "定点" in mode
+    is_altitude  = "altitude"  in mode.lower() or "高度" in mode
+    is_winged    = "winged"    in mode.lower() or "有翼" in mode
+
+    # ── Step 3: r_max hard constraint (non-Free modes only) ───────────────────
     if not is_free and res['r_horiz'] > r_max:
         return float('-inf')
 
-    # Task 2 Mode Objective Scores
-    if mode == 'Precision Landing' or '定点滞空' in mode:
-        return (r_max - res['r_horiz']) + res['hang_time']
-    elif mode == 'Altitude Competition' or '高度' in mode:
-        return res['apogee_m']
-    elif mode == 'Winged Hover' or '有翼' in mode:
-        # Payload hangtime: from ejection charge to landing.
-        # bf_abs_time is the moment the backfire fires and the payload is
-        # released; hang_time is total flight time.
-        # Falls back to total hang_time if bf_abs_time is unavailable
-        # (e.g. older cached result dicts from before this change).
+    # ── Step 4: mode-specific scoring ─────────────────────────────────────────
+    if is_free:
+        # Free Mode: no target radius — maximise time aloft.
+        # Return hang_time as positive baseline; fall back to r_horiz if absent.
+        return res.get('hang_time', res.get('r_horiz', 0.0))
+
+    if is_precision:
+        # Minimise landing radius; hang_time breaks ties.
+        return (r_max - res['r_horiz']) + res.get('hang_time', 0.0)
+
+    if is_altitude:
+        return res.get('apogee_m', 0.0)
+
+    if is_winged:
+        # Payload hangtime: from ejection charge fire to landing.
+        # bf_abs_time falls back to 0 for older result dicts.
         bf_t = res.get('bf_abs_time', 0.0)
-        return float(res['hang_time']) - float(bf_t)
-    else:
-        # Free mode fallback
-        return res['apogee_m']
+        return float(res.get('hang_time', 0.0)) - float(bf_t)
+
+    # ── Fallback (unknown mode string) ────────────────────────────────────────
+    return res.get('hang_time', res.get('r_horiz', 0.0))
 
 # ── Optimiser (from _optimize_worker) ────────────────────────────────────────
 
