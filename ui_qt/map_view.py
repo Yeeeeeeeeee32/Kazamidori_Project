@@ -463,45 +463,110 @@ class MapView(QWidget):
         self.canvas.draw_idle()
 
     def _render_map_tiles(self) -> None:
-        """Render offline map tiles behind the coordinate canvas using the pre-stitched background.png."""
+        """Render offline map background with safety overlays.
+
+        Asset loading priority:
+          1. Load ``assets/offline_map/background.png`` + ``map_meta.json``.
+          2. If either file is missing or corrupted, fall back to a blank
+             dark grid with a prominent red warning annotation.
+
+        Visual safety net:
+          - Two concentric dashed distance rings at 500 m and 1000 m (zorder=2).
+
+        Magnetic declination integration:
+          - Pushes ``magnetic_declination`` and ``manual_offset`` from the
+            loaded JSON into AppState so all downstream components can read
+            ``state.effective_declination``.
+        """
         import os
         import json
-        from PIL import Image
         import numpy as np
 
         meta_path = "assets/offline_map/map_meta.json"
-        img_path = "assets/offline_map/background.png"
+        img_path  = "assets/offline_map/background.png"
 
-        if not os.path.exists(meta_path) or not os.path.exists(img_path):
-            print("Warning: Offline map files missing. Rendering blank grid.")
-            return
+        map_loaded = False
 
-        try:
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
+        # ── Attempt asset load ────────────────────────────────────────────────
+        if os.path.exists(meta_path) and os.path.exists(img_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
 
-            declination = meta.get("magnetic_declination", 0.0)
-            if getattr(self._state, 'magnetic_declination', None) != declination:
-                self._state.magnetic_declination = declination
+                # ── Push declination into AppState ────────────────────────────
+                declination = float(meta.get("magnetic_declination", 0.0))
+                manual_off  = float(meta.get("manual_offset", 0.0))
 
-            extent = meta.get("extent_meters", [-250.0, 250.0, -250.0, 250.0])
-            if getattr(self._state, 'offline_map_extent', None) != extent:
-                self._state.offline_map_extent = extent
+                if getattr(self._state, 'magnetic_declination', None) != declination:
+                    self._state.magnetic_declination = declination
+                if getattr(self._state, 'manual_declination_offset', None) != manual_off:
+                    self._state.manual_declination_offset = manual_off
 
-            # Cache the loaded image array to avoid slow disk read and conversion on every single redraw
-            if not hasattr(self, '_cached_img_path') or self._cached_img_path != img_path:
-                print(f"Loading and caching background map image: {img_path}")
-                img = Image.open(img_path)
-                self._cached_background_img = np.array(img)
-                self._cached_img_path = img_path
+                # ── Push extent into AppState ─────────────────────────────────
+                extent = meta.get("extent_meters", [-1000.0, 1000.0, -1000.0, 1000.0])
+                if getattr(self._state, 'offline_map_extent', None) != extent:
+                    self._state.offline_map_extent = extent
 
-            # We strictly render it relative to the origin within the bounds
-            self.ax.imshow(self._cached_background_img, extent=self._state.offline_map_extent, origin='upper', zorder=0, alpha=0.6)
+                # ── Cache image array (avoid disk I/O on every redraw) ────────
+                if not hasattr(self, '_cached_img_path') or self._cached_img_path != img_path:
+                    from PIL import Image
+                    print(f"Loading and caching background map image: {img_path}")
+                    img = Image.open(img_path)
+                    self._cached_background_img = np.array(img)
+                    self._cached_img_path = img_path
 
-        except Exception as e:
-            import traceback
-            print(f"=== MAP RENDER ERROR ===\n{traceback.format_exc()}")
-            print(f"Error rendering offline map tiles: {e}")
+                # ── Render background raster (zorder=0) ───────────────────────
+                self.ax.imshow(
+                    self._cached_background_img,
+                    extent=self._state.offline_map_extent,
+                    origin='upper',
+                    zorder=0,
+                    alpha=0.6,
+                )
+                map_loaded = True
+
+            except Exception:
+                import traceback
+                print(f"=== MAP ASSET LOAD ERROR ===\n{traceback.format_exc()}")
+                map_loaded = False
+        else:
+            print("Warning: Offline map files missing. Rendering fallback grid.")
+
+        # ── Fallback: red HUD warning (zorder=99) ────────────────────────────
+        if not map_loaded:
+            self.ax.text(
+                0.5, 0.5,
+                "[WARNING] OFFLINE MAP NOT LOADED\nCHECK GPS COORDINATES",
+                transform=self.ax.transAxes,
+                ha='center', va='center',
+                fontsize=12, fontweight='bold',
+                color='#ff3333',
+                bbox=dict(
+                    boxstyle='round,pad=0.6',
+                    facecolor='#1e1e2e',
+                    edgecolor='#ff3333',
+                    alpha=0.92,
+                ),
+                zorder=99,
+            )
+
+        # ── Visual safety net: concentric distance rings ──────────────────────
+        for radius_m, label in [(500, "500 m"), (1000, "1000 m")]:
+            ring = patches.Circle(
+                (0, 0), radius=radius_m,
+                edgecolor='#585b70', facecolor='none',
+                linestyle='--', linewidth=0.8,
+                zorder=2,
+            )
+            self.ax.add_patch(ring)
+            # Label at the top of each ring
+            self.ax.text(
+                0, radius_m + 15,
+                label,
+                ha='center', va='bottom',
+                fontsize=7, color='#585b70',
+                zorder=2,
+            )
 
     def _on_reset_view(self):
         # Reset the view to frame the Launch Site (0,0) and the Target Radius circle

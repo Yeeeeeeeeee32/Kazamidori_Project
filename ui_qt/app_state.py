@@ -42,6 +42,8 @@ class AppState(QObject):
     # ── Simulation configuration ───────────────────────────────────────────────
     wind_uncertainty_changed   = Signal(object)
     magnetic_declination_changed = Signal(float)
+    manual_declination_offset_changed = Signal(float)
+    effective_declination_changed = Signal(float)
     offline_map_extent_changed = Signal(list)
     thrust_uncertainty_changed = Signal(object)
     landing_prob_changed       = Signal(int)
@@ -250,6 +252,7 @@ class AppState(QObject):
         self._launch_lat = _ff("launch_lat")    # decimal degrees
         self._launch_lon = _ff("launch_lon")    # decimal degrees
         self._magnetic_declination = 0.0
+        self._manual_declination_offset = 0.0
         self._offline_map_extent = [-250.0, 250.0, -250.0, 250.0]
 
         self._current_playback_index = 0
@@ -563,6 +566,33 @@ class AppState(QObject):
         if self._magnetic_declination != value:
             self._magnetic_declination = value
             self.magnetic_declination_changed.emit(value)
+            self.effective_declination_changed.emit(self.effective_declination)
+
+    @Property(float, notify=manual_declination_offset_changed)
+    def manual_declination_offset(self) -> float:
+        """Operator-supplied manual correction to the WMM declination (degrees).
+
+        Loaded from map_meta.json ``manual_offset`` field.  The operator can
+        edit this value at runtime to compensate for local anomalies.
+        """
+        return self._manual_declination_offset
+
+    @manual_declination_offset.setter
+    def manual_declination_offset(self, value: float) -> None:
+        value = float(value)
+        if self._manual_declination_offset != value:
+            self._manual_declination_offset = value
+            self.manual_declination_offset_changed.emit(value)
+            self.effective_declination_changed.emit(self.effective_declination)
+
+    @property
+    def effective_declination(self) -> float:
+        """Total magnetic declination = WMM theoretical + manual offset (degrees).
+
+        All components that need the bearing correction should read this
+        property rather than magnetic_declination directly.
+        """
+        return self._magnetic_declination + self._manual_declination_offset
 
     @Property(list, notify=offline_map_extent_changed)
     def offline_map_extent(self) -> list:
