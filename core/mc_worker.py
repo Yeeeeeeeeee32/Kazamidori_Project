@@ -31,6 +31,8 @@ def _mc_worker_chunk(
     flight_mode: str,
     target_radius: float,
     backfire_alt: float = 0.0,
+    target_x: float = 0.0,
+    target_y: float = 0.0,
 ) -> list[dict | None]:
     """
     Top-level, picklable worker function for ProcessPoolExecutor.
@@ -69,7 +71,7 @@ def _mc_worker_chunk(
             r = simulate_once(elev, azi, trial_p, trial_idx=trial_idx)
 
         if r["ok"]:
-            score = p1_objective_score(r, flight_mode, target_radius)
+            score = p1_objective_score(r, flight_mode, target_radius, target_x, target_y)
 
             h_time = float(r["hang_time"])
             bf_t = float(r.get("bf_abs_time", 0.0))

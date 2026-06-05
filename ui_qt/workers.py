@@ -251,10 +251,12 @@ class SimulationWorker(QThread):
             # Also skip if target_radius was not provided (None).
             _is_free  = bool(p.get("is_free_mode", False))
             _target_r = p.get("target_radius")
+            _target_x = float(p.get("target_x", 0.0))
+            _target_y = float(p.get("target_y", 0.0))
             if not _is_free and _target_r is not None:
                 _nom_dist = math.hypot(
-                    float(nom_pkg["impact_x"]),
-                    float(nom_pkg["impact_y"]),
+                    float(nom_pkg["impact_x"]) - _target_x,
+                    float(nom_pkg["impact_y"]) - _target_y,
                 )
                 if _nom_dist > float(_target_r):
                     self.sig_early_warning.emit(
@@ -711,6 +713,8 @@ class SimulationWorker(QThread):
         base_v: list  = sim_params.get("wind_v_prof", [])
         flight_mode   = p.get("flight_mode",   "Altitude Competition")
         target_radius = p.get("target_radius", float("inf"))
+        target_x      = float(p.get("target_x", 0.0))
+        target_y      = float(p.get("target_y", 0.0))
 
         scatter: list[dict] = []
 
@@ -770,7 +774,7 @@ class SimulationWorker(QThread):
                 continue
 
             # ── Score and extract scalars ─────────────────────────────────
-            score  = p1_objective_score(r, flight_mode, target_radius)
+            score  = p1_objective_score(r, flight_mode, target_radius, target_x, target_y)
             h_time = float(r["hang_time"])
             bf_t   = float(r.get("bf_abs_time", 0.0))
             if "有翼" in flight_mode or "winged" in flight_mode.lower() or "wing" in flight_mode.lower():
@@ -1147,7 +1151,9 @@ class OptimizationWorker(QThread):
                 wind_uncertainty=float(p.get("wind_unc", 0.20)),
                 thrust_uncertainty=float(p.get("thrust_unc", 0.05)),
                 stop_flag=self._stop_event,
-                progress_cb=prog_cb
+                progress_cb=prog_cb,
+                target_x=float(p.get("target_x", 0.0)),
+                target_y=float(p.get("target_y", 0.0)),
             )
 
             if self._stop_event.is_set():
@@ -1185,10 +1191,12 @@ class OptimizationWorker(QThread):
 
             _is_free  = bool(p.get("is_free_mode", False))
             _target_r = p.get("target_radius")
+            _target_x = float(p.get("target_x", 0.0))
+            _target_y = float(p.get("target_y", 0.0))
             if not _is_free and _target_r is not None:
                 _nom_dist = math.hypot(
-                    float(nom_pkg["impact_x"]),
-                    float(nom_pkg["impact_y"]),
+                    float(nom_pkg["impact_x"]) - _target_x,
+                    float(nom_pkg["impact_y"]) - _target_y,
                 )
                 if _nom_dist > float(_target_r):
                     self.sig_early_warning.emit(

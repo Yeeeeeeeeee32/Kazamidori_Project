@@ -756,11 +756,34 @@ class SimController(QObject):
 
         # Early warning: update GO/NO-GO indicator immediately after nominal run,
         # before the MC loop starts, so the operator never waits blindly.
+        # FREE MODE: no target radius concept — skip the boundary check entirely.
+        _mode_str = str(self._state.flight_mode)
+        _is_free_mode = "free" in _mode_str.lower() or "自由" in _mode_str
         _off_e    = float(payload.get("impact_x", 0.0))
         _off_n    = float(payload.get("impact_y", 0.0))
-        _nom_dist = math.hypot(_off_e, _off_n)
+        _tgt_x    = float(getattr(self._state, "target_x", 0.0) or 0.0)
+        _tgt_y    = float(getattr(self._state, "target_y", 0.0) or 0.0)
+        _nom_dist = math.hypot(_off_e - _tgt_x, _off_n - _tgt_y)
         _target_r = self._state.target_radius
-        if _nom_dist > _target_r:
+        print(
+            f"[DIAG] _on_nominal_done GO/NOGO check: "
+            f"mode={_mode_str!r} is_free={_is_free_mode} "
+            f"nom_dist={_nom_dist:.1f}m target_r={_target_r}",
+            flush=True,
+        )
+        if _is_free_mode:
+            # Free Mode: distance from launch pad is informational only — never NOGO.
+            self._window.update_status_indicator(
+                f"⏳  FREE MODE — Nominal dist {_nom_dist:.0f} m  |  MC running…"
+            )
+        elif _target_r is None:
+            print("[DIAG] NOGO guard: target_r is None in non-Free mode — skipping indicator", flush=True)
+            self._window.update_status_indicator("⏳  CALCULATING — MC running…")
+        elif _nom_dist > _target_r:
+            print(
+                f"[DIAG] NOGO: _on_nominal_done — nominal {_nom_dist:.1f}m > target_r {_target_r:.1f}m",
+                flush=True,
+            )
             self._window.update_status_indicator(
                 f"⚠️  NO-GO — Nominal {_nom_dist:.0f} m > Target {_target_r:.0f} m  |  MC running…"
             )
@@ -867,45 +890,82 @@ class SimController(QObject):
         self._state.simulation_result = self._adapt_for_window(result)
 
         # ── Phase A verification: CEP50 ≤ target_radius → SAFE → Phase B ────────
+        # FREE MODE: no target radius / landing zone concept — skip entirely.
         cep50    = self._state.mc_cep
         target_r = self._state.target_radius
-        is_safe  = cep50 <= target_r
-
-        if is_safe:
-            # Lock the Phase A wind distribution so Phase B O(1) GO/NO-GO ticks
-            # compare live wind against the exact baseline used in the MC run.
-            # Use surface (lowest) level from wind_profile_data as fallback
-            lowest_wind = sorted(self._state.wind_profile_data, key=lambda n: n["alt_m"])[0] if self._state.wind_profile_data else {"speed_ms": 0.0, "dir_deg": 0.0}
-            surf_spd = result.get("nominal_surf_spd", lowest_wind["speed_ms"])
-            surf_dir = result.get("nominal_surf_dir", lowest_wind["dir_deg"])
-            wind_unc = float(self._window.wind_unc_input.value())
-            mu_u = surf_spd * math.sin(math.radians(surf_dir))
-            mu_v = surf_spd * math.cos(math.radians(surf_dir))
-            self._state.set_wind_lock(mu_u, mu_v, wind_unc)
-            self._state.phase2_active = True
-            self._window.update_status_indicator(
-                f"🟢  GO  (CEP {cep50:.0f} m ≤ {target_r:.0f} m)"
-            )
-        else:
-            self._window.update_status_indicator(
-                f"🔴  NO-GO  (CEP {cep50:.0f} m > {target_r:.0f} m)"
-            )
+        _mode_str_mc = str(self._state.flight_mode)
+        _is_free_mode_mc = "free" in _mode_str_mc.lower() or "自由" in _mode_str_mc
+        print(
+            f"[DIAG] _on_mc_done Phase A check: "
+            f"mode={_mode_str_mc!r} is_free={_is_free_mode_mc} "
+            f"cep50={cep50:.1f}m target_r={target_r}",
+            flush=True,
+        )
 
         r90    = self._state.r90_radius
         apogee = result.get("apogee_m",  0.0)
         tof    = result.get("hang_time", 0.0)
         n      = result.get("n_runs",    0)
         prob   = result.get("landing_prob", int(self._window.cep_prob_input.value()))
-        verdict = (
-            f"SAFE  CEP {cep50:.0f} m <= {target_r:.0f} m"
-            if is_safe else
-            f"UNSAFE  CEP {cep50:.0f} m > {target_r:.0f} m"
-        )
-        self._window.set_status(
-            f"{verdict}   |   R{prob}: {r90:.1f} m   |   "
-            f"Apogee: {apogee:.0f} m   |   ToF: {tof:.1f} s   ({n} runs)",
-            "#a6e3a1" if is_safe else "#f9e2af",
-        )
+
+        if _is_free_mode_mc:
+            # Free Mode: no SAFE/UNSAFE concept — display informational summary only.
+            self._window.update_status_indicator(
+                f"🟢  FREE MODE — R{prob}: {r90:.0f} m  |  Apogee: {apogee:.0f} m"
+            )
+            self._window.set_status(
+                f"Free Mode  |  R{prob}: {r90:.1f} m  |  "
+                f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s  ({n} runs)",
+                "#89dceb",
+            )
+        elif target_r is None:
+            # Non-Free mode but no target radius set — show a neutral warning.
+            print("[DIAG] NOGO guard: target_r is None in non-Free mode — cannot evaluate Phase A", flush=True)
+            self._window.update_status_indicator("⚠️  target_radius not set — cannot evaluate GO/NO-GO")
+            self._window.set_status(
+                f"target_radius not set  |  R{prob}: {r90:.1f} m  |  "
+                f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s  ({n} runs)",
+                "#f9e2af",
+            )
+        else:
+            is_safe = cep50 <= target_r
+            print(
+                f"[DIAG] Phase A result: cep50={cep50:.1f}m {'<=' if is_safe else '>'} "
+                f"target_r={target_r:.1f}m  ->  {'SAFE' if is_safe else 'NOGO'}",
+                flush=True,
+            )
+            if is_safe:
+                # Lock the Phase A wind distribution so Phase B O(1) GO/NO-GO ticks
+                # compare live wind against the exact baseline used in the MC run.
+                lowest_wind = sorted(self._state.wind_profile_data, key=lambda n: n["alt_m"])[0] if self._state.wind_profile_data else {"speed_ms": 0.0, "dir_deg": 0.0}
+                surf_spd = result.get("nominal_surf_spd", lowest_wind["speed_ms"])
+                surf_dir = result.get("nominal_surf_dir", lowest_wind["dir_deg"])
+                wind_unc = float(self._window.wind_unc_input.value())
+                mu_u = surf_spd * math.sin(math.radians(surf_dir))
+                mu_v = surf_spd * math.cos(math.radians(surf_dir))
+                self._state.set_wind_lock(mu_u, mu_v, wind_unc)
+                self._state.phase2_active = True
+                self._window.update_status_indicator(
+                    f"🟢  GO  (CEP {cep50:.0f} m ≤ {target_r:.0f} m)"
+                )
+            else:
+                print(
+                    f"[DIAG] NOGO: _on_mc_done — cep50={cep50:.1f}m > target_r={target_r:.1f}m",
+                    flush=True,
+                )
+                self._window.update_status_indicator(
+                    f"🔴  NO-GO  (CEP {cep50:.0f} m > {target_r:.0f} m)"
+                )
+            verdict = (
+                f"SAFE  CEP {cep50:.0f} m <= {target_r:.0f} m"
+                if is_safe else
+                f"UNSAFE  CEP {cep50:.0f} m > {target_r:.0f} m"
+            )
+            self._window.set_status(
+                f"{verdict}   |   R{prob}: {r90:.1f} m   |   "
+                f"Apogee: {apogee:.0f} m   |   ToF: {tof:.1f} s   ({n} runs)",
+                "#a6e3a1" if is_safe else "#f9e2af",
+            )
         self._window.set_progress(100, "Done")
 
         # Cache scatter as numpy so partial redraws (cep_prob change) can
@@ -1125,6 +1185,11 @@ class SimController(QObject):
             "backfire_delay": None if s.backfire_delay == -9999.0 else s.backfire_delay,        # s
             # ── Motor thrust curve — persisted by AppWindow._on_load_motor() ──
             "target_radius":  s.target_radius,              # m  (rmax_input spinbox)
+            # Target ENU offset (metres from launch pad origin).
+            # Defaults to 0.0/0.0 (target IS at the launch pad) until a UI
+            # widget is wired to provide a non-zero offset.
+            "target_x":       float(getattr(s, "target_x", 0.0) or 0.0),  # East  (m)
+            "target_y":       float(getattr(s, "target_y", 0.0) or 0.0),  # North (m)
             **({
                 "thrust_data":     w._motor_thrust_data,
                 "motor_burn_time": w._motor_burn_time,

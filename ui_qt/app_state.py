@@ -1145,21 +1145,42 @@ class AppState(QObject):
         if not self._phase2_active or self._locked_mu is None:
             return
 
+        # FREE MODE: no target-radius constraint → wind monitoring is N/A.
+        _mode_str = str(self._flight_mode)
+        if "free" in _mode_str.lower() or "自由" in _mode_str:
+            print(
+                f"[DIAG] check_tolerance: FREE MODE — skipping wind GO/NOGO "
+                f"(mode={_mode_str!r} speed={speed:.2f} dir={direction:.1f})",
+                flush=True,
+            )
+            return
+
         from core.monte_carlo import evaluate_wind_within_bounds
 
         live_u = speed * math.sin(math.radians(direction))
         live_v = speed * math.cos(math.radians(direction))
-        in_bounds = evaluate_wind_within_bounds(
-            live_u, live_v,
-            self._locked_mu[0], self._locked_mu[1],
-            self._locked_sigma,
+        mu_u, mu_v = self._locked_mu
+        sigma      = self._locked_sigma
+        in_bounds = evaluate_wind_within_bounds(live_u, live_v, mu_u, mu_v, sigma)
+
+        print(
+            f"[DIAG] WIND CHECK: "
+            f"live_u={live_u:.3f} live_v={live_v:.3f} "
+            f"locked_mu=({mu_u:.3f},{mu_v:.3f}) sigma={sigma:.3f} "
+            f"-> in_bounds={in_bounds}",
+            flush=True,
         )
 
         if not in_bounds:
-            mu_spd = math.hypot(self._locked_mu[0], self._locked_mu[1])
+            mu_spd = math.hypot(mu_u, mu_v)
             self.tolerance_exceeded.emit(
                 f"Live {speed:.1f} m/s vs locked {mu_spd:.1f} m/s "
-                f"(σ={self._locked_sigma:.2f})"
+                f"(σ={sigma:.2f})"
+            )
+            print(
+                f"[DIAG] NOGO: check_tolerance — wind out of bounds: "
+                f"speed={speed:.2f} m/s vs locked={mu_spd:.2f} m/s sigma={sigma:.2f}",
+                flush=True,
             )
             new_status = "⚠  NO-GO"
         else:
