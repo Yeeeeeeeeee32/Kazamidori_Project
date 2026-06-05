@@ -119,6 +119,7 @@ QPushButton {
     padding: 5px 14px; color: #ffffff; font-weight: bold;
 }
 QPushButton:hover    { background: #4a4a4a; border-color: #7eb3ff; }
+QPushButton:focus    { border-color: #7eb3ff; outline: none; }
 QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
 QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
 QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
