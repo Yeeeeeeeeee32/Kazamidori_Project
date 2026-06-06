@@ -82,6 +82,7 @@ QToolBox::tab {
 }
 QToolBox::tab:selected { background: #4a4a4a; color: #c5a5f7; border-color: #c5a5f7; }
 QToolBox::tab:hover    { background: #444444; border-color: #7eb3ff; }
+QToolBox::tab:focus    { border-color: #7eb3ff; outline: none; }
 QSplitter::handle         { background: #555555; width: 4px; height: 4px; }
 QSplitter::handle:hover   { background: #7eb3ff; }
 QGroupBox {
@@ -121,6 +122,7 @@ QPushButton {
 QPushButton:hover    { background: #4a4a4a; border-color: #7eb3ff; }
 QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
 QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
+QPushButton:focus    { border-color: #7eb3ff; outline: none; }
 QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
 QPushButton#btn_run:hover  { background: #8ed9a8; }
 QPushButton#btn_stop { background: #f38ba8; color: #1e1e1e; border-color: #f38ba8; }
@@ -151,6 +153,7 @@ QToolBar QToolButton {
 }
 QToolBar QToolButton:hover   { background: #3c3c3c; border-color: #555555; }
 QToolBar QToolButton:pressed { background: #555555; }
+QToolBar QToolButton:focus   { border-color: #7eb3ff; outline: none; }
 QMenuBar { background: #1e1e1e; color: #ffffff; border-bottom: 1px solid #3c3c3c; }
 QMenuBar::item { padding: 5px 12px; background: transparent; }
 QMenuBar::item:selected { background: #3c3c3c; border-radius: 3px; }
