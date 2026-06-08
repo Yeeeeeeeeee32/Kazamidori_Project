@@ -190,10 +190,6 @@ class SimController(QObject):
         # Reconnect from AppWindow's bare exec() stub to the controller's
         # populate-from-AppState → exec → push-to-AppState flow.
         for _btn in self._window.findChildren(QPushButton, "btn_adv_settings"):
-            try:
-                _btn.clicked.disconnect()
-            except RuntimeError:
-                pass
             _btn.clicked.connect(self._on_advanced_settings_clicked)
 
         # ── Two-stage rendering: AppState → UI ────────────────────────────────
@@ -235,44 +231,20 @@ class SimController(QObject):
     def _rewire_buttons(self) -> None:
         """
         Redirect every btn_run / btn_stop in the widget tree to controller
-        slots.  Disconnects the window-internal stub handlers first so only
-        one slot fires per click.
-
-        findChildren searches recursively, picking up both the toolbar and the
-        "Simulation Controls" panel buttons in one pass.
+        slots.
         """
         for btn in self._window.findChildren(QPushButton, "btn_run"):
-            try:
-                btn.clicked.disconnect()
-            except RuntimeError:
-                pass
             btn.clicked.connect(self._on_run_clicked)
 
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
-            try:
-                btn.clicked.disconnect()
-            except RuntimeError:
-                pass
             btn.clicked.connect(self._on_stop_clicked)
 
         for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
-            try:
-                btn.clicked.disconnect()
-            except RuntimeError:
-                pass
             btn.clicked.connect(self._on_phase1_clicked)
 
         if hasattr(self._window, "btn_download_map"):
-            try:
-                self._window.btn_download_map.clicked.disconnect()
-            except RuntimeError:
-                pass
             self._window.btn_download_map.clicked.connect(self._on_download_map_clicked)
         for btn in self._window.findChildren(QPushButton, "btn_download_map"):
-            try:
-                btn.clicked.disconnect()
-            except RuntimeError:
-                pass
             btn.clicked.connect(self._on_download_map_clicked)
 
     # ── Run ────────────────────────────────────────────────────────────────────
@@ -339,6 +311,7 @@ class SimController(QObject):
             missing.append("Motor Thrust Curve (.csv)")
 
         if missing:
+            print("[DIAG] _validate_run_prerequisites FAILED: Missing Parameters: " + ", ".join(missing), flush=True)
             self._window.set_status("Missing Parameters: " + ", ".join(missing), "#f38ba8")
             return False
 
@@ -359,6 +332,7 @@ class SimController(QObject):
 
     @Slot()
     def _on_download_map_clicked(self) -> None:
+        print("[DIAG] DOWNLOAD BUTTON CLICKED - Slot triggered.", flush=True)
         if self._worker is not None and self._worker.isRunning():
             return
 
@@ -397,67 +371,20 @@ class SimController(QObject):
 
         declination = meta.get("magnetic_declination", 0.0)
         self._state.magnetic_declination = declination
-        # Push declination into UI (which feeds AppState back) if needed, or just keep it in state.
 
-        # Force map to redraw by clearing result and emitting signal
-        # Since map relies on result for some things, but map_view can check for assets/offline_map/background.png
-        # Let's just emit simulation_result_changed with None (or current result)
+        # Force map view to reload the new background tiles and redraw
         self._state.simulation_result_changed.emit(None)
+        self._state.needs_redraw.emit()
 
-        self._window.set_status(f"Download Complete: Offline map tiles downloaded. Magnetic Declination: {declination:.4f}°", "#a6e3a1")
-
-        if self._worker and self._worker.isRunning():
-            return
-
-        lat = self._state.launch_lat
-        lon = self._state.launch_lon
-
-        if lat is None or lon is None:
-            self._window.set_status("No Location: Please enter valid launch coordinates before downloading the map.", "#f38ba8")
-            return
-
-        from PySide6.QtCore import QThread, Signal
-        from utils.map_downloader import download_offline_map
-        import traceback
-
-        class MapWorker(QThread):
-            sig_status_update = Signal(str, str)
-            sig_finished = Signal(bool, str)
-
-            def __init__(self, lat, lon, parent=None):
-                super().__init__(parent)
-                self.lat = lat
-                self.lon = lon
-
-            def run(self):
-                try:
-                    self.sig_status_update.emit("Downloading offline map...", "#f9e2af")
-                    download_offline_map(self.lat, self.lon)
-                    self.sig_finished.emit(True, "Offline map downloaded successfully.")
-                except Exception as e:
-                    print(traceback.format_exc())
-                    self.sig_finished.emit(False, f"Map download failed: {e}")
-
-        # Retain a reference to prevent garbage collection
-        self._map_worker = MapWorker(lat, lon, parent=self)
-
-        def on_status_update(msg: str, color: str):
-            self._window.set_status(msg, color)
-
-        def on_finished(success: bool, msg: str):
-            if success:
-                self._window.set_status(msg, "#a8e6a1")
-                self._state.needs_redraw.emit()
-            else:
-                self._window.set_status(msg, "#f38ba8")
-
-        self._map_worker.sig_status_update.connect(on_status_update)
-        self._map_worker.sig_finished.connect(on_finished)
-        self._map_worker.finished.connect(self._map_worker.deleteLater)
-        self._map_worker.start()
+        self._window.set_status(
+            f"Download Complete: Offline map tiles downloaded. "
+            f"Magnetic Declination: {declination:.4f}°",
+            "#a6e3a1",
+        )
 
     @Slot()
     def _on_run_clicked(self) -> None:
+        print("[DIAG] RUN SIMULATION BUTTON CLICKED - Slot triggered.", flush=True)
         print(f"\n{'='*60}")
         print(f"[DIAG] _on_run_clicked ENTERED")
         print(f"[DIAG]   AppState id        : {id(self._state)}")
@@ -551,6 +478,7 @@ class SimController(QObject):
 
     @Slot()
     def _on_phase1_clicked(self) -> None:
+        print("[DIAG] RUN SIMULATION BUTTON CLICKED - Slot triggered.", flush=True)
         try:
             if self._worker and self._worker.isRunning():
                 return  # guard against double-click spam
@@ -559,6 +487,7 @@ class SimController(QObject):
             self._worker = None
 
         if self._state.motor_cg_pos is None or self._state.motor_dry_mass is None:
+            print("[DIAG] EARLY RETURN: motor params missing", flush=True)
             self._window.set_status("Validation Error: Motor Physical Parameters must be set before running the simulation.", "#f38ba8")
             return
 

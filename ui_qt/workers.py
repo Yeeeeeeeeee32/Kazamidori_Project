@@ -1021,6 +1021,11 @@ class SimulationWorker(QThread):
 class MapDownloadWorker(QThread):
     """
     Executes the map download in a background thread to prevent UI freezing.
+
+    Calls ``download_offline_map()`` directly (in-process) to preserve full
+    IEEE 754 float64 precision on the latitude / longitude values.  The
+    previous subprocess path converted coordinates via ``str()`` which
+    truncated to ~12 significant digits.
     """
     sig_progress = Signal(int, int, str)
     sig_finished = Signal(dict)
@@ -1028,39 +1033,15 @@ class MapDownloadWorker(QThread):
 
     def __init__(self, lat: float, lon: float, parent=None):
         super().__init__(parent)
-        self.lat = lat
-        self.lon = lon
+        self.lat = float(lat)   # enforce float64
+        self.lon = float(lon)   # enforce float64
 
     def run(self) -> None:
         try:
-            import os
-            import subprocess
-            import json
+            from utils.map_downloader import download_offline_map
 
             self.sig_progress.emit(10, 100, "Starting map download...")
-
-            # Using run_in_bash_session style via subprocess to call our CLI tool natively
-            import sys
-            cmd = [sys.executable, "utils/map_downloader.py", "--lat", str(self.lat), "--lon", str(self.lon)]
-
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for line in process.stdout:
-                if "Downloaded" in line:
-                    self.sig_progress.emit(50, 100, "Downloading tiles...")
-                elif "Saved stitched" in line:
-                    self.sig_progress.emit(90, 100, "Stitching map...")
-            process.wait()
-
-            if process.returncode != 0:
-                raise RuntimeError(f"Map downloader script failed with return code {process.returncode}")
-
-            meta_path = "assets/offline_map/map_meta.json"
-            if not os.path.exists(meta_path):
-                raise RuntimeError("Map download succeeded but metadata file is missing.")
-
-            with open(meta_path, "r") as f:
-                meta = json.load(f)
-
+            meta = download_offline_map(self.lat, self.lon)
             self.sig_progress.emit(100, 100, "Download complete")
             self.sig_finished.emit(meta)
         except Exception as _exc:
