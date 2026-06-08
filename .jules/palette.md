@@ -1,0 +1,3 @@
+## 2025-02-23 - [Restoring Keyboard Focus Visibility in Custom QSS]
+**Learning:** When applying custom stylesheets (QSS) to widgets like `QPushButton` or `QToolBox::tab` in PySide6/Qt applications, the default OS/Qt focus indicators (like the dotted line or glowing ring) are completely overridden or lost. This severely degrades keyboard accessibility as users can no longer see which element has focus when using the Tab key.
+**Action:** Always explicitly re-implement the `:focus` pseudo-class (e.g., `outline: none; border-color: ...; background: ...;`) in the custom QSS for interactive elements to ensure clear visual feedback during keyboard navigation.
