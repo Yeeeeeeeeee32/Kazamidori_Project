@@ -391,27 +391,59 @@ def optimize_launch_angle(
 
     import os
     import time
+    import concurrent.futures
+    import multiprocessing
+    import itertools
 
     _t_start = time.perf_counter()
 
-    for e_ in elev_grid:
-        for a_ in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
+    orig_omp = os.environ.get('OMP_NUM_THREADS')
+    orig_openblas = os.environ.get('OPENBLAS_NUM_THREADS')
+    orig_mkl = os.environ.get('MKL_NUM_THREADS')
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+
+    configs = [(e_, a_) for e_ in elev_grid for a_ in azi_grid]
+    max_workers = max(1, (os.cpu_count() or 2) - 2)
+    chunksize = max(1, N // max_workers)
+    chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
+
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=multiprocessing.get_context('spawn')) as executor:
+            futures = []
+            for chunk in chunks:
+                futures.append(executor.submit(_grid_search_chunk, chunk, base_params))
+
+            while futures:
+                if stop_flag.is_set():
+                    raise RuntimeError('cancelled')
+                done_fs, _ = concurrent.futures.wait(futures, timeout=0.05)
+                if not done_fs:
+                    time.sleep(0.005)
+                    continue
                 
-            res = simulate_once(e_, a_, base_params)
-            done += 1
-            if res['ok']:
-                score = objective(res, mc_r=None)
-                candidates.append((score, e_, a_, res))
-            
-            frac = (done / N) * phase1_weight
-            progress_cb(
-                f"Phase 1: Coarse search ({done}/{N}) "
-                f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+                for f in done_fs:
+                    futures.remove(f)
+                    for e_, a_, res in f.result():
+                        done += 1
+                        if res['ok']:
+                            score = objective(res, mc_r=None)
+                            candidates.append((score, e_, a_, res))
+                        frac = (done / N) * phase1_weight
+                        progress_cb(
+                            f"Phase 1: Coarse search ({done}/{N}) "
+                            f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+    finally:
+        if orig_omp is not None: os.environ['OMP_NUM_THREADS'] = orig_omp
+        else: os.environ.pop('OMP_NUM_THREADS', None)
+        if orig_openblas is not None: os.environ['OPENBLAS_NUM_THREADS'] = orig_openblas
+        else: os.environ.pop('OPENBLAS_NUM_THREADS', None)
+        if orig_mkl is not None: os.environ['MKL_NUM_THREADS'] = orig_mkl
+        else: os.environ.pop('MKL_NUM_THREADS', None)
 
     elapsed = time.perf_counter() - _t_start
-    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
+    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {max_workers} workers.")
 
     if not candidates:
         raise ValueError(
@@ -727,28 +759,60 @@ def run_phase1(
 
     import os
     import time
+    import concurrent.futures
+    import multiprocessing
+    import itertools
 
     _t_start = time.perf_counter()
 
+    orig_omp = os.environ.get('OMP_NUM_THREADS')
+    orig_openblas = os.environ.get('OPENBLAS_NUM_THREADS')
+    orig_mkl = os.environ.get('MKL_NUM_THREADS')
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+    os.environ['MKL_NUM_THREADS'] = '1'
+
     p_nom = p1_params_at_wind(base_params, mu_nom)
+    configs = [(e, a) for e in elev_grid for a in azi_grid]
+    max_workers = max(1, (os.cpu_count() or 2) - 2)
+    chunksize = max(1, N // max_workers)
+    chunks = [configs[i:i + chunksize] for i in range(0, N, chunksize)]
     
-    for e in elev_grid:
-        for a in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
-                
-            res = simulate_once(e, a, p_nom)
-            done += 1
-            if res['ok']:
-                if not use_r_filter or res['r_horiz'] <= target_r:
-                    score = p1_objective_score(res, mode)
-                    cands.append((score, e, a, res))
-            
-            prog(f'Step 1/5  Grid ({done}/{N})  e={e}° a={a}°',
-                 done / N * 0.25)
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=multiprocessing.get_context('spawn')) as executor:
+            futures = []
+            for chunk in chunks:
+                futures.append(executor.submit(_grid_search_chunk, chunk, p_nom))
+
+            while futures:
+                if stop_flag.is_set():
+                    raise RuntimeError('cancelled')
+                done_fs, _ = concurrent.futures.wait(futures, timeout=0.05)
+                if not done_fs:
+                    time.sleep(0.005)
+                    continue
+
+                for f in done_fs:
+                    futures.remove(f)
+                    for e, a, res in f.result():
+                        done += 1
+                        if res['ok']:
+                            if not use_r_filter or res['r_horiz'] <= target_r:
+                                score = p1_objective_score(res, mode)
+                                cands.append((score, e, a, res))
+
+                        prog(f'Step 1/5  Grid ({done}/{N})  e={e}° a={a}°',
+                             done / N * 0.25)
+    finally:
+        if orig_omp is not None: os.environ['OMP_NUM_THREADS'] = orig_omp
+        else: os.environ.pop('OMP_NUM_THREADS', None)
+        if orig_openblas is not None: os.environ['OPENBLAS_NUM_THREADS'] = orig_openblas
+        else: os.environ.pop('OPENBLAS_NUM_THREADS', None)
+        if orig_mkl is not None: os.environ['MKL_NUM_THREADS'] = orig_mkl
+        else: os.environ.pop('MKL_NUM_THREADS', None)
 
     elapsed = time.perf_counter() - _t_start
-    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
+    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {max_workers} workers.")
 
     if not cands:
         raise ValueError(
