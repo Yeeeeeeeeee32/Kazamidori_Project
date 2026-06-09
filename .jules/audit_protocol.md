@@ -8,19 +8,21 @@
 
 ### 1. Physics & Math Validation
 - [ ] Check algorithms in `core/` for logical correctness.
-- [ ] Flag any magic numbers hidden in formulas. Replace them with named constants.
+- [ ] Flag any magic numbers hidden in formulas. Replace them with named constants in `core/constants.py`.
 
 ### 2. Strict Unit Consistency
 - [ ] Ensure explicit naming conventions for physical quantities (e.g., `angle_deg` vs `angle_rad`, `velocity_mps`, `length_m`).
 - [ ] Flag any missing conversions (e.g., passing degrees into `math.cos()` without `math.radians()`).
+- [ ] Explicitly use `math.radians()` and `math.degrees()` instead of manual float multiplication (e.g., `* math.pi / 180.0`).
 - [ ] Ensure standard units are used throughout the simulation and math routines (SI units preferred unless otherwise specified).
 
 ### 3. Coordinate System Integrity
 - [ ] Verify strict separation between WGS84 (Latitude/Longitude) and local ENU (East/North/Up in meters).
 - [ ] Ensure the UI/Map strictly renders in ENU. Lat/Lon should ONLY be used for data loading or text display.
 - [ ] Confirm that Navigational Standard math conventions are followed (Azimuth 0° is True North +Y, 90° is East +X, angles increase clockwise). `x = r * math.sin(angle)` (East), `y = r * math.cos(angle)` (North), and azimuth recovery uses `math.atan2(x, y)`.
+- [ ] Distance calculations within `core/` and `utils/` must use local ENU coordinates. Direct distance calculations using Latitude/Longitude (e.g., Haversine) are forbidden.
 
 ### 4. DRY Principle (Don't Repeat Yourself)
 - [ ] Scan for duplicated constants across multiple files. Centralize them in `core/constants.py` or similar.
-- [ ] Identify overlapping helper functions or redundant class definitions (e.g., math utilities defined in both `core/` and `utils/`).
+- [ ] Identify overlapping helper functions or redundant class definitions (e.g., math utilities defined in both `core/` and `utils/`, or manual coordinate calculations redefined in UI controllers).
 - [ ] Flag unused imports or dead code. Remove them or comment on why they are kept.
