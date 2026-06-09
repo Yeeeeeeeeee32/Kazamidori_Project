@@ -640,13 +640,36 @@ def p1_ellipse_breaches_circle(
     K   = math.sqrt(CHI2_90)
     a   = K * math.sqrt(max(float(eigvals[1]), 0.0))   # major semi-axis
     b   = K * math.sqrt(max(float(eigvals[0]), 0.0))   # minor semi-axis
+
+    # ── Fast path: Bounding circle early returns ─────────────────────────────
+    # The maximum extent of the ellipse from its centre is the major semi-axis 'a'.
+    # Calculate the distance from the target origin (0, 0) to the ellipse centre.
+    dist_center = math.hypot(cx, cy)
+
+    # If the closest point of the bounding circle is strictly outside the target R:
+    if dist_center - a > R:
+        return True
+
+    # If the furthest point of the bounding circle is entirely inside the target R:
+    if dist_center + a <= R:
+        return False
+
     ang = math.atan2(float(eigvecs[1, 1]), float(eigvecs[0, 1]))
     ca, sa = math.cos(ang), math.sin(ang)
 
+    # ── Pre-calculate invariant terms ────────────────────────────────────────
+    a_ca = a * ca
+    b_sa = b * sa
+    a_sa = a * sa
+    b_ca = b * ca
+    step = 2.0 * math.pi / max(1, n_pts)
+
     for i in range(n_pts):
-        t  = 2.0 * math.pi * i / n_pts
-        xe = a * math.cos(t) * ca - b * math.sin(t) * sa
-        ye = a * math.cos(t) * sa + b * math.sin(t) * ca  # BUG-01 FIX: sin(t), not cos(t)
+        t  = step * i
+        cos_t = math.cos(t)
+        sin_t = math.sin(t)
+        xe = cos_t * a_ca - sin_t * b_sa
+        ye = cos_t * a_sa + sin_t * b_ca  # BUG-01 FIX: sin(t), not cos(t)
         if math.hypot(cx + xe, cy + ye) > R:
             return True
     return False
