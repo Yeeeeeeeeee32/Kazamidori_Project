@@ -394,21 +394,48 @@ def optimize_launch_angle(
 
     _t_start = time.perf_counter()
 
-    for e_ in elev_grid:
-        for a_ in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
-                
-            res = simulate_once(e_, a_, base_params)
-            done += 1
-            if res['ok']:
-                score = objective(res, mc_r=None)
-                candidates.append((score, e_, a_, res))
+    import multiprocessing
+    import itertools
+
+    configs = [(float(e), float(a)) for e in elev_grid for a in azi_grid]
+
+    old_omp = os.environ.get('OMP_NUM_THREADS')
+    old_openblas = os.environ.get('OPENBLAS_NUM_THREADS')
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
+    try:
+        max_workers = max(1, (os.cpu_count() or 2) - 2)
+        chunksize = max(1, len(configs) // max_workers)
+        chunks = [configs[i:i + chunksize] for i in range(0, len(configs), chunksize)]
+
+        ctx = multiprocessing.get_context('spawn')
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+            for chunk_res in executor.map(_grid_search_chunk, chunks, itertools.repeat(base_params)):
+                if stop_flag.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise RuntimeError('cancelled')
+
+                for e_, a_, light_res in chunk_res:
+                    done += 1
+                    if light_res['ok']:
+                        score = objective(light_res, mc_r=None)
+                        candidates.append((score, e_, a_, light_res))
+
+                    frac = (done / N) * phase1_weight
+                    progress_cb(
+                        f"Phase 1: Coarse search ({done}/{N}) "
+                        f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+    finally:
+        if old_omp is not None:
+            os.environ['OMP_NUM_THREADS'] = old_omp
+        elif 'OMP_NUM_THREADS' in os.environ:
+            del os.environ['OMP_NUM_THREADS']
             
-            frac = (done / N) * phase1_weight
-            progress_cb(
-                f"Phase 1: Coarse search ({done}/{N}) "
-                f"elev={e_:.0f}° azi={a_:.0f}°", frac)
+        if old_openblas is not None:
+            os.environ['OPENBLAS_NUM_THREADS'] = old_openblas
+        elif 'OPENBLAS_NUM_THREADS' in os.environ:
+            del os.environ['OPENBLAS_NUM_THREADS']
 
     elapsed = time.perf_counter() - _t_start
     print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
@@ -732,20 +759,47 @@ def run_phase1(
 
     p_nom = p1_params_at_wind(base_params, mu_nom)
     
-    for e in elev_grid:
-        for a in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
-                
-            res = simulate_once(e, a, p_nom)
-            done += 1
-            if res['ok']:
-                if not use_r_filter or res['r_horiz'] <= target_r:
-                    score = p1_objective_score(res, mode)
-                    cands.append((score, e, a, res))
+    import multiprocessing
+    import itertools
+
+    configs = [(float(e), float(a)) for e in elev_grid for a in azi_grid]
+
+    old_omp = os.environ.get('OMP_NUM_THREADS')
+    old_openblas = os.environ.get('OPENBLAS_NUM_THREADS')
+    os.environ['OMP_NUM_THREADS'] = '1'
+    os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
+    try:
+        max_workers = max(1, (os.cpu_count() or 2) - 2)
+        chunksize = max(1, len(configs) // max_workers)
+        chunks = [configs[i:i + chunksize] for i in range(0, len(configs), chunksize)]
+
+        ctx = multiprocessing.get_context('spawn')
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers, mp_context=ctx) as executor:
+            for chunk_res in executor.map(_grid_search_chunk, chunks, itertools.repeat(p_nom)):
+                if stop_flag.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise RuntimeError('cancelled')
+
+                for e, a, light_res in chunk_res:
+                    done += 1
+                    if light_res['ok']:
+                        if not use_r_filter or light_res['r_horiz'] <= target_r:
+                            score = p1_objective_score(light_res, mode)
+                            cands.append((score, e, a, light_res))
+
+                    prog(f'Step 1/5  Grid ({done}/{N})  e={e}° a={a}°',
+                         done / N * 0.25)
+    finally:
+        if old_omp is not None:
+            os.environ['OMP_NUM_THREADS'] = old_omp
+        elif 'OMP_NUM_THREADS' in os.environ:
+            del os.environ['OMP_NUM_THREADS']
             
-            prog(f'Step 1/5  Grid ({done}/{N})  e={e}° a={a}°',
-                 done / N * 0.25)
+        if old_openblas is not None:
+            os.environ['OPENBLAS_NUM_THREADS'] = old_openblas
+        elif 'OPENBLAS_NUM_THREADS' in os.environ:
+            del os.environ['OPENBLAS_NUM_THREADS']
 
     elapsed = time.perf_counter() - _t_start
     print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
