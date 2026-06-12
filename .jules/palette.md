@@ -1,0 +1,3 @@
+## 2024-06-12 - Re-implementing lost focus indicators in Qt QSS
+**Learning:** In PySide6/Qt applications, when applying custom stylesheets (QSS) to widgets like `QPushButton` or `QToolBox::tab`, the default OS/Qt focus indicators are often overridden or lost. This completely breaks keyboard accessibility visually because users navigating with the Tab key have no way of knowing which element currently has focus.
+**Action:** Always explicitly re-implement `:focus` pseudo-class styles (e.g., `outline: none; border: 2px solid #...`) for clear visual feedback during tab navigation whenever customizing widget styles in QSS.
