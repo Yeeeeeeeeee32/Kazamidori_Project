@@ -284,7 +284,6 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
     diag_buffer = []
 
     import os
-    DEBUG_PHYSICS = os.environ.get("DEBUG_PHYSICS") == "1"
 
     def _diag(tag: str, **kw) -> None:
         if not DEBUG_PHYSICS:
@@ -441,11 +440,14 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         # GPV Synthesis / Koinobori Baseline (Hybrid ISA Model)
         # Using Koinobori's surface reading (p0, t0) and standard ISA lapse rates 
         # for upper atmosphere approximation.
+        t0_k = t0 + 273.15
+        lapse_t0_k = 0.0065 / t0_k
+
         def _calc_temp(h):
-            return t0 + 273.15 - 0.0065 * h
+            return t0_k - 0.0065 * h
 
         def _calc_pres(h):
-            return p0 * (1 - 0.0065 * h / (t0 + 273.15)) ** 5.2561
+            return p0 * (1 - lapse_t0_k * h) ** 5.2561
 
         env.set_atmospheric_model(
             type="custom_atmosphere",
@@ -1038,11 +1040,14 @@ def simulate_once_mc(
         p0 = params.get('env_pressure', 101325.0)
         t0 = params.get('env_temp', 15.0)
 
+        t0_k = t0 + 273.15
+        lapse_t0_k = 0.0065 / t0_k
+
         def _calc_temp(h):
-            return t0 + 273.15 - 0.0065 * h
+            return t0_k - 0.0065 * h
 
         def _calc_pres(h):
-            return p0 * (1 - 0.0065 * h / (t0 + 273.15)) ** 5.2561
+            return p0 * (1 - lapse_t0_k * h) ** 5.2561
 
         env.set_atmospheric_model(
             type="custom_atmosphere",
