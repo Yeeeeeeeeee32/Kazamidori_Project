@@ -30,3 +30,9 @@
     *   `utils/geo_math.py` has a dedicated `meters_per_degree` function using constants like `111132.92`, `559.82`, etc.
     *   `utils/map_downloader.py` (lines 207-208) implements the *exact same formula* manually.
     *   `utils/map_downloader.py` should import and use `meters_per_degree` from `utils/geo_math.py`.
+
+## Proposed Cleanup Plan (Do not execute yet)
+1.  **Move Constants**: Move `R_EARTH` to `core/constants.py`.
+2.  **Refactor map downloader**: Import `R_EARTH`, `offset_to_latlon` and `latlon_to_offset` from `utils/geo_math.py` into `utils/map_downloader.py` instead of redefining `enu_to_latlon` and `latlon_to_enu`.
+3.  **Update Math Conversions**: Replace `* (math.pi / 180.0)` with `math.radians()` and `* (180.0 / math.pi)` with `math.degrees()` across `utils/geo_math.py` and `utils/map_downloader.py`.
+4.  **Rename Parameters**: Rename variables like `speed` and `direction` to `speed_mps` and `direction_deg` in functions like `append_wind_reading` and `check_tolerance` in `ui_qt/app_state.py`.
