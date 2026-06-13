@@ -1573,14 +1573,7 @@ class SimController(QObject):
     def _on_map_coordinates_picked(self, lat: float, lon: float) -> None:
         """Handle 'Shift + Drag' launch site relocation from the Map View."""
         import math
-
-        def get_distance(lat1, lon1, lat2, lon2):
-            R = 6371.0 # km
-            dlat = math.radians(lat2 - lat1)
-            dlon = math.radians(lon2 - lon1)
-            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            return R * c
+        from utils.geo_math import latlon_to_offset
 
         old_lat = self._state.launch_lat
         old_lon = self._state.launch_lon
@@ -1589,7 +1582,8 @@ class SimController(QObject):
         if old_lat is None: old_lat = 0.0
         if old_lon is None: old_lon = 0.0
 
-        dist = get_distance(old_lat, old_lon, lat, lon)
+        dx, dy = latlon_to_offset(old_lat, old_lon, lat, lon)
+        dist = math.hypot(dx, dy) / 1000.0  # Convert to km
 
         # Update AppState correctly. AppState emits signal that UI input should react to,
         # but to ensure strict sync, we update the inputs which inherently triggers AppState sync via their bindings
