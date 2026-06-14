@@ -1,0 +1,3 @@
+## 2026-06-14 - Restoring Focus Rings Overridden by Qt Style Sheets (QSS)
+**Learning:** In PySide6/Qt, applying custom stylesheets (QSS) to widgets like `QPushButton` or `QToolBox::tab` often strips the default OS/Qt focus indicators. This severely degrades keyboard accessibility as users can no longer see which element is focused during tab navigation.
+**Action:** Always explicitly reimplement `:focus` pseudo-class styles (e.g., `outline: none; border: 2px solid ...`) for interactive elements in QSS. For elements initially without borders, use `border: 1px solid transparent;` by default to prevent layout shifts when the focus border is applied.
