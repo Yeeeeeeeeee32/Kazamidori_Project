@@ -1,0 +1,3 @@
+## 2024-06-15 - Focus Indicators Missing in Custom QSS
+**Learning:** Applying custom Qt stylesheets (QSS) to interactive widgets like `QPushButton` and `QToolBox::tab` removes the native OS focus rectangle, severely breaking keyboard accessibility. Using `border: none` on interactive elements also creates layout jitter when adding focus borders later.
+**Action:** Always explicitly redefine `:focus` pseudo-class styles (e.g., `outline: none; border-color: ...`) for custom-styled interactive widgets. Use `border: 1px solid transparent` instead of `border: none` as the default state to reserve layout space and prevent shifting when a focus border is applied.
