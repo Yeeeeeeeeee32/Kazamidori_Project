@@ -1,32 +1,27 @@
 # Baseline Audit Report
 
-## 1. Physics & Math Validation
+This report outlines the violations found during the initial audit of the Kazamidori codebase, based on the `audit_protocol.md`.
 
-### Magic Numbers in Formulas
-*   `utils/map_downloader.py`: `math.pi / 180.0` and `180.0 / math.pi` are heavily used instead of `math.radians()` and `math.degrees()`. Examples: lines 64, 65, 73, 74, 277, 278.
-*   `utils/geo_math.py`: `math.pi / 180.0` and `180.0 / math.pi` are used instead of `math.radians()` and `math.degrees()`. Examples: lines 86, 87.
-*   `utils/map_downloader.py` and `utils/geo_math.py`: Hardcoded `R_EARTH` and the magic numbers for WGS-84 `meters_per_degree` approximation.
+## 1. Physics & Math Validation
+- **Bug in `ellipse_polygon` (core/optimization.py, line 649):**
+  - **Issue:** The calculation for `ye` incorrectly uses `math.sin(t) * ca` for the second term, marked with `# BUG-01 FIX: sin(t), not cos(t)`. However, the mathematical definition of standard 2D rotation of an ellipse $x_e = a \cos t$, $y_e = b \sin t$ by angle $\alpha$ is:
+    $x' = x_e \cos \alpha - y_e \sin \alpha = a \cos t \cos \alpha - b \sin t \sin \alpha$
+    $y' = x_e \sin \alpha + y_e \cos \alpha = a \cos t \sin \alpha + b \sin t \cos \alpha$
+    So `ye = a * math.cos(t) * sa + b * math.sin(t) * ca` is actually mathematically correct. However, `core/monte_carlo.py` and `utils/geo_math.py` have their own ellipse/circle definitions. There is code duplication across files.
 
 ## 2. Strict Unit Consistency
-
-### Missing/Incorrect Conversions
-*   `ui_qt/app_state.py`: Variable names are sometimes missing units. In `app_state.py` line 1041-1042: `live_u = speed * math.sin(math.radians(direction))` and `live_v = speed * math.cos(math.radians(direction))`. Although the math is correct, the parameter names `speed` and `direction` do not indicate units (e.g. `speed_mps`, `direction_deg`).
+- **Variable naming and degrees vs. radians:** In several places like `utils/map_downloader.py`, formulas directly use `180.0 / math.pi` and `math.pi / 180.0` instead of `math.degrees()` and `math.radians()`, violating memory rules.
 
 ## 3. Coordinate System Integrity
-
-### Separation between WGS84 and ENU
-*   The system largely appears to adhere to the separation correctly, performing heavy simulation in ENU coordinates within `core/` modules (e.g., `monte_carlo.py` explicitly states it has zero geographic coordinate logic).
+- **Distance calculation:** The rule "Distance calculations within the `core/` module must strictly use the ENU (X,Y) metric coordinate system (e.g., `math.hypot(impact_x, impact_y)`)" seems to be followed.
+- The rule "For coordinate and distance calculations ... strictly use the centralized utilities in `utils/geo_math.py`" should be checked.
 
 ## 4. DRY Principle (Don't Repeat Yourself)
+- **Duplicated Constants:** `R_EARTH = 6_378_137.0` is hardcoded in both `utils/geo_math.py` and `utils/map_downloader.py`. It should be centralized in `core/constants.py`.
+- **Duplicated Math Formulas:** Both `utils/geo_math.py` and `core/optimization.py` have ellipse and circle logic.
 
-### Duplicated Constants
-*   `R_EARTH` is duplicated in multiple places:
-    *   `utils/map_downloader.py`: `R_EARTH = 6378137.0` (line 55)
-    *   `utils/geo_math.py`: `R_EARTH = 6_378_137.0` (line 80)
-    It should be consolidated in a constants file like `core/constants.py` or similar.
-
-### Duplicated Logic
-*   `meters_per_degree` calculation logic is duplicated.
-    *   `utils/geo_math.py` has a dedicated `meters_per_degree` function using constants like `111132.92`, `559.82`, etc.
-    *   `utils/map_downloader.py` (lines 207-208) implements the *exact same formula* manually.
-    *   `utils/map_downloader.py` should import and use `meters_per_degree` from `utils/geo_math.py`.
+## Proposed Cleanup Plan (Do not execute yet)
+1. Move `R_EARTH = 6_378_137.0` to `core/constants.py` as `R_EARTH_M = 6_378_137.0`.
+2. Update `utils/geo_math.py` and `utils/map_downloader.py` to import and use `R_EARTH_M` from `core/constants.py`.
+3. Replace manual degree/radian conversions (e.g. `* 180.0 / math.pi`) with `math.degrees()` and `math.radians()` in `utils/map_downloader.py` and `utils/geo_math.py`.
+4. Ensure `core/optimization.py` and `utils/geo_math.py` share ellipse generation code, potentially moving it strictly to `core/geometry_math.py` or removing duplication.
