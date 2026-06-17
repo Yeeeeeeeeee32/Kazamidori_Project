@@ -913,8 +913,8 @@ class AppWindow(QMainWindow):
     mc_runs_input                     : QSpinBox        (in AdvancedSettingsDialog)
     wind_unc_input, thrust_unc_input  : QDoubleSpinBox  (in AdvancedSettingsDialog)
     wind_speed_input, wind_dir_input  : QDoubleSpinBox  (aliases → surf_spd/dir)
-    lat_input, lon_input              : QDoubleSpinBox  (in Launch Settings tab)
-    elev_input, azim_input            : QDoubleSpinBox  (in Launch Settings tab)
+    lat_input, lon_input              : QLineEdit         (in Launch Settings tab)
+    elev_input, azim_input            : QLineEdit         (in Launch Settings tab)
     motor_label                       : QLabel          (in Airframe tab)
     mode_combo                        : QComboBox       (pinned in Parameters dock)
     rmax_input                        : QDoubleSpinBox  (pinned in Parameters dock)
@@ -1592,21 +1592,33 @@ class AppWindow(QMainWindow):
         lay.setSpacing(4)
         lay.setContentsMargins(4, 4, 4, 4)
 
-        self.lat_input = QDoubleSpinBox(w)
-        self.lat_input.setDecimals(6); self.lat_input.setSuffix("°")
-        self.lat_input.setRange(-9999.0, 90)
-        self.lat_input.setSpecialValueText("")
-        self.lat_input.setValue(35.42215789)
-        self.lat_input.wheelEvent = lambda event: event.ignore()
-        self.lat_input.valueChanged.connect(self._on_manual_coord_changed)
+        self.lat_input = QLineEdit(w)
+        validator_lat = QDoubleValidator(-90.0, 90.0, 6, self.lat_input)
+        validator_lat.setNotation(QDoubleValidator.StandardNotation)
+        self.lat_input.setValidator(validator_lat)
+        self.lat_input.setPlaceholderText("Latitude°")
+        self.lat_input.setClearButtonEnabled(True)
+        self.lat_input.setText("35.422158")
+        self.lat_input.editingFinished.connect(self._on_manual_coord_changed)
+        self.lat_input.textChanged.connect(
+            lambda text, w=self.lat_input: w.setStyleSheet(
+                "" if text.strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
 
-        self.lon_input = QDoubleSpinBox(w)
-        self.lon_input.setDecimals(6); self.lon_input.setSuffix("°")
-        self.lon_input.setRange(-9999.0, 180)
-        self.lon_input.setSpecialValueText("")
-        self.lon_input.setValue(139.42268826)
-        self.lon_input.wheelEvent = lambda event: event.ignore()
-        self.lon_input.valueChanged.connect(self._on_manual_coord_changed)
+        self.lon_input = QLineEdit(w)
+        validator_lon = QDoubleValidator(-180.0, 180.0, 6, self.lon_input)
+        validator_lon.setNotation(QDoubleValidator.StandardNotation)
+        self.lon_input.setValidator(validator_lon)
+        self.lon_input.setPlaceholderText("Longitude°")
+        self.lon_input.setClearButtonEnabled(True)
+        self.lon_input.setText("139.422688")
+        self.lon_input.editingFinished.connect(self._on_manual_coord_changed)
+        self.lon_input.textChanged.connect(
+            lambda text, w=self.lon_input: w.setStyleSheet(
+                "" if text.strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
 
         self.elev_input = QDoubleSpinBox(w)
         self.elev_input.setRange(0.0, 90.0)
@@ -1621,13 +1633,18 @@ class AppWindow(QMainWindow):
         self.rail_len_input.setValue(1.0)
         self.rail_len_input.wheelEvent = lambda event: event.ignore()
 
-        self.azim_input = QDoubleSpinBox(w)
-        self.azim_input.setDecimals(1); self.azim_input.setSuffix("°")
-        self.azim_input.setRange(-9999.0, 360)
-        self.azim_input.setSpecialValueText("")
-        self.azim_input.setValue(0.0)
-        self.azim_input.wheelEvent = lambda event: event.ignore()
-        self.azim_input.setWrapping(True)
+        self.azim_input = QLineEdit(w)
+        validator_azim = QDoubleValidator(-360.0, 360.0, 1, self.azim_input)
+        validator_azim.setNotation(QDoubleValidator.StandardNotation)
+        self.azim_input.setValidator(validator_azim)
+        self.azim_input.setPlaceholderText("Azimuth°")
+        self.azim_input.setClearButtonEnabled(True)
+        self.azim_input.setText("0.0")
+        self.azim_input.textChanged.connect(
+            lambda text, w=self.azim_input: w.setStyleSheet(
+                "" if text.strip() != "" and w.hasAcceptableInput() else "border: 1px solid red;"
+            )
+        )
 
         self.hellmann_preset = QComboBox(w)
         self.hellmann_preset.addItems([
@@ -1843,11 +1860,29 @@ class AppWindow(QMainWindow):
         self.mode_combo.currentTextChanged.connect(
             lambda v: setattr(s, "sim_mode", v))
 
-        self.lat_input.valueChanged.connect(lambda v: setattr(self.state, 'launch_lat', v))
-        self.lon_input.valueChanged.connect(lambda v: setattr(self.state, 'launch_lon', v))
+        def set_lat(v):
+            try:
+                setattr(self.state, 'launch_lat', float(v))
+            except ValueError:
+                setattr(self.state, 'launch_lat', None)
 
-        s.launch_lat = self.lat_input.value()
-        s.launch_lon = self.lon_input.value()
+        def set_lon(v):
+            try:
+                setattr(self.state, 'launch_lon', float(v))
+            except ValueError:
+                setattr(self.state, 'launch_lon', None)
+
+        self.lat_input.editingFinished.connect(lambda: set_lat(self.lat_input.text()))
+        self.lon_input.editingFinished.connect(lambda: set_lon(self.lon_input.text()))
+
+        try:
+            s.launch_lat = float(self.lat_input.text())
+        except ValueError:
+            s.launch_lat = None
+        try:
+            s.launch_lon = float(self.lon_input.text())
+        except ValueError:
+            s.launch_lon = None
 
         s.needs_redraw.connect(self.update_profile_plot)
         s.needs_redraw.connect(self.update_map_plot)
@@ -2634,10 +2669,10 @@ class AppWindow(QMainWindow):
 
 
     def _on_manual_coord_changed(self, _v=None) -> None:
-        lat = self.lat_input.value()
-        lon = self.lon_input.value()
-
-        if lat == -9999.0 or lon == -9999.0:
+        try:
+            lat = float(self.lat_input.text())
+            lon = float(self.lon_input.text())
+        except ValueError:
             return
 
         old_lat = getattr(self.state, 'launch_lat', 0.0)
@@ -2655,18 +2690,42 @@ class AppWindow(QMainWindow):
                 self.btn_download_map.clicked.emit()
 
     def _on_state_lat_changed(self, value: float) -> None:
-        if self.lat_input.value() != value:
+        if value is None:
+            return
+
+        try:
+            current_val = float(self.lat_input.text())
+        except ValueError:
+            current_val = None
+
+        if current_val != value:
             from PySide6.QtCore import QSignalBlocker
             with QSignalBlocker(self.lat_input):
-                self.lat_input.setValue(value)
-            self.map_widget.update_launch(value, self.lon_input.value())
+                self.lat_input.setText(str(value))
+            try:
+                lon_val = float(self.lon_input.text())
+            except ValueError:
+                lon_val = 0.0
+            self.map_widget.update_launch(value, lon_val)
 
     def _on_state_lon_changed(self, value: float) -> None:
-        if self.lon_input.value() != value:
+        if value is None:
+            return
+
+        try:
+            current_val = float(self.lon_input.text())
+        except ValueError:
+            current_val = None
+
+        if current_val != value:
             from PySide6.QtCore import QSignalBlocker
             with QSignalBlocker(self.lon_input):
-                self.lon_input.setValue(value)
-            self.map_widget.update_launch(self.lat_input.value(), value)
+                self.lon_input.setText(str(value))
+            try:
+                lat_val = float(self.lat_input.text())
+            except ValueError:
+                lat_val = 0.0
+            self.map_widget.update_launch(lat_val, value)
 
     def _on_azim_changed(self, value: int) -> None:
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
