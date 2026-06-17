@@ -17,3 +17,7 @@
 ## $(date +%Y-%m-%d) - [Gating Diagnostic Logging with Boolean evaluation]
 **Learning:** Evaluating `os.environ.get('DEBUG_PHYSICS') == '1'` directly inside the heavily-called `_diag` function (or similar inner loops) adds noticeable overhead in a high-iteration context (like Monte Carlo simulations). Even when the log isn't written, the dictionary packing, string formatting, and environment check cost CPU cycles.
 **Action:** Gate diagnostic functions or blocks using a module-level boolean variable (e.g. `DEBUG_PHYSICS = (os.environ.get('DEBUG_PHYSICS') == '1')`). This reduces the check to a fast local/global boolean evaluation, allowing the interpreter to bypass expensive blocks and unused argument evaluations entirely.
+
+## 2024-05-18 - [Optimize Atmospheric Closures in Integration Inner Loop]
+**Learning:** RocketPy's flight integration (`scipy.integrate.solve_ivp` via LSODA solver) evaluates atmospheric closures thousands of times per step. Code inside these closures is highly performance-sensitive.
+**Action:** Always hoist invariant calculations out of inner closures to avoid massive Python execution overhead during Fortran integration.
