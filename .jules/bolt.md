@@ -17,3 +17,7 @@
 ## $(date +%Y-%m-%d) - [Gating Diagnostic Logging with Boolean evaluation]
 **Learning:** Evaluating `os.environ.get('DEBUG_PHYSICS') == '1'` directly inside the heavily-called `_diag` function (or similar inner loops) adds noticeable overhead in a high-iteration context (like Monte Carlo simulations). Even when the log isn't written, the dictionary packing, string formatting, and environment check cost CPU cycles.
 **Action:** Gate diagnostic functions or blocks using a module-level boolean variable (e.g. `DEBUG_PHYSICS = (os.environ.get('DEBUG_PHYSICS') == '1')`). This reduces the check to a fast local/global boolean evaluation, allowing the interpreter to bypass expensive blocks and unused argument evaluations entirely.
+
+## $(date +%Y-%m-%d) - [O(1) Ellipse Boundary Early Exit Semantics]
+**Learning:** When optimizing boundary or intersection checks (e.g., error ellipse breaching a circle) with early exits, it's critical to verify the domain semantics of the return value. In the case of `p1_ellipse_breaches_circle`, an ellipse entirely inside the target circle means it has NOT breached the circle (return `False`), whereas an ellipse entirely outside the target circle means it HAS breached the circle (return `True`). Assuming that being entirely inside returns `True` and entirely outside returns `False` would invert the logic.
+**Action:** Always verify domain semantics when implementing early returns for boundary checks.

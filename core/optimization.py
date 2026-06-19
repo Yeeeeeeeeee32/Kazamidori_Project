@@ -640,6 +640,14 @@ def p1_ellipse_breaches_circle(
     K   = math.sqrt(CHI2_90)
     a   = K * math.sqrt(max(float(eigvals[1]), 0.0))   # major semi-axis
     b   = K * math.sqrt(max(float(eigvals[0]), 0.0))   # minor semi-axis
+
+    # Fast O(1) early exit: check if bounding box is entirely inside or outside
+    dist_center = math.hypot(cx, cy)
+    if dist_center + a <= R:
+        return False
+    if dist_center - a > R:
+        return True
+
     ang = math.atan2(float(eigvecs[1, 1]), float(eigvecs[0, 1]))
     ca, sa = math.cos(ang), math.sin(ang)
 
