@@ -1,0 +1,3 @@
+## 2024-06-21 - Keyboard accessibility focus states in PySide6 custom stylesheets
+**Learning:** In PySide6/Qt desktop applications, when applying custom stylesheets (QSS) to widgets like `QPushButton` or `QToolBox::tab`, default OS/Qt focus indicators are often overridden or lost. Also, naively applying a focus border to a component that previously had `border: none` will cause an undesired layout shift when focused.
+**Action:** Always explicitly re-implement `:focus` pseudo-class styles (e.g., `outline: none; border-color: ...`) for clear visual feedback during tab navigation. Ensure widgets have transparent borders by default (adjusting padding proportionally if replacing a `border: none` style) to avoid layout shifts when the focus border is applied.
