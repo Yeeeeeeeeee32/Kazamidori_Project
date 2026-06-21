@@ -8,12 +8,15 @@
 ## 2024-05-19 - [Optimizing Nested Monte Carlo Loops]
 **Learning:** Instantiating `ProcessPoolExecutor` inside a frequently called function creates a massive performance regression due to process-spawning overhead. Furthermore, submitting individual tiny tasks (like a single RocketPy evaluation) via `executor.submit` in a `for` loop causes severe Inter-Process Communication (IPC) overhead, consuming massive amounts of memory and effectively running slower than a sequential loop.
 **Action:** When parallelizing many fast tasks, always use `executor.map` with a calculated `chunksize` to batch execution, significantly reducing IPC serialization costs. Never instantiate an executor in the inner loop of an optimization algorithm; either pass it down or ensure the workload per pool creation is large enough to justify the setup cost.
-## $(date +%Y-%m-%d) - Combining Random Variable Variances in Monte Carlo Loop
+## 2026-06-21 - Combining Random Variable Variances in Monte Carlo Loop
 **Learning:** In the `_perturb_wind_profile` core monte carlo simulation tight loop, there are consecutive Gaussian sampling steps with mean 0. Generating a single random number with the combined variance `math.hypot(sigma1, sigma2)` mathematically matches adding two normal variables with variances `sigma1` and `sigma2`, avoiding an extra `rng.gauss` call which are expensive.
 **Action:** Always look for contiguous random number samplings that can be statistically condensed in tight math loops.
-## $(date +%Y-%m-%d) - [Hoisting Invariant Code in Monte Carlo Loops]
+## 2026-06-21 - [Hoisting Invariant Code in Monte Carlo Loops]
 **Learning:** Performing invariant calculations (like scaling a base profile or allocating duplicate dictionaries) inside a Monte Carlo parallel process loop drastically drops overall throughput by redundantly taxing the CPU.
 **Action:** When creating high-iteration loops (e.g. Monte Carlo samplers or Grid Searches), always analyze the inner loop execution path and hoist strictly invariant dictionary creations or configuration scalings to the outer scope to be evaluated once, leveraging `itertools.repeat` in mapping parallel execution.
-## $(date +%Y-%m-%d) - [Gating Diagnostic Logging with Boolean evaluation]
+## 2026-06-21 - [Gating Diagnostic Logging with Boolean evaluation]
 **Learning:** Evaluating `os.environ.get('DEBUG_PHYSICS') == '1'` directly inside the heavily-called `_diag` function (or similar inner loops) adds noticeable overhead in a high-iteration context (like Monte Carlo simulations). Even when the log isn't written, the dictionary packing, string formatting, and environment check cost CPU cycles.
 **Action:** Gate diagnostic functions or blocks using a module-level boolean variable (e.g. `DEBUG_PHYSICS = (os.environ.get('DEBUG_PHYSICS') == '1')`). This reduces the check to a fast local/global boolean evaluation, allowing the interpreter to bypass expensive blocks and unused argument evaluations entirely.
+## 2026-06-21 - [Hoisting Invariants from Inner Closures for Fortran Solvers]
+**Learning:** RocketPy's flight integration (`scipy.integrate.solve_ivp` via LSODA solver) calls atmospheric closures thousands of times per step. Leaving invariant calculations (like `t0 + 273.15` and `0.0065 / t0_k` for ISA temperature and pressure calculation) inside these closures creates significant, redundant execution overhead during the integration.
+**Action:** Always hoist invariant math operations out of inner closures (e.g., `_calc_temp` and `_calc_pres`) passed to numerical integrators or Fortran solvers to avoid massive Python execution overhead.
