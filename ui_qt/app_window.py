@@ -118,18 +118,24 @@ QPushButton {
     background: #3c3c3c; border: 1px solid #555555; border-radius: 5px;
     padding: 5px 14px; color: #ffffff; font-weight: bold;
 }
+QPushButton:focus    { border-color: #c5a5f7; outline: none; }
 QPushButton:hover    { background: #4a4a4a; border-color: #7eb3ff; }
 QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
 QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
 QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
+QPushButton#btn_run:focus  { border-color: #c5a5f7; outline: none; }
 QPushButton#btn_run:hover  { background: #8ed9a8; }
 QPushButton#btn_stop { background: #f38ba8; color: #1e1e1e; border-color: #f38ba8; }
+QPushButton#btn_stop:focus { border-color: #c5a5f7; outline: none; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
 QPushButton#btn_phase1_run {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 #c5a5f7, stop:1 #7eb3ff);
-    color: #1e1e1e; border: none; border-radius: 6px;
+    color: #1e1e1e; border: 2px solid transparent; border-radius: 6px;
     font-size: 10pt; font-weight: bold; padding: 10px 16px;
+}
+QPushButton#btn_phase1_run:focus {
+    border-color: #ffffff; outline: none;
 }
 QPushButton#btn_phase1_run:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -140,6 +146,7 @@ QPushButton#btn_adv_settings {
     background: transparent; border: 1px solid #555555; border-radius: 4px;
     padding: 4px 10px; color: #aaaaaa; font-size: 8pt;
 }
+QPushButton#btn_adv_settings:focus { border-color: #c5a5f7; outline: none; }
 QPushButton#btn_adv_settings:hover { border-color: #7eb3ff; color: #ffffff; }
 QToolBar {
     background: #1e1e1e; border: none;

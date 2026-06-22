@@ -1,0 +1,3 @@
+## 2024-05-27 - Custom Backgrounds Dropping Focus Indicators
+**Learning:** In PySide6, applying custom background colors to `QPushButton` or `QToolBox::tab` often strips the default OS focus rings. This creates a severe accessibility barrier because keyboard users (tabbing through the interface) lose all visual feedback about which element currently holds focus.
+**Action:** Whenever setting custom backgrounds or borders on interactive elements in a Qt stylesheet, explicitly define the `:focus` pseudo-class (e.g., `QPushButton:focus { border-color: #c5a5f7; outline: none; }`) to guarantee keyboard navigation remains visible and intuitive.
