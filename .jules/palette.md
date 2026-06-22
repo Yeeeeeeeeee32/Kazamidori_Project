@@ -1,0 +1,3 @@
+## 2025-02-27 - [PySide6 Dialog Button UX]
+**Learning:** In PySide6 modal dialogs, avoid blindly replacing standard 'Close' buttons with 'Apply' + 'Cancel' if context-specific save actions (like 'Save JSON') already exist. A `QDialogButtonBox.Apply` button has an `ApplyRole` natively and will not trigger the `accepted` signal unless explicitly wired. It can also disrupt keyboard navigation if the tab order isn't meticulously updated.
+**Action:** When providing explicit action paths, retain standard explicit roles (like 'Close') or ensure exhaustive manual wiring and tab order verification to prevent functional regressions.
