@@ -82,6 +82,7 @@ QToolBox::tab {
 }
 QToolBox::tab:selected { background: #4a4a4a; color: #c5a5f7; border-color: #c5a5f7; }
 QToolBox::tab:hover    { background: #444444; border-color: #7eb3ff; }
+QToolBox::tab:focus    { border: 2px solid #a6e3a1; outline: none; padding: 5px 9px; }
 QSplitter::handle         { background: #555555; width: 4px; height: 4px; }
 QSplitter::handle:hover   { background: #7eb3ff; }
 QGroupBox {
@@ -120,6 +121,7 @@ QPushButton {
 }
 QPushButton:hover    { background: #4a4a4a; border-color: #7eb3ff; }
 QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
+QPushButton:focus    { border: 2px solid #a6e3a1; outline: none; padding: 4px 13px; }
 QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
 QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
 QPushButton#btn_run:hover  { background: #8ed9a8; }
