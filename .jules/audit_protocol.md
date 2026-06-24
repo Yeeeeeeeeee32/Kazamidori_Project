@@ -1,26 +1,23 @@
 # Codebase Health & Physics Integrity Audit Protocol
 
-**Purpose:** Ensure ongoing code health by preventing technical debt, unit mismatch errors, and coordinate system confusion in the Kazamidori Project.
+This checklist acts as the Standard Operating Procedure (SOP) for the Kazamidori Project's "Codebase Health & Physics Integrity Audit". Run this audit whenever instructed to "Run Health Audit", or automatically prior to major pull requests.
 
-**Execution:** Run this audit protocol before major pull requests or when manually triggered by the user with the prompt "Run Health Audit".
+## 1. Physics & Math Validation
+- [ ] **Algorithm Review:** Check all algorithms in the `core/` directory for logical correctness and robust bounds checking.
+- [ ] **No Magic Numbers:** Flag any undocumented or "magic" numbers hidden within formulas. Constants should be extracted, named meaningfully, and preferably placed at the module level or in a dedicated configuration file.
 
-## Checklist
+## 2. Strict Unit Consistency
+- [ ] **Explicit Naming Conventions:** Ensure variables representing physical quantities have explicit unit suffixes (e.g., `angle_deg` vs `angle_rad`, `velocity_mps`, `distance_m`).
+- [ ] **Conversion Accuracy:** Flag any missing or incorrect mathematical conversions (e.g., passing degrees into `math.cos()` without wrapping in `math.radians()`).
+- [ ] **Standard Functions:** Prefer Python's built-in `math.radians()` and `math.degrees()` over manual degree/radian math conversions (e.g., `* (180.0 / math.pi)`).
 
-### 1. Physics & Math Validation
-- [ ] Check algorithms in `core/` for logical correctness.
-- [ ] Flag any magic numbers hidden in formulas. Replace them with named constants.
+## 3. Coordinate System Integrity
+- [ ] **WGS84 vs. ENU Separation:** Verify strict separation between WGS84 (Latitude/Longitude) and local ENU (East/North/Up in meters) coordinate systems.
+- [ ] **UI/Map Standards:** Ensure that the UI and Map components strictly render and compute using ENU coordinates.
+- [ ] **Lat/Lon Restrictions:** Ensure WGS84 (Latitude/Longitude) is ONLY used for data loading, initializing environments (e.g., `rocketpy.Environment`), or display as text. No calculations or core logic outside of initialization should use Lat/Lon.
 
-### 2. Strict Unit Consistency
-- [ ] Ensure explicit naming conventions for physical quantities (e.g., `angle_deg` vs `angle_rad`, `velocity_mps`, `length_m`).
-- [ ] Flag any missing conversions (e.g., passing degrees into `math.cos()` without `math.radians()`).
-- [ ] Ensure standard units are used throughout the simulation and math routines (SI units preferred unless otherwise specified).
-
-### 3. Coordinate System Integrity
-- [ ] Verify strict separation between WGS84 (Latitude/Longitude) and local ENU (East/North/Up in meters).
-- [ ] Ensure the UI/Map strictly renders in ENU. Lat/Lon should ONLY be used for data loading or text display.
-- [ ] Confirm that Navigational Standard math conventions are followed (Azimuth 0° is True North +Y, 90° is East +X, angles increase clockwise). `x = r * math.sin(angle)` (East), `y = r * math.cos(angle)` (North), and azimuth recovery uses `math.atan2(x, y)`.
-
-### 4. DRY Principle (Don't Repeat Yourself)
-- [ ] Scan for duplicated constants across multiple files. Centralize them in `core/constants.py` or similar.
-- [ ] Identify overlapping helper functions or redundant class definitions (e.g., math utilities defined in both `core/` and `utils/`).
-- [ ] Flag unused imports or dead code. Remove them or comment on why they are kept.
+## 4. DRY Principle (Don't Repeat Yourself)
+- [ ] **Duplicated Constants:** Scan for and flag constants duplicated across multiple files.
+- [ ] **Redundant Definitions:** Identify overlapping helper functions or redundant class definitions across the codebase (e.g., math utilities defined in both `core/` and `utils/`).
+- [ ] **Dead Code & Unused Imports:** Flag any unused imports, deprecated functions, or unreachable code for removal.
+- [ ] **Architectural Separation:** Verify adherence to the MVVM architecture (e.g., ensure `core/` and `utils/` do not import GUI libraries like PySide6, PyQt, Matplotlib UI, or Folium).
