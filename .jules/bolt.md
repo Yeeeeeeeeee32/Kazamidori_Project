@@ -17,3 +17,6 @@
 ## $(date +%Y-%m-%d) - [Gating Diagnostic Logging with Boolean evaluation]
 **Learning:** Evaluating `os.environ.get('DEBUG_PHYSICS') == '1'` directly inside the heavily-called `_diag` function (or similar inner loops) adds noticeable overhead in a high-iteration context (like Monte Carlo simulations). Even when the log isn't written, the dictionary packing, string formatting, and environment check cost CPU cycles.
 **Action:** Gate diagnostic functions or blocks using a module-level boolean variable (e.g. `DEBUG_PHYSICS = (os.environ.get('DEBUG_PHYSICS') == '1')`). This reduces the check to a fast local/global boolean evaluation, allowing the interpreter to bypass expensive blocks and unused argument evaluations entirely.
+## $(date +%Y-%m-%d) - [Robust Ellipse Boundary Early Exit]
+**Learning:** When calculating error ellipse bounding boxes or extents from computed semi-axes `a` and `b`, always use `max(a, b)` for the major radius. Assuming `a` is strictly the major semi-axis relies on the underlying eigenvalue solver returning them in perfectly sorted order, which can cause edge-case bugs if the values are flipped.
+**Action:** Always use `max(a, b)` when extracting the major radius from derived semi-axes for mathematical bounding robustness.
