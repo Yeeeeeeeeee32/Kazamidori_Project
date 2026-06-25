@@ -640,6 +640,17 @@ def p1_ellipse_breaches_circle(
     K   = math.sqrt(CHI2_90)
     a   = K * math.sqrt(max(float(eigvals[1]), 0.0))   # major semi-axis
     b   = K * math.sqrt(max(float(eigvals[0]), 0.0))   # minor semi-axis
+
+    # ⚡ Bolt: O(1) early exit boundary check
+    # If the ellipse bounding circle is fully inside or fully outside the target circle, skip iterative sampling
+    # Use max(a, b) to ensure robustness even if eigenvalues are unsorted
+    max_radius = max(a, b)
+    dist_center = math.hypot(cx, cy)
+    if dist_center + max_radius <= R:
+        return False
+    if dist_center - max_radius > R:
+        return True
+
     ang = math.atan2(float(eigvecs[1, 1]), float(eigvecs[0, 1]))
     ca, sa = math.cos(ang), math.sin(ang)
 
