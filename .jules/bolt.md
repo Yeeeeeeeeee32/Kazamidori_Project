@@ -17,3 +17,7 @@
 ## $(date +%Y-%m-%d) - [Gating Diagnostic Logging with Boolean evaluation]
 **Learning:** Evaluating `os.environ.get('DEBUG_PHYSICS') == '1'` directly inside the heavily-called `_diag` function (or similar inner loops) adds noticeable overhead in a high-iteration context (like Monte Carlo simulations). Even when the log isn't written, the dictionary packing, string formatting, and environment check cost CPU cycles.
 **Action:** Gate diagnostic functions or blocks using a module-level boolean variable (e.g. `DEBUG_PHYSICS = (os.environ.get('DEBUG_PHYSICS') == '1')`). This reduces the check to a fast local/global boolean evaluation, allowing the interpreter to bypass expensive blocks and unused argument evaluations entirely.
+
+## 2026-06-27 - [Avoid redundant invariant math in ODE loops]
+**Learning:** RocketPy's flight integration (`scipy.integrate.solve_ivp` via LSODA solver) calls atmospheric closures thousands of times per step. Redundant mathematical operations on invariant parameters inside `_calc_temp` and `_calc_pres` causes massive Python overhead.
+**Action:** Always hoist invariant calculations out of inner closures to avoid executing them repeatedly during tight integration loops.

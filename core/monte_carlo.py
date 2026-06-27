@@ -152,7 +152,8 @@ def _perturb_wind_profile(
 
     speed_factor = max(0.05, 1.0 + rng.gauss(0.0, wu))
     dir_rot      = rng.gauss(0.0, wu * math.pi / 6.0)
-    cos_r, sin_r = math.cos(dir_rot), math.sin(dir_rot)
+    cos_r_s = math.cos(dir_rot) * speed_factor
+    sin_r_s = math.sin(dir_rot) * speed_factor
 
     has_gust = gust_intensity > 0.0
     gust_sigma = float(gust_intensity)
@@ -167,8 +168,8 @@ def _perturb_wind_profile(
 
     for i, ((alt_u, u_nom), (_, v_nom)) in enumerate(zip(u_prof, v_prof)):
         # 1. Global (synoptic) rotation & scaling
-        u_g = (u_nom * cos_r - v_nom * sin_r) * speed_factor
-        v_g = (u_nom * sin_r + v_nom * cos_r) * speed_factor
+        u_g = u_nom * cos_r_s - v_nom * sin_r_s
+        v_g = u_nom * sin_r_s + v_nom * cos_r_s
 
         # 2. Local (mesoscale) turbulence & 3. Gust layer
         local_spd = math_hypot(u_nom, v_nom)
