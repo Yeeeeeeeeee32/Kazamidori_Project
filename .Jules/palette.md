@@ -10,3 +10,6 @@
 ## 2026-05-26 - [Avoid Tooltips in High-Glare Environments]
 **Learning:** In outdoor, high-glare environments (like launch sites for rocket software), tooltips are completely ineffective and should be avoided.
 **Action:** Prioritize strong visual feedback (like red borders for validation errors) and robust keyboard navigation (using `setTabOrder`) to guide the user without relying on hover interactions.
+## 2024-06-27 - QSS Keyboard Focus Indicators
+**Learning:** In PySide6 applications, custom QSS can completely remove default OS focus indicators on buttons and tabs. When replacing `border: none` with a focus border, it's critical to add a default `border: 1px solid transparent;` to prevent layout shifts.
+**Action:** Always verify keyboard focus states and add `:focus` pseudo-classes to custom widget QSS.
