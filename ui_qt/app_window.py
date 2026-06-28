@@ -82,6 +82,7 @@ QToolBox::tab {
 }
 QToolBox::tab:selected { background: #4a4a4a; color: #c5a5f7; border-color: #c5a5f7; }
 QToolBox::tab:hover    { background: #444444; border-color: #7eb3ff; }
+QToolBox::tab:focus    { outline: none; border-color: #7eb3ff; }
 QSplitter::handle         { background: #555555; width: 4px; height: 4px; }
 QSplitter::handle:hover   { background: #7eb3ff; }
 QGroupBox {
@@ -120,6 +121,7 @@ QPushButton {
 }
 QPushButton:hover    { background: #4a4a4a; border-color: #7eb3ff; }
 QPushButton:pressed  { background: #7eb3ff; color: #1e1e1e; }
+QPushButton:focus    { outline: none; border-color: #7eb3ff; }
 QPushButton:disabled { background: #333333; color: #666666; border-color: #444444; }
 QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a1; }
 QPushButton#btn_run:hover  { background: #8ed9a8; }
@@ -128,8 +130,8 @@ QPushButton#btn_stop:hover { background: #eba0ac; }
 QPushButton#btn_phase1_run {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
         stop:0 #c5a5f7, stop:1 #7eb3ff);
-    color: #1e1e1e; border: none; border-radius: 6px;
-    font-size: 10pt; font-weight: bold; padding: 10px 16px;
+    color: #1e1e1e; border: 2px solid transparent; border-radius: 6px;
+    font-size: 10pt; font-weight: bold; padding: 8px 14px;
 }
 QPushButton#btn_phase1_run:hover {
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
