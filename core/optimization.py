@@ -732,23 +732,52 @@ def run_phase1(
 
     p_nom = p1_params_at_wind(base_params, mu_nom)
     
-    for e in elev_grid:
-        for a in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
-                
-            res = simulate_once(e, a, p_nom)
-            done += 1
-            if res['ok']:
-                if not use_r_filter or res['r_horiz'] <= target_r:
-                    score = p1_objective_score(res, mode)
-                    cands.append((score, e, a, res))
+    # Generate all configurations
+    configs = [(e, a) for e in elev_grid for a in azi_grid]
+
+    # Calculate chunk size and max workers to reserve UI threads
+    max_w = max(1, (os.cpu_count() or 2) - 2)
+    chunk_size = max(1, N // (max_w * 4))
+    chunks = [configs[i:i+chunk_size] for i in range(0, len(configs), chunk_size)]
+
+    env_vars = ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS']
+    old_env = {k: os.environ.get(k) for k in env_vars}
+
+    for k in env_vars:
+        os.environ[k] = '1'
+
+    try:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_w) as executor:
+            # Map over chunks to reduce IPC overhead
+            futures = [executor.submit(_grid_search_chunk, chunk, p_nom) for chunk in chunks]
             
-            prog(f'Step 1/5  Grid ({done}/{N})  e={e}° a={a}°',
-                 done / N * 0.25)
+            for future in concurrent.futures.as_completed(futures):
+                if stop_flag.is_set():
+                    # Attempt to cancel remaining futures if stopped early
+                    for f in futures: f.cancel()
+                    raise RuntimeError('cancelled')
+
+                chunk_results = future.result()
+                for e, a, res in chunk_results:
+                    done += 1
+                    if res['ok']:
+                        if not use_r_filter or res['r_horiz'] <= target_r:
+                            score = p1_objective_score(res, mode)
+                            cands.append((score, e, a, res))
+
+                # Update progress periodically per chunk instead of per evaluation
+                prog(f'Step 1/5  Grid ({done}/{N})',
+                     done / N * 0.25)
+
+    finally:
+        for k, v in old_env.items():
+            if v is None:
+                if k in os.environ: del os.environ[k]
+            else:
+                os.environ[k] = v
 
     elapsed = time.perf_counter() - _t_start
-    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
+    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {max_w} workers.")
 
     if not cands:
         raise ValueError(
