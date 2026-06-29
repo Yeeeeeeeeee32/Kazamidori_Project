@@ -1,32 +1,36 @@
-# Baseline Audit Report
+# Kazamidori Project: Baseline Code Health & Physics Integrity Audit Report
 
 ## 1. Physics & Math Validation
-
-### Magic Numbers in Formulas
-*   `utils/map_downloader.py`: `math.pi / 180.0` and `180.0 / math.pi` are heavily used instead of `math.radians()` and `math.degrees()`. Examples: lines 64, 65, 73, 74, 277, 278.
-*   `utils/geo_math.py`: `math.pi / 180.0` and `180.0 / math.pi` are used instead of `math.radians()` and `math.degrees()`. Examples: lines 86, 87.
-*   `utils/map_downloader.py` and `utils/geo_math.py`: Hardcoded `R_EARTH` and the magic numbers for WGS-84 `meters_per_degree` approximation.
+- **Status:** **PASS / MINOR ISSUES**
+- `core/optimization.py` line 649 explicitly states a previous bug fix `BUG-01 FIX: sin(t), not cos(t)`, but the trig mapping appears logically sound for error ellipses.
+- `utils/data_loader.py` line 505: `area = _math.pi * (dia_mm / 2000.0) ** 2` - This calculates the area correctly but contains magic numbers (`2000.0` instead of `/ 1000.0 / 2.0`).
 
 ## 2. Strict Unit Consistency
-
-### Missing/Incorrect Conversions
-*   `ui_qt/app_state.py`: Variable names are sometimes missing units. In `app_state.py` line 1041-1042: `live_u = speed * math.sin(math.radians(direction))` and `live_v = speed * math.cos(math.radians(direction))`. Although the math is correct, the parameter names `speed` and `direction` do not indicate units (e.g. `speed_mps`, `direction_deg`).
+- **Status:** **FAIL**
+- `ui_qt/app_state.py` lines 1190-1191 uses `speed` and `direction` without unit suffixes (e.g., `speed_mps`, `direction_deg`). The variables `live_u` and `live_v` lack units as well.
+- Manual radian/degree conversions still exist in multiple places:
+  - `utils/map_downloader.py`: `(180.0 / math.pi)` and `(math.pi / 180.0)` are heavily used in lines 132, 133, 141, 142.
+  - `utils/geo_math.py`: `(180.0 / math.pi)` is used in lines 86, 87.
+  - `core/geo_math.py`: Missing use of `math.radians()` in coordinate translation.
 
 ## 3. Coordinate System Integrity
-
-### Separation between WGS84 and ENU
-*   The system largely appears to adhere to the separation correctly, performing heavy simulation in ENU coordinates within `core/` modules (e.g., `monte_carlo.py` explicitly states it has zero geographic coordinate logic).
+- **Status:** **FAIL**
+- `core/wind_model.py` and `ui_qt/app_state.py` construct ENU coordinates using `u = speed * math.sin(math.radians(dir))` and `v = speed * math.cos(math.radians(dir))`. But the standard Navigational coordinates specify +Y is North, +X is East, meaning `x = r * sin(angle)` and `y = r * cos(angle)`. The current usage is technically correct for the wind vector if direction is "where it's coming from", but wait, `ui_qt/sim_controller.py` lines 873-874 has:
+  ```python
+  mu_u = surf_spd * math.sin(math.radians(surf_dir))
+  mu_v = surf_spd * math.cos(math.radians(surf_dir))
+  ```
+  Is this correct based on ENU standards? Yes, standard Navigational (0=North=+Y, 90=East=+X) uses `X = sin(theta)` and `Y = cos(theta)`. The usage looks consistent.
+- `ui_qt/sim_controller.py` contains Lat/Lon to ENU math directly inside the UI layer (lines 1579-1581 have Haversine/Distance logic). This is an MVVM violation. The math belongs in `utils/geo_math.py` or `core/`.
 
 ## 4. DRY Principle (Don't Repeat Yourself)
+- **Status:** **FAIL**
+- Overlapping logic: Distance calculations like Haversine are potentially duplicated between `ui_qt/sim_controller.py` and `utils/geo_math.py`.
+- Redundant math imports and aliases: `_math.pi` is used in `utils/data_loader.py`.
+- Earth's radius (`R_EARTH`) is likely redefined multiple times in `utils/geo_math.py` and `utils/map_downloader.py` instead of being imported from `core/constants.py` (which currently doesn't define it).
 
-### Duplicated Constants
-*   `R_EARTH` is duplicated in multiple places:
-    *   `utils/map_downloader.py`: `R_EARTH = 6378137.0` (line 55)
-    *   `utils/geo_math.py`: `R_EARTH = 6_378_137.0` (line 80)
-    It should be consolidated in a constants file like `core/constants.py` or similar.
-
-### Duplicated Logic
-*   `meters_per_degree` calculation logic is duplicated.
-    *   `utils/geo_math.py` has a dedicated `meters_per_degree` function using constants like `111132.92`, `559.82`, etc.
-    *   `utils/map_downloader.py` (lines 207-208) implements the *exact same formula* manually.
-    *   `utils/map_downloader.py` should import and use `meters_per_degree` from `utils/geo_math.py`.
+## Proposed Cleanup Plan (Pending Approval)
+1. **Move Constants:** Add `R_EARTH = 6371000.0` to `core/constants.py` and update `utils/geo_math.py` and `utils/map_downloader.py` to use it.
+2. **Refactor Math:** Replace all instances of `* (180.0 / math.pi)` and `* (math.pi / 180.0)` with `math.degrees()` and `math.radians()`.
+3. **Variable Naming:** Rename variables in `ui_qt/app_state.py` (e.g., `speed` -> `speed_mps`, `direction` -> `direction_deg`).
+4. **Architectural Fix:** Move Haversine/distance math out of `ui_qt/sim_controller.py` and into `utils/geo_math.py`.
