@@ -1,0 +1,3 @@
+## 2024-05-24 - Restoring Keyboard Focus Indicators in QSS
+**Learning:** When applying custom stylesheets (QSS) to Qt widgets like `QPushButton` or `QToolBar QToolButton`, the default OS/Qt focus indicators are often overridden or lost. This severely degrades keyboard accessibility as users can no longer see which element has focus when tabbing.
+**Action:** Always explicitly re-implement `:focus` pseudo-class styles (e.g., `outline: none; border-color: #7eb3ff;`) for interactive elements when customizing their base QSS to ensure clear visual feedback during tab navigation.
