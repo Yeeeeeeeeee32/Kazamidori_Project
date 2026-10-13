@@ -297,9 +297,9 @@ class ManualSetupDialog(QDialog):
     controller — no file I/O occurs inside the dialog itself.
     """
 
-    sig_load_json = Signal()   # forwarded → AppWindow.sig_load_rocket_json_clicked
+    sig_load_json = Signal()   # forwarded → AppWindow.sig_load_airframe_json_clicked
     sig_save_json = Signal()   # forwarded → AppWindow.sig_save_rocket_json_clicked
-    sig_reset     = Signal()   # forwarded to handle reset
+    sig_apply     = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -326,7 +326,7 @@ class ManualSetupDialog(QDialog):
 
         def _dsb(hi, dec, step, suffix):
             le = QLineEdit()
-            validator = QDoubleValidator(0.001, 1000.0, dec, le)
+            validator = QDoubleValidator(0.0, hi, 8, le)
             validator.setNotation(QDoubleValidator.StandardNotation)
             le.setValidator(validator)
             le.setPlaceholderText("入力必須")
@@ -388,22 +388,19 @@ class ManualSetupDialog(QDialog):
         sa.setWidget(inner)
 
         # ── Load / Save JSON buttons ──────────────────────────────────────────
-        btn_load = QPushButton("📂  Load JSON (rocket.json)")
-        btn_save = QPushButton("💾  Save JSON")
-        self.btn_reset = QPushButton("Reset Configuration")
-
-        self.btn_reset.clicked.connect(self.sig_reset.emit)
+        btn_load = QPushButton("Load airframe")
+        btn_save = QPushButton("Save airframe")
         btn_load.clicked.connect(self.sig_load_json.emit)
         btn_save.clicked.connect(self.sig_save_json.emit)
         btn_row = QHBoxLayout()
         btn_row.addWidget(btn_load)
         btn_row.addWidget(btn_save)
 
-        # ── Close ─────────────────────────────────────────────────────────────
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        btn_close = btns.button(QDialogButtonBox.StandardButton.Close)
-        if btn_close:
-            btn_close.setShortcut("Esc")
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Apply | QDialogButtonBox.StandardButton.Cancel)
+        btn_apply = btns.button(QDialogButtonBox.StandardButton.Apply)
+        btn_cancel = btns.button(QDialogButtonBox.StandardButton.Cancel)
+        btn_apply.clicked.connect(self.sig_apply.emit)
+        btn_cancel.setShortcut("Esc")
         btns.rejected.connect(self.reject)
 
         # ── Keyboard Navigation (Tab Order) for ManualSetupDialog ─────────────
@@ -419,13 +416,15 @@ class ManualSetupDialog(QDialog):
         QWidget.setTabOrder(self.af_finpos_input, self.af_fincount_input)
         QWidget.setTabOrder(self.af_fincount_input, btn_load)
         QWidget.setTabOrder(btn_load, btn_save)
-        QWidget.setTabOrder(btn_save, self.btn_reset)
-        if btn_close:
-            QWidget.setTabOrder(self.btn_reset, btn_close)
+        QWidget.setTabOrder(btn_save, btn_apply)
+        QWidget.setTabOrder(btn_apply, btn_cancel)
 
         root.addWidget(sa, stretch=1)
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #f38ba8;")
+        root.addWidget(self.error_label)
         root.addLayout(btn_row)
-        root.addWidget(self.btn_reset)
         root.addWidget(btns)
 
         self.setMinimumHeight(500)
@@ -922,17 +921,18 @@ class AppWindow(QMainWindow):
 
     Signals
     -------
-    sig_load_rocket_json_clicked : emitted when the "Load Rocket JSON" button is clicked.
+    sig_load_airframe_json_clicked : emitted when the "Load Airframe" button is clicked.
 
     Window-internal reactive state
     ------------------------------
     state : AppState  — drives profile / map / wind canvases via needs_redraw
     """
 
-    sig_load_rocket_json_clicked = Signal()   # Load rocket.json (from ManualSetupDialog)
-    sig_load_rkt_clicked         = Signal()   # Load .rkt file
+    sig_load_airframe_json_clicked = Signal()   # Load flat Airframe.json
     sig_load_para_json_clicked   = Signal()   # Load parachute-only JSON
     sig_save_rocket_json_clicked = Signal()   # Export rocket.json
+    sig_manual_config_clicked = Signal()
+    sig_get_location_clicked = Signal()
 
     OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
 
@@ -991,7 +991,7 @@ class AppWindow(QMainWindow):
         self._manual_dialog = ManualSetupDialog(self)
         self._manual_dialog.sig_load_json.connect(self._on_load_airframe_json)
         self._manual_dialog.sig_save_json.connect(self.sig_save_rocket_json_clicked.emit)
-        self._manual_dialog.sig_reset.connect(self._on_manual_config_reset)
+        self._manual_draft_active = False
         self.af_mass_input      = self._manual_dialog.af_mass_input
         self.af_cg_input        = self._manual_dialog.af_cg_input
         self.af_len_input       = self._manual_dialog.af_len_input
@@ -1365,7 +1365,7 @@ class AppWindow(QMainWindow):
         self.rmax_input.wheelEvent = lambda event: event.ignore()
 
         mode_lay.addRow("飛行モード:",    self.mode_combo)
-        mode_lay.addRow("Target Radius:", self.rmax_input)
+        mode_lay.addRow("Maximum Radius:", self.rmax_input)
 
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         # Initial _on_mode_changed call is deferred until after self.res_labels
@@ -1452,9 +1452,11 @@ class AppWindow(QMainWindow):
     # Units: CGMS — lengths in cm from nose tip, mass in g, delay in s.
 
     def _mark_modified(self) -> None:
-        if 'loaded' not in self.rkt_label.text() and '(Modified)' not in self.rkt_label.text():
-            self.rkt_label.setText(f"{self.rkt_label.text()} (Modified)")
-            self.rkt_label.setStyleSheet("color: #f38ba8; font-style: italic; font-size: 8pt; padding: 2px 4px;")
+        if self._manual_draft_active:
+            return
+        if 'loaded' not in self.airframe_label.text() and '(Modified)' not in self.airframe_label.text():
+            self.airframe_label.setText(f"{self.airframe_label.text()} (Modified)")
+            self.airframe_label.setStyleSheet("color: #f38ba8; font-style: italic; font-size: 8pt; padding: 2px 4px;")
 
     def _build_airframe_page(self) -> QScrollArea:
         w   = QWidget()
@@ -1463,14 +1465,16 @@ class AppWindow(QMainWindow):
         lay.setSpacing(4)
 
         # ── Model loading buttons ─────────────────────────────────────────────
-        btn_rkt = QPushButton("📂  Load .rkt File", w)
-        btn_rkt.clicked.connect(self.sig_load_rkt_clicked.emit)
+        btn_airframe = QPushButton("📂  Load Airframe", w)
+        btn_airframe.clicked.connect(self.sig_load_airframe_json_clicked.emit)
 
-        self.rkt_label = QLabel("No .rkt file loaded. Click 'Load .rkt File' to begin.", w)
-        self.rkt_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.rkt_label.setStyleSheet(
+        self.airframe_label = QLabel("No airframe loaded. Click 'Load Airframe' to begin.", w)
+        self.airframe_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.airframe_label.setStyleSheet(
             "color: #f9a86b; font-style: italic; font-size: 8pt; padding: 2px 4px;")
-        self.rkt_label.setWordWrap(True)
+        self.airframe_label.setWordWrap(True)
+        self.airframe_label.setMinimumWidth(0)
+        self.airframe_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
         btn_manual = QPushButton("⚙  Manual Config…", w)
         btn_manual.clicked.connect(self._on_manual_config)
@@ -1526,6 +1530,8 @@ class AppWindow(QMainWindow):
         grp_motor_lay.addRow("Motor CG Pos. [m]:", self.motor_cg_input)
         grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
         grp_motor_lay.addRow("Backfire Delay [s]:", self.af_backfire_input)
+        grp_motor_lay.addRow(btn_motor)
+        grp_motor_lay.addRow(self.motor_label)
 
         # ── Recovery / Parachute parameters ──────────────────────────────────
         grp_para     = QGroupBox("Recovery / Parachute", w)
@@ -1553,26 +1559,30 @@ class AppWindow(QMainWindow):
 
         btn_para_json = QPushButton("📂  Load Parachute JSON", w)
         btn_para_json.clicked.connect(self.sig_load_para_json_clicked.emit)
-        frm_para.addRow(btn_para_json)
+        self.parachute_label = QLabel("No file loaded", grp_para)
+        self.parachute_label.setMinimumWidth(0)
+        self.parachute_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        para_load_layout = QHBoxLayout()
+        para_load_layout.addWidget(btn_para_json)
+        para_load_layout.addWidget(self.parachute_label, 1)
+        frm_para.addRow(para_load_layout)
 
-        rkt_load_layout = QHBoxLayout()
-        rkt_load_layout.addWidget(btn_rkt)
-        rkt_load_layout.addWidget(self.rkt_label)
-        lay.addLayout(rkt_load_layout)
+        airframe_load_layout = QHBoxLayout()
+        airframe_load_layout.addWidget(btn_airframe)
+        airframe_load_layout.addWidget(self.airframe_label, 1)
+        lay.addLayout(airframe_load_layout)
 
         lay.addWidget(btn_manual)
-        lay.addWidget(btn_motor)
-        lay.addWidget(self.motor_label)
         lay.addWidget(grp_motor)
         lay.addWidget(grp_para)
 
         # ── Keyboard Navigation (Tab Order) for Airframe panel ───────────────
-        QWidget.setTabOrder(btn_rkt, btn_manual)
-        QWidget.setTabOrder(btn_manual, btn_motor)
-        QWidget.setTabOrder(btn_motor, self.motor_cg_input)
+        QWidget.setTabOrder(btn_airframe, btn_manual)
+        QWidget.setTabOrder(btn_manual, self.motor_cg_input)
         QWidget.setTabOrder(self.motor_cg_input, self.motor_dry_mass_input)
         QWidget.setTabOrder(self.motor_dry_mass_input, self.af_backfire_input)
-        QWidget.setTabOrder(self.af_backfire_input, self.para_cd_input)
+        QWidget.setTabOrder(self.af_backfire_input, btn_motor)
+        QWidget.setTabOrder(btn_motor, self.para_cd_input)
         QWidget.setTabOrder(self.para_cd_input, self.para_area_input)
         QWidget.setTabOrder(self.para_area_input, self.para_lag_input)
         QWidget.setTabOrder(self.para_lag_input, btn_para_json)
@@ -1592,11 +1602,27 @@ class AppWindow(QMainWindow):
         lay.setSpacing(4)
         lay.setContentsMargins(4, 4, 4, 4)
 
+        # Saved coordinates are an offline map centre, never a GPS result.
+        from utils.map_downloader import read_offline_map, validate_map_coordinates
+        initial_lat, initial_lon = -9999.0, -9999.0
+        location_note = "Current location has not been acquired. Enter coordinates or use Get Current Location."
+        try:
+            initial_lat, initial_lon = validate_map_coordinates(self.state.launch_lat, self.state.launch_lon)
+            location_note = "Configured coordinates. Current location has not been acquired."
+        except ValueError:
+            try:
+                meta, _ = read_offline_map()
+                initial_lat, initial_lon = meta["center_lat"], meta["center_lon"]
+                location_note = "Saved map center. Current location has not been acquired."
+            except (OSError, ValueError, TypeError, KeyError):
+                pass
+
         self.lat_input = QDoubleSpinBox(w)
         self.lat_input.setDecimals(6); self.lat_input.setSuffix("°")
         self.lat_input.setRange(-9999.0, 90)
         self.lat_input.setSpecialValueText("")
-        self.lat_input.setValue(35.42215789)
+        self.lat_input.setValue(initial_lat)
+        self.lat_input.setKeyboardTracking(False)
         self.lat_input.wheelEvent = lambda event: event.ignore()
         self.lat_input.valueChanged.connect(self._on_manual_coord_changed)
 
@@ -1604,7 +1630,8 @@ class AppWindow(QMainWindow):
         self.lon_input.setDecimals(6); self.lon_input.setSuffix("°")
         self.lon_input.setRange(-9999.0, 180)
         self.lon_input.setSpecialValueText("")
-        self.lon_input.setValue(139.42268826)
+        self.lon_input.setValue(initial_lon)
+        self.lon_input.setKeyboardTracking(False)
         self.lon_input.wheelEvent = lambda event: event.ignore()
         self.lon_input.valueChanged.connect(self._on_manual_coord_changed)
 
@@ -1658,8 +1685,10 @@ class AppWindow(QMainWindow):
         self.btn_download_map = QPushButton("🗺️  Download Offline Map", w)
         self.btn_download_map.setObjectName("btn_download_map")
 
-        btn_gps = QPushButton("📍  Get Current Location", w)
+        btn_gps = self.btn_get_location = QPushButton("📍  Get Current Location", w)
         btn_gps.clicked.connect(self._on_get_location)
+        self.location_label = QLabel(location_note, w)
+        self.location_label.setWordWrap(True)
 
         form_lay1 = QFormLayout()
         form_lay1.setContentsMargins(0, 0, 0, 0)
@@ -1669,6 +1698,7 @@ class AppWindow(QMainWindow):
         lay.addLayout(form_lay1)
 
         lay.addWidget(btn_gps)
+        lay.addWidget(self.location_label)
         lay.addWidget(self.btn_download_map)
 
         form_lay2 = QFormLayout()
@@ -2640,19 +2670,15 @@ class AppWindow(QMainWindow):
         if lat == -9999.0 or lon == -9999.0:
             return
 
-        old_lat = getattr(self.state, 'launch_lat', 0.0)
-        old_lon = getattr(self.state, 'launch_lon', 0.0)
-
         self.state.launch_lat = lat
         self.state.launch_lon = lon
         self.map_widget.update_launch(lat, lon)
+        if hasattr(self, "location_label"):
+            self.location_label.setText("Coordinates entered manually. Current location has not been acquired.")
         self.state.needs_redraw.emit()
 
-        # Check if coordinates moved significantly
-        if abs(lat - old_lat) > 0.0001 or abs(lon - old_lon) > 0.0001:
-            # Emit download map signal if we have the button
-            if hasattr(self, 'btn_download_map') and self.btn_download_map:
-                self.btn_download_map.clicked.emit()
+        # Changing the launch site must also work offline. Download a new
+        # area only when the operator presses Download Offline Map.
 
     def _on_state_lat_changed(self, value: float) -> None:
         if self.lat_input.value() != value:
@@ -2788,13 +2814,12 @@ class AppWindow(QMainWindow):
         self._adv_dialog.exec()
 
     def _on_load_airframe_json(self) -> None:
-        """Emit sig_load_rocket_json_clicked so external consumers can handle file I/O."""
-        self.sig_load_rocket_json_clicked.emit()
+        """Emit sig_load_airframe_json_clicked so external consumers can handle file I/O."""
+        self.sig_load_airframe_json_clicked.emit()
 
     def _on_manual_config(self) -> None:
         """Open the ManualSetupDialog modally."""
-        self._evaluate_config_deltas()
-        self._manual_dialog.exec()
+        self.sig_manual_config_clicked.emit()
 
     def _evaluate_config_deltas(self, *args) -> None:
         """Evaluate current widget values against AppState.original_rocket_config."""
@@ -2885,7 +2910,7 @@ class AppWindow(QMainWindow):
         self._progress.setFormat("Phase 1 Opt…"); self._progress.setValue(50)
 
     def _on_get_location(self) -> None:
-        self.set_status("Requesting current GPS / network location…", "#f9e2af")
+        self.sig_get_location_clicked.emit()
 
     def _on_load_motor(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

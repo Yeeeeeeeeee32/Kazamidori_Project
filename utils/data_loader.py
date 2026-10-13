@@ -202,6 +202,63 @@ class AirframeConfigError(ValueError):
     """Raised when an airframe JSON config file cannot be loaded or parsed."""
 
 
+def load_airframe_config(filepath: str) -> dict[str, float]:
+    """Read the flat Airframe.json format in SI units, without default values."""
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AirframeConfigError(f"Cannot read Airframe JSON: {exc}") from exc
+
+    return validate_airframe_config(data)
+
+
+def validate_airframe_config(data: dict, required_keys=None) -> dict:
+    """Validate imported or manually edited SI airframe values."""
+    if not isinstance(data, dict):
+        raise AirframeConfigError("Airframe JSON must contain an object at the top level.")
+    required = set(_AIRFRAME_DEFAULTS) if required_keys is None else set(required_keys)
+    missing = required - data.keys()
+    if missing:
+        raise AirframeConfigError(f"Missing airframe fields: {', '.join(sorted(missing))}")
+
+    positive = {"mass", "length", "radius", "nose_length", "fin_root", "fin_span", "motor_dry_mass"}
+    airframe = {}
+    for key in sorted(required):
+        raw = data[key]
+        try:
+            if isinstance(raw, bool):
+                raise ValueError("boolean is not a physical quantity")
+            value = float(raw)
+        except (TypeError, ValueError, OverflowError):
+            raise AirframeConfigError(f"{key} must be numeric, got {raw!r}") from None
+        if not _math.isfinite(value) or value < 0 or (key in positive and value == 0):
+            constraint = "positive" if key in positive else "non-negative"
+            raise AirframeConfigError(f"{key} must be finite and {constraint}, got {raw!r}")
+        airframe[key] = value
+    if "fin_count" in data:
+        value = data["fin_count"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 3 <= value <= 8 or int(value) != value:
+            raise AirframeConfigError("fin_count must be an integer between 3 and 8")
+        airframe["fin_count"] = int(value)
+    if "nose_shape" in data:
+        if data["nose_shape"] not in ("vonKarman", "conical", "ogive", "elliptical"):
+            raise AirframeConfigError("Unsupported nose_shape")
+        airframe["nose_shape"] = data["nose_shape"]
+    return airframe
+
+
+def save_airframe_config(filepath: str, data: dict) -> None:
+    """Save the same flat format accepted by load_airframe_config."""
+    validated = validate_airframe_config(data)
+    try:
+        with open(filepath, "w", encoding="utf-8") as fh:
+            json.dump(validated, fh, ensure_ascii=False, indent=4)
+            fh.write("\n")
+    except OSError as exc:
+        raise AirframeConfigError(f"Cannot save Airframe JSON: {exc}") from exc
+
+
 _AIRFRAME_REQUIRED_KEYS: frozenset[str] = frozenset({
     "mass", "cg", "length", "radius", "nose_length",
     "fin_root", "fin_tip", "fin_span", "fin_pos",

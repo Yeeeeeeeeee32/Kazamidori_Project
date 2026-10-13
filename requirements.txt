@@ -1,0 +1,19 @@
+# Install using the same Python interpreter that runs main_qt.py:
+# python -m pip install -r requirements.txt
+
+# Desktop UI and plots
+PySide6
+matplotlib
+
+# Flight simulation and numerical computation
+rocketpy
+numpy
+scipy
+
+# Rocket file parsing
+defusedxml
+
+# Offline maps and magnetic declination
+requests
+Pillow
+pygeomag

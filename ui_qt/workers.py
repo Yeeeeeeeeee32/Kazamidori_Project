@@ -1033,6 +1033,7 @@ class MapDownloadWorker(QThread):
 
     def __init__(self, lat: float, lon: float, parent=None):
         super().__init__(parent)
+        print(f"[DIAG] [COORD TRACE] MapDownloadWorker.__init__ RECEIVED: lat={lat} (type: {type(lat)}), lon={lon} (type: {type(lon)})")
         self.lat = float(lat)   # enforce float64
         self.lon = float(lon)   # enforce float64
 
@@ -1041,6 +1042,7 @@ class MapDownloadWorker(QThread):
             from utils.map_downloader import download_offline_map
 
             self.sig_progress.emit(10, 100, "Starting map download...")
+            print(f"[DIAG] [COORD TRACE] MapDownloadWorker.run BEFORE download_offline_map: lat={self.lat} (type: {type(self.lat)}), lon={self.lon} (type: {type(self.lon)})")
             meta = download_offline_map(self.lat, self.lon)
             self.sig_progress.emit(100, 100, "Download complete")
             self.sig_finished.emit(meta)

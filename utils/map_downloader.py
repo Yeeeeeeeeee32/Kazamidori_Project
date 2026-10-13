@@ -36,9 +36,10 @@ import json
 import math
 import os
 import random
-import shutil
 import sys
+import tempfile
 import time
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -67,7 +68,59 @@ ZOOM = 16                      # Fixed zoom level
 TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 USER_AGENT = "KazamidoriGCS/3.0"
 MAX_TILES = 400                # Safety guard — abort if BBox is too large
-OUT_DIR = Path("assets/offline_map")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+OUT_DIR = PROJECT_ROOT / "assets" / "offline_map"
+MAX_MERCATOR_LAT = 85.05112878
+
+
+def validate_map_coordinates(lat, lon) -> tuple[float, float]:
+    """Validate the coordinates supported by the raster tile projection."""
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Enter valid latitude and longitude first.") from exc
+    if not (math.isfinite(lat) and abs(lat) < MAX_MERCATOR_LAT
+            and math.isfinite(lon) and -180 <= lon <= 180):
+        raise ValueError("Map latitude must be between -85.0511 and 85.0511; longitude between -180 and 180.")
+    return lat, lon
+
+
+def read_offline_map() -> tuple[dict, "Image.Image"]:
+    """Read a complete saved map, including the original background.png format."""
+    with (OUT_DIR / "map_meta.json").open(encoding="utf-8-sig") as fp:
+        meta = json.load(fp)
+    if not isinstance(meta, dict):
+        raise ValueError("Invalid map metadata.")
+    meta["center_lat"], meta["center_lon"] = validate_map_coordinates(meta.get("center_lat"), meta.get("center_lon"))
+    extent = meta.get("extent_meters")
+    if (not isinstance(extent, list) or len(extent) != 4
+            or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in extent)
+            or extent[0] >= extent[1] or extent[2] >= extent[3]):
+        raise ValueError("Invalid map extent.")
+    filename = meta.get("image_file", "background.png")
+    if (not isinstance(filename, str) or not filename
+            or Path(filename).name != filename or "/" in filename or "\\" in filename):
+        raise ValueError("Invalid map image filename.")
+    with Image.open(OUT_DIR / filename) as source:
+        image = source.convert("RGBA")
+    if "image_size_px" in meta and list(image.size) != meta["image_size_px"]:
+        raise ValueError("Map image dimensions do not match the metadata.")
+    if image.getextrema()[3][0] != 255:
+        raise ValueError("Saved map contains missing tiles. Download it again.")
+    return meta, image
+
+
+def map_extent_at_launch(meta: dict, launch_lat: float, launch_lon: float) -> list[float]:
+    """Place a saved raster in the launch site's local East/North frame."""
+    from utils.geo_math import latlon_to_offset
+
+    validate_map_coordinates(launch_lat, launch_lon)
+    xmin, xmax, ymin, ymax = meta["extent_meters"]
+    south, west = enu_to_latlon(xmin, ymin, meta["center_lat"], meta["center_lon"])
+    north, east = enu_to_latlon(xmax, ymax, meta["center_lat"], meta["center_lon"])
+    left, bottom = latlon_to_offset(launch_lat, launch_lon, south, west)
+    right, top = latlon_to_offset(launch_lat, launch_lon, north, east)
+    return [left, right, bottom, top]
 
 # ── Web Mercator Exact Resolution ────────────────────────────────────────────
 #
@@ -156,7 +209,11 @@ def compute_magnetic_declination(lat: float, lon: float) -> float:
         return 0.0
     try:
         geo_mag = GeoMag()
-        result = geo_mag.calculate(glat=lat, glon=lon, alt=0, time=date.today())
+        today = date.today()
+        year_start = date(today.year, 1, 1)
+        next_year = date(today.year + 1, 1, 1)
+        decimal_year = today.year + (today - year_start).days / (next_year - year_start).days
+        result = geo_mag.calculate(glat=lat, glon=lon, alt=0, time=decimal_year)
         dec = float(result.d)
         print(f"  Magnetic declination (WMM): {dec:+.2f} deg")
         return dec
@@ -176,7 +233,11 @@ def _download_tile(
     try:
         resp = session.get(url, timeout=15)
         resp.raise_for_status()
-        return Image.open(io.BytesIO(resp.content)).convert("RGBA")
+        with Image.open(io.BytesIO(resp.content)) as source:
+            image = source.convert("RGBA")
+        if image.size != (TILE_SIZE, TILE_SIZE) or image.getextrema()[3][0] != 255:
+            raise ValueError("Incomplete map tile")
+        return image
     except Exception as exc:
         print(f"  [FAIL] tile ({x},{y}): {exc}")
         return None
@@ -223,10 +284,12 @@ def download_offline_map(
     RuntimeError
         If required dependencies are missing or no tiles could be downloaded.
     """
+    print(f"[DIAG] [COORD TRACE] download_offline_map ENTERED with lat={center_lat} (type: {type(center_lat)}), lon={center_lon} (type: {type(center_lon)})")
     # ── Enforce float64 precision ─────────────────────────────────────────
-    center_lat = float(center_lat)
-    center_lon = float(center_lon)
+    center_lat, center_lon = validate_map_coordinates(center_lat, center_lon)
     radius     = float(radius)
+    if not math.isfinite(radius) or radius <= 0:
+        raise ValueError("Map radius must be a positive finite number.")
 
     if requests is None:
         raise RuntimeError("'requests' library not installed.  Run: pip install requests")
@@ -283,42 +346,32 @@ def download_offline_map(
             "Use a smaller radius or lower zoom."
         )
 
-    # ── 4. Clear existing assets ─────────────────────────────────────────
-    if OUT_DIR.exists():
-        print(f"\n  Clearing {OUT_DIR}/ ...")
-        shutil.rmtree(OUT_DIR)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    if min_tx < 0 or min_ty < 0 or max_tx >= 2 ** ZOOM or max_ty >= 2 ** ZOOM:
+        raise ValueError("Requested map crosses the Web Mercator map boundary.")
+
+    # Keep the current offline map usable until the replacement is complete.
 
     # ── 5. Download tiles sequentially ───────────────────────────────────
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
-
     tiles: dict[tuple[int, int], "Image.Image"] = {}
     downloaded = 0
-    failed = 0
 
     print(f"\n  Downloading {total_tiles} tiles ...")
-    for ty in range(min_ty, max_ty + 1):
-        for tx in range(min_tx, max_tx + 1):
-            img = _download_tile(tx, ty, ZOOM, session)
-            downloaded += 1
-            if img is not None:
+    with requests.Session() as session:
+        session.headers.update({"User-Agent": USER_AGENT})
+        for ty in range(min_ty, max_ty + 1):
+            for tx in range(min_tx, max_tx + 1):
+                img = _download_tile(tx, ty, ZOOM, session)
+                downloaded += 1
+                if img is None:
+                    # Offline connections must not wait for every tile to time
+                    # out. A partial image cannot replace the saved map either.
+                    raise RuntimeError("Map tile download failed. Existing map was preserved.")
                 tiles[(tx, ty)] = img
                 print(f"    [{downloaded}/{total_tiles}]  tile ({tx},{ty}) OK")
-            else:
-                failed += 1
-                print(f"    [{downloaded}/{total_tiles}]  tile ({tx},{ty}) FAIL")
 
-            # Rate-limit: 0.5 – 1.0 s random delay between requests
-            if downloaded < total_tiles:
-                delay = random.uniform(0.5, 1.0)
-                time.sleep(delay)
-
-    if not tiles:
-        raise RuntimeError("No tiles downloaded -- aborting.")
-
-    if failed > 0:
-        print(f"\n  WARNING: {failed}/{total_tiles} tiles failed -- proceeding with gaps.")
+                # Rate-limit: 0.5 – 1.0 s random delay between requests
+                if downloaded < total_tiles:
+                    time.sleep(random.uniform(0.5, 1.0))
 
     # ── 6. Stitch tiles ──────────────────────────────────────────────────
     print("\n  Stitching tiles ...")
@@ -349,7 +402,7 @@ def download_offline_map(
     # requested radius as possible (sub-pixel error < 0.5 px ≈ 1.2 m at z16).
     # Using a single half_w for both axes enforces a square, matching the
     # square [-radius, +radius] extent metadata.
-    half_w = int(round(radius_px))
+    half_w = max(1, int(round(radius_px)))
     crop_size = 2 * half_w                          # guaranteed even
 
     crop_left_i   = int(round(center_in_stitch_x)) - half_w
@@ -380,12 +433,11 @@ def download_offline_map(
     # is absorbed into the extent → pixel mapping as a <0.05 % stretch.
     extent_meters = [-radius, radius, -radius, radius]  # [xmin, xmax, ymin, ymax]
 
-    # ── 10. Atomic write (tmp → rename) ──────────────────────────────────
-    print("  Writing assets (atomic transaction) ...")
-
-    tmp_img_path    = OUT_DIR / "background.tmp.png"
-    tmp_meta_path   = OUT_DIR / "map_meta.tmp.json"
-    final_img_path  = OUT_DIR / "background.png"
+    # Publish a new image, then atomically switch the metadata pointer so that
+    # readers never combine a replacement image with the previous bounds.
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    image_name = f"background-{uuid.uuid4().hex}.png"
+    final_img_path = OUT_DIR / image_name
     final_meta_path = OUT_DIR / "map_meta.json"
 
     meta = {
@@ -393,6 +445,8 @@ def download_offline_map(
         "center_lon":           center_lon,
         "magnetic_declination": mag_declination,
         "manual_offset":        0.0,
+        "declination_model":    "WMM",
+        "image_file":           image_name,
         "extent_meters":        extent_meters,
         # ── Diagnostic fields (transparency / debuggability) ─────────────
         "zoom":                 ZOOM,
@@ -401,13 +455,25 @@ def download_offline_map(
         "search_radius_m":      radius,
     }
 
-    final_img.save(str(tmp_img_path))
-    with open(tmp_meta_path, "w", encoding="utf-8") as fp:
-        json.dump(meta, fp, indent=4, ensure_ascii=False)
+    with tempfile.TemporaryDirectory(prefix=".download-", dir=OUT_DIR) as staging:
+        tmp_img_path = Path(staging) / image_name
+        tmp_meta_path = Path(staging) / "map_meta.json"
+        final_img.save(tmp_img_path)
+        tmp_meta_path.write_text(json.dumps(meta, indent=4, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp_img_path, final_img_path)
+        try:
+            os.replace(tmp_meta_path, final_meta_path)
+        except OSError:
+            final_img_path.unlink(missing_ok=True)
+            raise
 
-    # Atomic rename
-    os.replace(str(tmp_img_path),  str(final_img_path))
-    os.replace(str(tmp_meta_path), str(final_meta_path))
+    for old_image in OUT_DIR.glob("background-*.png"):
+        token = old_image.stem.removeprefix("background-")
+        if old_image != final_img_path and len(token) == 32 and all(c in "0123456789abcdef" for c in token):
+            try:
+                old_image.unlink()
+            except OSError:
+                pass  # A reader may still have the previous image open.
 
     # ── Done ─────────────────────────────────────────────────────────────
     print()
@@ -452,7 +518,7 @@ def main() -> None:
             center_lon=float(args.lon),
             radius=float(args.radius),
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"\n[ERROR] {exc}")
         sys.exit(1)
 

@@ -9,18 +9,21 @@ import math
 import random
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal
+from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal, QSignalBlocker
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton, QSystemTrayIcon, QStyle
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
 from ui_qt.workers import SimulationWorker, OptimizationWorker, MapDownloadWorker
+from ui_qt.location_service import LocationService
 from core.monte_carlo  import compute_cep_ellipse
 from utils.data_loader import (
     RocketConfigError,
-    load_rocket_config,
+    AirframeConfigError,
+    load_airframe_config,
+    validate_airframe_config,
+    save_airframe_config,
     parse_parachute_json,
-    parse_rkt_file,
 )
 
 class SimController(QObject):
@@ -50,6 +53,9 @@ class SimController(QObject):
         self._state:  AppState                = state
         print(f"=== SimController.__init__ === Received AppState: id={id(self._state)}")
         self._worker: SimulationWorker | None = None
+        self._manual_editing = False
+        self._manual_pending_airframe = None
+        self._manual_pending_path = None
         # Cache the sig_nominal_done payload so _on_mc_done can forward
         # phases/events (phase-coloured 3-D trajectory) into the final result.
         self._nominal_payload: dict | None    = None
@@ -60,6 +66,11 @@ class SimController(QObject):
         self._tray_icon.show()
 
         self._rewire_buttons()
+        self._location_service = LocationService(self)
+        window.sig_get_location_clicked.connect(self._on_get_current_location)
+        self._location_service.position_ready.connect(self._on_current_location_ready)
+        self._location_service.error.connect(self._on_current_location_error)
+        self._location_service.busy_changed.connect(lambda busy: window.btn_get_location.setEnabled(not busy))
 
         # Bind global state signals to UI labels
         self._state.koinobori_status_changed.connect(
@@ -83,8 +94,7 @@ class SimController(QObject):
         # and causing the "Not Responding" freeze on Windows.
 
         # ── Bi-directional Map Sync ────────────────────────────────────────────
-        if hasattr(self._window, 'map_widget') and hasattr(self._window.map_widget, 'coordinates_picked'):
-            self._window.map_widget.coordinates_picked.connect(self._on_map_coordinates_picked)
+        self._window.map_view.coordinates_picked.connect(self._on_map_coordinates_picked)
 
         # ── Phase 2 tolerance monitoring ───────────────────────────────────────
         # tolerance_exceeded fires every tick the bound is breached; update the
@@ -170,16 +180,14 @@ class SimController(QObject):
         self._wire_airframe_spinboxes()
 
         # ── Load Rocket JSON button → controller ──────────────────────────────
-        # AppWindow emits sig_load_rocket_json_clicked instead of opening the
+        # AppWindow emits sig_load_airframe_json_clicked instead of opening the
         # dialog itself, keeping file I/O and AppState writes in the controller.
-        _json_sig = getattr(window, 'sig_load_rocket_json_clicked', None)
+        _json_sig = getattr(window, 'sig_load_airframe_json_clicked', None)
         if _json_sig is not None:
-            _json_sig.connect(self._on_load_rocket_json)
-
-        # ── Load .rkt (RockSim) button → controller ────────────────────────────
-        _rkt_sig = getattr(window, 'sig_load_rkt_clicked', None)
-        if _rkt_sig is not None:
-            _rkt_sig.connect(self._on_load_rkt)
+            _json_sig.connect(self._on_load_airframe_json)
+        window.sig_manual_config_clicked.connect(self._on_manual_config_clicked)
+        window._manual_dialog.sig_apply.connect(self._on_apply_manual_config)
+        window.sig_save_rocket_json_clicked.connect(self._on_save_airframe_json)
 
         # ── Load Parachute JSON button → controller ────────────────────────────
         _para_sig = getattr(window, 'sig_load_para_json_clicked', None)
@@ -244,8 +252,6 @@ class SimController(QObject):
 
         if hasattr(self._window, "btn_download_map"):
             self._window.btn_download_map.clicked.connect(self._on_download_map_clicked)
-        for btn in self._window.findChildren(QPushButton, "btn_download_map"):
-            btn.clicked.connect(self._on_download_map_clicked)
 
     # ── Run ────────────────────────────────────────────────────────────────────
 
@@ -304,7 +310,7 @@ class SimController(QObject):
         # Target Radius
         is_free_mode = "free" in str(s._flight_mode).lower() or "自由" in str(s._flight_mode).lower()
         if not is_free_mode and s._target_radius is None:
-            missing.append("Target Radius")
+            missing.append("Maximum Radius")
 
         # Motor Thrust Data
         if not getattr(self._window, '_motor_thrust_data', None):
@@ -331,56 +337,97 @@ class SimController(QObject):
         return True
 
     @Slot()
+    def _on_get_current_location(self) -> None:
+        self._window.location_label.setText("Acquiring current location from the system...")
+        self._window.set_status("Acquiring current location...", "#f9e2af")
+        self._location_service.request()
+
+    @Slot(float, float, float)
+    def _on_current_location_ready(self, lat, lon, accuracy) -> None:
+        self._state.launch_lat = lat
+        self._state.launch_lon = lon
+        self._window.map_widget.update_launch(lat, lon)
+        precision = f"Accuracy: ±{accuracy:.0f} m" if accuracy >= 0 else "Accuracy unavailable"
+        self._window.location_label.setText(f"Current location: {lat:.6f}, {lon:.6f}\n{precision}")
+        self._on_download_map_clicked()
+
+    @Slot(str)
+    def _on_current_location_error(self, message) -> None:
+        self._window.location_label.setText(f"Current location acquisition failed. {message}")
+        self._window.set_status(message, "#f38ba8")
+
+    @Slot()
     def _on_download_map_clicked(self) -> None:
-        print("[DIAG] DOWNLOAD BUTTON CLICKED - Slot triggered.", flush=True)
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        lat_text = self._window.lat_input.cleanText()
-        lon_text = self._window.lon_input.cleanText()
-
-        if not lat_text or not lon_text:
-            self._window.set_status("Invalid Coordinates: Coordinates are not entered. Please enter valid launch pad coordinates first.", "#f38ba8")
-            return
+        from utils import map_downloader as offline_maps
 
         try:
-            lat = float(lat_text)
-            lon = float(lon_text)
-        except ValueError:
-            self._window.set_status("Invalid Coordinates: Coordinates are not entered or invalid.", "#f38ba8")
-            return
+            if self._worker is not None and self._worker.isRunning():
+                self._window.set_status("Wait for the current operation to finish.", "#f9e2af")
+                return
+        except RuntimeError:
+            self._worker = None
 
+        # Commit pending spinbox edits before reading the launch coordinates.
+        self._window.lat_input.interpretText()
+        self._window.lon_input.interpretText()
+        try:
+            lat, lon = offline_maps.validate_map_coordinates(
+                self._window.lat_input.value(), self._window.lon_input.value())
+        except ValueError as exc:
+            self._window.set_status(str(exc), "#f38ba8")
+            return
         self._state.launch_lat = lat
         self._state.launch_lon = lon
 
-        self._state.is_calculating = True
-        self._state.status_text = "Downloading Map..."
+        # Validate the image as well as its metadata before accepting a hit.
+        try:
+            meta, _image = offline_maps.read_offline_map()
+            if (abs(lat - float(meta["center_lat"])) < 1e-5
+                    and abs(lon - float(meta["center_lon"])) < 1e-5):
+                self._window.map_view.request_render(True)
+                self._window.set_status("Saved offline map loaded.", "#a6e3a1")
+                return
+        except (OSError, ValueError, TypeError, KeyError):
+            pass
 
-        # Instantiate and start the worker
+        self._window.btn_download_map.setEnabled(False)
+        self._state.is_calculating = True
+        self._set_run_buttons_enabled(False)
+        # Map downloads do not implement simulation cancellation.
+        for btn in self._window.findChildren(QPushButton, "btn_stop"):
+            btn.setEnabled(False)
+        self._window.set_status("Downloading offline map...", "#f9e2af")
+
         self._worker = MapDownloadWorker(lat, lon, parent=self)
         self._worker.sig_progress.connect(self._on_progress_updated)
         self._worker.sig_finished.connect(self._on_download_map_finished)
-        self._worker.error.connect(self._on_error)
+        self._worker.error.connect(self._on_map_download_error)
+        self._worker.finished.connect(self._on_map_worker_finished)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     @Slot(dict)
     def _on_download_map_finished(self, meta: dict) -> None:
-        self._state.is_calculating = False
-        self._state.status_text = "Map Download Complete"
+        self._window.map_view.request_render(True)
+        self._window.set_progress(100, "Map downloaded")
+        self._window.set_status("Offline map saved and refreshed.", "#a6e3a1")
 
-        declination = meta.get("magnetic_declination", 0.0)
-        self._state.magnetic_declination = declination
-
-        # Force map view to reload the new background tiles and redraw
-        self._state.simulation_result_changed.emit(None)
-        self._state.needs_redraw.emit()
-
+    @Slot(str)
+    def _on_map_download_error(self, msg: str) -> None:
+        print(f"Offline map download failed: {msg}")
+        self._window.map_view.request_render(True)
+        self._window.set_progress(0, "Map download failed")
         self._window.set_status(
-            f"Download Complete: Offline map tiles downloaded. "
-            f"Magnetic Declination: {declination:.4f}°",
-            "#a6e3a1",
-        )
+            "Map download failed. Check your connection and retry. Any previously saved map is unchanged.",
+            "#f38ba8")
+
+    @Slot()
+    def _on_map_worker_finished(self) -> None:
+        if self.sender() is self._worker:
+            self._worker = None
+        self._state.is_calculating = False
+        self._window.btn_download_map.setEnabled(True)
+        self._set_run_buttons_enabled(True)
 
     @Slot()
     def _on_run_clicked(self) -> None:
@@ -411,9 +458,7 @@ class SimController(QObject):
             print("[DIAG] EARLY RETURN: _validate_run_prerequisites returned False")
             return
 
-        print("[DIAG] Prerequisites PASSED — stopping wind timer")
-        # Pause the 1 Hz wind monitor during the simulation run.
-        self._wind_timer.stop()
+        print("[DIAG] Prerequisites PASSED — wind monitor remains active")
 
         self._state.mc_running = True
         self._state.simulation_started.emit()
@@ -494,8 +539,7 @@ class SimController(QObject):
         if not self._validate_run_prerequisites():
             return
 
-        # Pause the 1 Hz wind monitor during optimisation + MC run.
-        self._wind_timer.stop()
+        # Continue displaying live wind while the worker uses its input snapshot.
 
         self._state.mc_running = True
         self._state.simulation_started.emit()
@@ -942,6 +986,9 @@ class SimController(QObject):
         self._window.set_progress(0, "Error")
         self._set_run_buttons_enabled(True)
 
+        if hasattr(self._window, "btn_download_map"):
+            self._window.btn_download_map.setEnabled(True)
+
         # Resume 1 Hz wind monitor even on error so telemetry is not lost.
         self._wind_timer.start()
 
@@ -1169,6 +1216,7 @@ class SimController(QObject):
         """
         w = self._window
         s = self._state
+        self._airframe_input_refreshers = []
 
         def _bind(sb_name: str, prop: str, to_si, from_si) -> None:
             sb = getattr(w, sb_name, None)
@@ -1179,6 +1227,8 @@ class SimController(QObject):
             if isinstance(sb, QLineEdit):
                 # Text input handling
                 def validate_and_set(text: str, _sb=sb, _p=prop, _f=to_si):
+                    if self._manual_editing and _sb.parent() is not None and w._manual_dialog.isAncestorOf(_sb):
+                        return
                     val_str = text.strip()
                     if val_str == "":
                         _sb.setStyleSheet("border: 1px solid red;")
@@ -1194,9 +1244,18 @@ class SimController(QObject):
 
                 sb.textChanged.connect(validate_and_set)
                 
-                sig = getattr(s, f"{prop}_changed", None)
-                if sig is not None:
-                    def update_sb(v, _sb=sb, _g=from_si):
+                def update_sb(v, _sb=sb, _g=from_si):
+                    if self._manual_editing and w._manual_dialog.isAncestorOf(_sb):
+                        return
+                    if v is not None:
+                        try:
+                            if float(_sb.text()) == _g(v):
+                                _sb.setStyleSheet("")
+                                return
+                        except ValueError:
+                            pass
+                    # Display rounding must not feed back into the loaded data.
+                    with QSignalBlocker(_sb):
                         if v is None:
                             if _sb.text() != "":
                                 _sb.setText("")
@@ -1206,14 +1265,11 @@ class SimController(QObject):
                             if _sb.text() != val_str:
                                 _sb.setText(val_str)
                             _sb.setStyleSheet("")
+                sig = getattr(s, f"{prop}_changed", None)
+                if sig is not None:
                     sig.connect(update_sb)
-                
-                # Check initial state
-                init_val = getattr(s, prop, None)
-                if init_val is None:
-                    sb.setStyleSheet("border: 1px solid red;")
-                else:
-                    sb.setStyleSheet("")
+                self._airframe_input_refreshers.append((prop, update_sb))
+                update_sb(getattr(s, prop, None))
             else:
                 # Sentinel -9999.0 means the field is blank; do not push to AppState.
                 sb.valueChanged.connect(
@@ -1251,185 +1307,197 @@ class SimController(QObject):
 
         # ── Custom bindings for Fin Count and Nose Shape ──────────────────────
         if hasattr(w, "af_fincount_input"):
-            w.af_fincount_input.valueChanged.connect(lambda v: setattr(s, "fin_count", int(v)))
+            w.af_fincount_input.valueChanged.connect(lambda v: None if self._manual_editing else setattr(s, "fin_count", int(v)))
             s.fin_count_changed.connect(lambda v: w.af_fincount_input.setValue(int(v)) if v is not None else None)
         
         if hasattr(w, "af_noseshape_input"):
-            w.af_noseshape_input.currentTextChanged.connect(lambda v: setattr(s, "nose_shape", str(v)))
+            w.af_noseshape_input.currentTextChanged.connect(lambda v: None if self._manual_editing else setattr(s, "nose_shape", str(v)))
             s.nose_shape_changed.connect(lambda v: w.af_noseshape_input.setCurrentText(str(v)) if v is not None else None)
         
         if hasattr(w, "hellmann_alpha_input"):
             w.hellmann_alpha_input.valueChanged.connect(lambda v: setattr(s, "hellmann_alpha", float(v)))
             s.hellmann_alpha_changed.connect(lambda v: w.hellmann_alpha_input.setValue(float(v)) if v is not None else None)
 
+    def _refresh_airframe_inputs(self) -> None:
+        """Also refresh unchanged values when the same file is loaded again."""
+        for prop, update in self._airframe_input_refreshers:
+            update(getattr(self._state, prop, None))
+
+    def _manual_geometry_fields(self) -> dict:
+        w = self._window
+        return {
+            "mass": (w.af_mass_input, "rocket_dry_mass", 1.0),
+            "cg": (w.af_cg_input, "rocket_cg", 1.0),
+            "length": (w.af_len_input, "rocket_length", 1.0),
+            "radius": (w.af_radius_input, "rocket_diameter", 0.5),
+            "nose_length": (w.af_nose_input, "nose_length", 1.0),
+            "fin_root": (w.af_finroot_input, "fin_root_chord", 1.0),
+            "fin_tip": (w.af_fintip_input, "fin_tip_chord", 1.0),
+            "fin_span": (w.af_finspan_input, "fin_span", 1.0),
+            "fin_pos": (w.af_finpos_input, "fin_position", 1.0),
+        }
+
+    def _manual_airframe_values(self) -> dict:
+        values = dict(self._manual_pending_airframe or {})
+        values.update({key: widget.text().strip()
+                       for key, (widget, _, _) in self._manual_geometry_fields().items()})
+        for key, prop in (("motor_pos", "motor_cg_pos"), ("motor_dry_mass", "motor_dry_mass"),
+                          ("backfire_delay", "backfire_delay")):
+            values.setdefault(key, getattr(self._state, prop))
+        values["fin_count"] = self._window.af_fincount_input.value()
+        values["nose_shape"] = self._window.af_noseshape_input.currentText()
+        return values
+
+    @Slot()
+    def _on_manual_config_clicked(self) -> None:
+        w = self._window
+        self._refresh_airframe_inputs()
+        w.af_fincount_input.setValue(self._state.fin_count)
+        w.af_noseshape_input.setCurrentText(self._state.nose_shape)
+        self._manual_editing = True
+        w._manual_draft_active = True
+        self._manual_pending_airframe = None
+        self._manual_pending_path = None
+        w._manual_dialog.error_label.setText("")
+        try:
+            w._manual_dialog.exec()
+        finally:
+            self._manual_editing = False
+            w._manual_draft_active = False
+            self._manual_pending_airframe = None
+            self._manual_pending_path = None
+            self._refresh_airframe_inputs()
+            w.af_fincount_input.setValue(self._state.fin_count)
+            w.af_noseshape_input.setCurrentText(self._state.nose_shape)
+            w._evaluate_config_deltas()
+
+    @Slot()
+    def _on_apply_manual_config(self) -> None:
+        values = self._manual_airframe_values()
+        try:
+            # Geometry can be edited before the motor's operational values exist.
+            geometry = validate_airframe_config(values, self._manual_geometry_fields())
+        except AirframeConfigError as exc:
+            self._window._manual_dialog.error_label.setText(str(exc))
+            return
+        values.update(geometry)
+        self._manual_editing = False
+        self._window._manual_draft_active = False
+        self._apply_airframe_config(values, self._manual_pending_path)
+        self._window._manual_dialog.accept()
+
+    @Slot()
+    def _on_save_airframe_json(self) -> None:
+        from pathlib import Path
+        values = self._manual_airframe_values()
+        try:
+            values = validate_airframe_config(values)
+        except AirframeConfigError as exc:
+            self._window._manual_dialog.error_label.setText(str(exc))
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self._window._manual_dialog, "Save airframe",
+            str(Path(__file__).resolve().parent.parent / "Airframe.json"),
+            "Airframe JSON (*.json)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            save_airframe_config(path, values)
+        except AirframeConfigError as exc:
+            self._window._manual_dialog.error_label.setText(str(exc))
+            return
+        self._window._manual_dialog.error_label.setText("")
+        if self._manual_editing:
+            self._manual_pending_path = path
+        self._window.set_status(f"Airframe saved: {Path(path).name}")
+
     # ── Airframe JSON loader ───────────────────────────────────────────────────
 
     @Slot()
-    def _on_load_rocket_json(self) -> None:
-        """Open a file dialog, parse the Rocket.json, and push all parameters to AppState.
+    def _on_load_airframe_json(self) -> None:
+        """Load the flat Airframe.json into geometry and motor input fields."""
+        from pathlib import Path
 
-        Data flow (strict unidirectional MVVM):
-            File → load_rocket_config (SI pass-through — no conversion)
-                 → airframe SI values → AppState rocket geometry properties
-                 → parachute SI values → AppState parachute properties
-                 → signals fire → spinboxes / bound widgets update automatically
-
-        AppState equality guards prevent re-emission loops when spinbox
-        setValue callbacks fire back into the property setters.
-        """
-        import os as _os
         path, _ = QFileDialog.getOpenFileName(
             self._window,
-            "Load Rocket JSON",
-            "",
-            "Rocket Config (*.json);;All Files (*)",
+            "Load Airframe",
+            str(Path(__file__).resolve().parent.parent / "Airframe.json"),
+            "Airframe JSON (*.json);;All Files (*)",
         )
         if not path:
             return
-
         try:
-            cfg = load_rocket_config(path)
-        except RocketConfigError as exc:
-            self._window.set_status(f"Rocket JSON load failed: {exc}", "#f38ba8")
+            af = load_airframe_config(path)
+        except AirframeConfigError as exc:
+            self._window.set_status(f"Airframe JSON load failed: {exc}", "#f38ba8")
+            if self._manual_editing:
+                self._window._manual_dialog.error_label.setText(str(exc))
             return
 
-        s   = self._state
-        af  = cfg["airframe"]
-        par = cfg["parachute"]
-
-        # ── Airframe: JSON is SI; push directly into AppState ─────────────────
-        # Each setter emits a signal → bound spinbox.setValue updates the UI.
-        # JSON and spinboxes are both SI (m, kg); write directly, no conversion.
-        s.rocket_dry_mass = af["mass"]                # kg
-        s.rocket_cg       = af["cg"]                  # m from nose
-        s.rocket_length   = af["length"]              # m
-        s.rocket_diameter = af["radius"] * 2.0
-
-        # Task 1.3: Information dynamic label
-        import os as _os
-        name = _os.path.basename(path)
-        lbl_text = f"Name: {name}\nCG: {af['cg']:.2f} m  |  L: {af['length']:.2f} m"
-        self._window.rkt_label.setText(lbl_text)
-        self._window.rkt_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 8pt; padding: 2px 4px;")        # m radius → m diameter
-        s.nose_length     = af["nose_length"]         # m
-        s.fin_root_chord  = af["fin_root"]            # m
-        s.fin_tip_chord   = af["fin_tip"]             # m
-        s.fin_span        = af["fin_span"]            # m
-        s.fin_position    = af["fin_pos"]             # m from nose
-        # s.motor_cg_pos    = af["motor_pos"]           # Operational input only
-        # s.motor_dry_mass  = af["motor_dry_mass"]      # Operational input only
-        # s.backfire_delay  = af["backfire_delay"]      # s (Operational input only, do not overwrite on load)
-
-        # ── Parachute: JSON is SI; push directly into AppState ────────────────
-        s.parachute_cd   = par["cd"]                  # dimensionless
-        s.parachute_area = par["area"]                # m²
-        s.parachute_lag  = par["lag"]                 # s
-
-        name = _os.path.basename(path)
-        self._window.set_status(
-            f"Rocket loaded: {name}  ·  "
-            f"Mass {af['mass']:.4f} kg  ·  "
-            f"Length {af['length']:.3f} m  ·  "
-            f"Chute {par['area']:.4f} m²  ·  "
-            f"Cd {par['cd']:.2f}",
-            "#a6e3a1",
-        )
-
-    # ── RockSim .rkt file loader ──────────────────────────────────────────────
-
-    @Slot()
-    def _on_load_rkt(self) -> None:
-        """Open a file dialog, parse the RockSim .rkt file, push all
-        parameters (airframe geometry, parachute, MoI) into AppState.
-
-        Error handling
-        --------------
-        RocketConfigError → QMessageBox.critical (bad format / missing element)
-        Any other Exception → QMessageBox.critical + console traceback
-        Neither case crashes the application.
-        """
-        import os as _os
-        path, _ = QFileDialog.getOpenFileName(
-            self._window,
-            "Load RockSim File",
-            "",
-            "RockSim Files (*.rkt);;All Files (*)",
-        )
-        if not path:
+        if self._manual_editing:
+            self._manual_pending_airframe = af
+            self._manual_pending_path = path
+            for key, (widget, _, _) in self._manual_geometry_fields().items():
+                with QSignalBlocker(widget):
+                    widget.setText(format(af[key], ".12g"))
+            for widget, value in ((self._window.af_fincount_input, af.get("fin_count", self._state.fin_count)),):
+                with QSignalBlocker(widget):
+                    widget.setValue(value)
+            with QSignalBlocker(self._window.af_noseshape_input):
+                self._window.af_noseshape_input.setCurrentText(af.get("nose_shape", self._state.nose_shape))
+            self._window._manual_dialog.error_label.setText("")
             return
 
-        try:
-            cfg = parse_rkt_file(path)
-        except RocketConfigError as exc:
-            print(f"[_on_load_rkt] RocketConfigError: {exc}")
-            self._window.set_status(f".rkt parse failed: {exc}", "#f38ba8")
-            return
-        except Exception as exc:
-            print(f"[_on_load_rkt] Unexpected error: {type(exc).__name__}: {exc}")
-            self._window.set_status(f".rkt load error: {exc}", "#f38ba8")
-            return
+        self._apply_airframe_config(af, path)
 
-        s   = self._state
-        af  = cfg["airframe"]
-        moi = cfg["moi"]
+    def _apply_airframe_config(self, af: dict, path=None) -> None:
+        from pathlib import Path
 
-        # ── Airframe geometry → AppState ───────────────────────────────────────
-        # Each setter emits its signal → bound spinbox updates automatically.
-        s.rocket_dry_mass = af["mass"]
-        s.rocket_cg       = af["cg"]
-        s.rocket_length   = af["length"]
-        s.rocket_diameter = af["radius"] * 2.0
-
-        # Task 1.3: Information dynamic label
-        import os as _os
-        name = _os.path.basename(path)
-        lbl_text = f"Name: {name}\nCG: {af['cg']:.2f} m  |  L: {af['length']:.2f} m"
-        self._window.rkt_label.setText(lbl_text)
-        self._window.rkt_label.setStyleSheet("color: #a6e3a1; font-weight: bold; font-size: 8pt; padding: 2px 4px;")
-        s.nose_length     = af["nose_length"]
-        s.fin_root_chord  = af["fin_root"]
-        s.fin_tip_chord   = af["fin_tip"]
-        s.fin_span        = af["fin_span"]
-        s.fin_position    = af["fin_pos"]
+        s = self._state
+        fields = {
+            "mass": "rocket_dry_mass", "cg": "rocket_cg",
+            "length": "rocket_length", "nose_length": "nose_length",
+            "fin_root": "fin_root_chord", "fin_tip": "fin_tip_chord",
+            "fin_span": "fin_span", "fin_pos": "fin_position",
+            "motor_pos": "motor_cg_pos", "motor_dry_mass": "motor_dry_mass",
+            "backfire_delay": "backfire_delay",
+        }
+        if path:
+            s.original_rocket_config = dict(af)
+        for key, prop in fields.items():
+            if af.get(key) is not None:
+                setattr(s, prop, af[key])
         if "fin_count" in af:
             s.fin_count = af["fin_count"]
         if "nose_shape" in af:
             s.nose_shape = af["nose_shape"]
-        # s.backfire_delay  = af["backfire_delay"]  # Operational input only
+        s.rocket_diameter = af["radius"] * 2.0
+        # Airframe.json has no inertia tensor; discard any previous model's MoI.
+        s.set_moi(0.0, 0.0, 0.0)
+        self._refresh_airframe_inputs()
 
-        missing_info = cfg.get("missing_info", {})
-        failed_fields = missing_info.get("failed_fields", [])
-        manual_fields = missing_info.get("manual_fields", [])
-
-        # Add manual fields that might have been detected globally but missed by specific tags
-        if ((cfg.get("parachute", {}).get("cd") or 0) > 0 and
-            "パラシュート関連パラメータ (Cd, Area, Lag)" not in manual_fields):
-            manual_fields.append("パラシュート関連パラメータ (Cd, Area, Lag)")
-        if (((af.get("motor_dry_mass") or 0) > 0 or (af.get("motor_pos") or 0) != 0) and
-            "モーターパラメータ" not in manual_fields):
-            manual_fields.append("モーターパラメータ")
-        if ((af.get("backfire_delay") or 0) > 0 and
-            "バックファイア遅延 (Backfire Delay)" not in manual_fields):
-            manual_fields.append("バックファイア遅延 (Backfire Delay)")
-
-        if failed_fields or manual_fields:
-            self._window.set_status("RKT load warning: check Manual Config for missing parameters.", "#f9e2af")
-
-        # ── MoI → AppState (emits moi_updated signal) ──────────────────────────
-        s.set_moi(moi["ixx"], moi["iyy"], moi["izz"])
-
-        s.original_rocket_config = dict(af)
-
-        name = _os.path.basename(path)
         w = self._window
-        w.rkt_label.setText(name)
-        w.rkt_label.setStyleSheet(
-            "color: #a6e3a1; font-style: normal; font-size: 8pt; padding: 2px 4px;")
+        name = Path(path).name if path else w.airframe_label.text().split(" (Modified)")[0]
+        if not path:
+            if name.startswith("No airframe"):
+                name = "Manual configuration"
+            name += " (Modified)"
+        w.airframe_label.setText(
+            name
+        )
+        w.airframe_label.setToolTip(
+            f"Mass: {af['mass']:.4f} kg | CG: {af['cg']:.5f} m | L: {af['length']:.3f} m"
+        )
+        w.airframe_label.setStyleSheet(
+            "color: #a6e3a1; font-size: 8pt; padding: 2px 4px;"
+        )
+        w._evaluate_config_deltas()
         w.set_status(
-            f"RKT loaded: {name}  ·  "
-            f"Mass {af['mass']:.3f} kg  ·  "
-            f"CG {af['cg']:.3f} m  ·  "
-            f"Iyy {moi['iyy']:.4f} kg·m²",
+            f"Airframe loaded: {name}  |  CG {af['cg']:.5f} m  |  "
+            "Geometry: Manual Config; parachute: Load Parachute JSON",
             "#a6e3a1",
         )
 
@@ -1472,6 +1540,8 @@ class SimController(QObject):
         s.parachute_lag  = par["lag"]
 
         name = _os.path.basename(path)
+        self._window.parachute_label.setText(name)
+        self._window.parachute_label.setToolTip(path)
         self._window.set_status(
             f"Parachute loaded: {name}  ·  "
             f"Cd {par['cd']:.2f}  ·  "
@@ -1511,7 +1581,8 @@ class SimController(QObject):
         self._window.update_wind_readout(speed, direction, up_spd, up_dir)
 
         # Phase 2 tolerance evaluation — no-op until phase2_active is True.
-        self._state.check_tolerance(speed, direction)
+        if not self._state.is_calculating:
+            self._state.check_tolerance(speed, direction)
 
     @staticmethod
     def _adapt_for_window(result: dict) -> dict:
@@ -1571,35 +1642,20 @@ class SimController(QObject):
 
     @Slot(float, float)
     def _on_map_coordinates_picked(self, lat: float, lon: float) -> None:
-        """Handle 'Shift + Drag' launch site relocation from the Map View."""
-        import math
+        """Apply Ctrl-click coordinates without starting another operation."""
+        from utils.map_downloader import validate_map_coordinates
 
-        def get_distance(lat1, lon1, lat2, lon2):
-            R = 6371.0 # km
-            dlat = math.radians(lat2 - lat1)
-            dlon = math.radians(lon2 - lon1)
-            a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
-            c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-            return R * c
-
-        old_lat = self._state.launch_lat
-        old_lon = self._state.launch_lon
-
-        # Guard against None values
-        if old_lat is None: old_lat = 0.0
-        if old_lon is None: old_lon = 0.0
-
-        dist = get_distance(old_lat, old_lon, lat, lon)
-
-        # Update AppState correctly. AppState emits signal that UI input should react to,
-        # but to ensure strict sync, we update the inputs which inherently triggers AppState sync via their bindings
+        try:
+            lat, lon = validate_map_coordinates(lat, lon)
+        except ValueError as exc:
+            self._window.set_status(str(exc), "#f38ba8")
+            return
         self._state.launch_lat = lat
         self._state.launch_lon = lon
-
-        if dist > 5.0:
-            self._on_run_clicked()
-        else:
-            self._state.needs_redraw.emit()
+        self._window.map_widget.update_launch(lat, lon)
+        self._window.set_status(
+            f"Launch coordinates selected: {lat:.6f}, {lon:.6f}", "#a6e3a1")
+        self._window.location_label.setText("Coordinates selected on the map. Current location has not been acquired.")
 
     @Slot()
     def _on_partial_redraw(self) -> None:

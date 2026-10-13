@@ -23,3 +23,6 @@ mc_diagnostics.log
 assets/offline_map/
 log.txt
 stats
+/test_run.log
+/tempCodeRunnerFile.py
+/archive/stats_*

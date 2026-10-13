@@ -7,10 +7,11 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 import matplotlib.patches as patches
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QStackedLayout, QHBoxLayout
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout
 from PySide6.QtCore import Qt, Slot, Signal, QObject
 from ui_qt.app_state import AppState
 from utils.geo_math import offset_to_latlon
+from utils import map_downloader as offline_maps
 
 def _safe_float(val, default=0.0) -> float:
     if val is None:
@@ -29,8 +30,7 @@ def _safe_int(val, default=0) -> int:
         return default
 
 class MapView(QWidget):
-    # This signal is kept for API compatibility if something connects to it,
-    # though it might not be used directly in pure Matplotlib display without custom event handlers.
+    # The controller applies selected coordinates to AppState and the inputs.
     coordinates_picked = Signal(float, float)
 
     def __init__(self, app_state: AppState, parent=None):
@@ -39,10 +39,14 @@ class MapView(QWidget):
         print(f"=== MapView.__init__ === Received State: id={id(self._state)}")
         self._current_all_x = []
         self._current_all_y = []
+        self._cached_map = None
+        self._cached_map_key = None
+        self._map_settings_key = None
         self._build_ui()
 
         # Map interaction state
         self._drag_start = None
+        self._pick_origin = None
         self._is_dragging = False
         self._ghost_marker = None
 
@@ -62,13 +66,6 @@ class MapView(QWidget):
 
         self.bind_app_state(app_state)
 
-        # We don't necessarily re-render everything just on lat/lon change for a metric map,
-        # but we keep the connections to avoid breaking the expected reactivity.
-        if hasattr(app_state, 'launch_lat_changed'):
-            app_state.launch_lat_changed.connect(lambda _: self._render_current_state())
-        if hasattr(app_state, 'launch_lon_changed'):
-            app_state.launch_lon_changed.connect(lambda _: self._render_current_state())
-
         # Connect visibility toggle signals from AppState to redraw map view
         if hasattr(app_state, 'show_kde_changed'):
             app_state.show_kde_changed.connect(lambda _: self._render_current_state())
@@ -82,28 +79,37 @@ class MapView(QWidget):
         result = getattr(self._state, 'simulation_result', {}) or {}
         self._render_result(result)
 
+    def request_render(self, reload_map=False):
+        """Refresh the map without publishing a fake simulation result."""
+        if reload_map:
+            self._cached_map_key = None
+        self._render_current_state()
+
+    def _map_file_key(self):
+        paths = [offline_maps.OUT_DIR / "map_meta.json"]
+        if self._cached_map is not None:
+            paths.append(offline_maps.OUT_DIR / self._cached_map[0].get("image_file", "background.png"))
+        return tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in paths)
+
     def _build_ui(self):
-        layout = QStackedLayout(self)
-        layout.setStackingMode(QStackedLayout.StackAll)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
         # Bottom Layer: Matplotlib Canvas
         self.figure = Figure(facecolor='#1e1e2e')
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.canvas.setToolTip("Ctrl + left click: set launch coordinates. Drag: pan. Wheel: zoom.")
         self.ax = self.figure.add_subplot(111)
         self.ax.set_facecolor('#1e1e2e')
         self.ax.tick_params(colors='#cdd6f4')
         for spine in self.ax.spines.values():
             spine.set_color('#45475a')
 
-        # Top Layer: Overlays
-        top_widget = QWidget(self)
-        top_widget.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        top_layout = QVBoxLayout(top_widget)
-        top_layout.setContentsMargins(10, 10, 10, 10)
-
+        # Keep controls outside the canvas so they cannot obscure mouse input.
         btn_layout = QHBoxLayout()
-        self.btn_reset = QPushButton("🔄 Reset View", top_widget)
-        self.btn_reset.setAttribute(Qt.WA_TransparentForMouseEvents, False)
+        self.btn_reset = QPushButton("🔄 Reset View", self)
         self.btn_reset.setShortcut("Home")
         self.btn_reset.clicked.connect(self._on_reset_view)
         self.btn_reset.setStyleSheet("""
@@ -119,19 +125,19 @@ class MapView(QWidget):
             }
         """)
         btn_layout.addWidget(self.btn_reset)
+        hint = QLabel("Ctrl + click: set launch coordinates · Drag: pan · Wheel: zoom", self)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #cdd6f4; font-size: 10px;")
+        btn_layout.addWidget(hint, 1)
         btn_layout.addStretch()
 
         self._info = QLabel("No simulation result. Configure parameters and click 'Run' (F5).")
-        self._info.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self._info.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._info.setStyleSheet("QLabel { font-size: 11px; font-weight: bold; padding: 4px; background: rgba(30, 30, 46, 0.85); color: #cdd6f4; border-radius: 3px; }")
 
-        top_layout.addLayout(btn_layout)
-        top_layout.addStretch()
-        top_layout.addWidget(self._info)
-
-        layout.addWidget(self.canvas)
-        layout.addWidget(top_widget)
+        layout.addLayout(btn_layout)
+        layout.addWidget(self.canvas, 1)
+        layout.addWidget(self._info)
 
     def update_landing(self, lat, lon):
         # We don't use lat/lon directly in metric map anymore, but keep API
@@ -167,6 +173,8 @@ class MapView(QWidget):
     def _on_calculating_changed(self, calculating: bool):
         if calculating:
             self._info.setText("Calculating...")
+        elif not self._state.simulation_result:
+            self._info.setText("No simulation result. Configure parameters and click 'Run' (F5).")
 
     def _render_result(self, result=None):
         import traceback
@@ -371,14 +379,21 @@ class MapView(QWidget):
     def _on_button_press(self, event):
         if event.inaxes != self.ax: return
         if event.button == 1:
-            if event.key == 'control':
-                if event.xdata is not None and event.ydata is not None:
+            modifiers = set(getattr(event, 'modifiers', ()) or ())
+            keys = set((event.key or '').split('+'))
+            if {'ctrl', 'control'} & (modifiers | keys):
+                if self._point_on_saved_map(event):
+                    try:
+                        self._pick_origin = offline_maps.validate_map_coordinates(
+                            self._state.launch_lat, self._state.launch_lon)
+                    except ValueError:
+                        return
                     self._drag_start = (event.xdata, event.ydata)
                     self._is_dragging = True
                     self._ghost_marker, = self.ax.plot([event.xdata], [event.ydata], marker='*', markersize=15,
                                                       color='white', alpha=0.5, zorder=20)
                     self.canvas.draw_idle()
-            elif event.key is None:
+            elif not modifiers and event.key is None:
                 self._is_panning = True
                 self._pan_start = (event.x, event.y)
                 self._pan_xlim = self.ax.get_xlim()
@@ -407,25 +422,29 @@ class MapView(QWidget):
             self.ax.set_ylim(new_ylim)
             self.canvas.draw_idle()
 
+    def _point_on_saved_map(self, event):
+        if (event.inaxes != self.ax or event.xdata is None or event.ydata is None
+                or not math.isfinite(event.xdata) or not math.isfinite(event.ydata)):
+            return False
+        return any(left <= event.xdata <= right and bottom <= event.ydata <= top
+                   for left, right, bottom, top in (image.get_extent() for image in self.ax.images))
+
     def _on_button_release(self, event):
+        if event.button != 1:
+            return
         if self._is_dragging:
             self._is_dragging = False
             if self._ghost_marker:
-                self._ghost_marker.remove()
+                try:
+                    self._ghost_marker.remove()
+                except ValueError:
+                    pass  # Another state update may have cleared the axes.
                 self._ghost_marker = None
 
-            if event.xdata is not None and event.ydata is not None:
+            origin, self._pick_origin = self._pick_origin, None
+            if origin is not None and self._point_on_saved_map(event):
                 try:
-                    current_lat = float(self._state.launch_lat)
-                    current_lon = float(self._state.launch_lon)
-
-                    new_lat, new_lon = offset_to_latlon(current_lat, current_lon, event.xdata, event.ydata)
-
-                    # Update AppState directly
-                    self._state.launch_lat = new_lat
-                    self._state.launch_lon = new_lon
-
-                    # Also emit signal just in case (SimController listens to it)
+                    new_lat, new_lon = offset_to_latlon(*origin, event.xdata, event.ydata)
                     self.coordinates_picked.emit(new_lat, new_lon)
                 except Exception as e:
                     import traceback
@@ -463,80 +482,49 @@ class MapView(QWidget):
         self.canvas.draw_idle()
 
     def _render_map_tiles(self) -> None:
-        """Render offline map background with safety overlays.
-
-        Asset loading priority:
-          1. Load ``assets/offline_map/background.png`` + ``map_meta.json``.
-          2. If either file is missing or corrupted, fall back to a blank
-             dark grid with a prominent red warning annotation.
-
-        Visual safety net:
-          - Two concentric dashed distance rings at 500 m and 1000 m (zorder=2).
-
-        Magnetic declination integration:
-          - Pushes ``magnetic_declination`` and ``manual_offset`` from the
-            loaded JSON into AppState so all downstream components can read
-            ``state.effective_declination``.
-        """
-        import os
-        import json
+        """Load the saved raster and align it with the current launch site."""
         import numpy as np
-
-        meta_path = "assets/offline_map/map_meta.json"
-        img_path  = "assets/offline_map/background.png"
-
-        map_loaded = False
-
-        # ── Attempt asset load ────────────────────────────────────────────────
-        if os.path.exists(meta_path) and os.path.exists(img_path):
+        warning = None
+        try:
+            # A replaced image at the same filename must invalidate the cache.
+            # Do not stat a removed old image when the metadata was replaced.
             try:
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-
-                # ── Push declination into AppState ────────────────────────────
-                declination = float(meta.get("magnetic_declination", 0.0))
-                manual_off  = float(meta.get("manual_offset", 0.0))
-
-                if getattr(self._state, 'magnetic_declination', None) != declination:
+                key = self._map_file_key()
+            except OSError:
+                key = None
+            if self._cached_map is None or key is None or key != self._cached_map_key:
+                meta, image = offline_maps.read_offline_map()
+                self._cached_map = (meta, np.array(image))
+                self._cached_map_key = self._map_file_key()
+            meta, pixels = self._cached_map
+            extent = offline_maps.map_extent_at_launch(meta, self._state.launch_lat, self._state.launch_lon)
+            self._state.offline_map_extent = extent
+            if not (extent[0] <= 0 <= extent[1] and extent[2] <= 0 <= extent[3]):
+                warning = "LAUNCH SITE IS OUTSIDE THE SAVED MAP\nDownload Offline Map for this location."
+            else:
+                if self._map_settings_key != self._cached_map_key:
+                    # Old versions always saved zero because they passed a date
+                    # object to WMM instead of a decimal year. Repair in memory.
+                    declination = (float(meta.get("magnetic_declination", 0.0))
+                                   if meta.get("declination_model") == "WMM"
+                                   else offline_maps.compute_magnetic_declination(meta["center_lat"], meta["center_lon"]))
                     self._state.magnetic_declination = declination
-                if getattr(self._state, 'manual_declination_offset', None) != manual_off:
-                    self._state.manual_declination_offset = manual_off
+                    self._state.manual_declination_offset = float(meta.get("manual_offset", 0.0))
+                    self._map_settings_key = self._cached_map_key
+                self.ax.imshow(pixels, extent=extent, origin='upper', zorder=0, alpha=0.6)
+                self.ax.text(0.99, 0.01, "© OpenStreetMap contributors", transform=self.ax.transAxes,
+                             ha='right', va='bottom', fontsize=7, color='#cdd6f4', zorder=20,
+                             bbox=dict(facecolor='#1e1e2e', alpha=0.8, edgecolor='none'))
+        except FileNotFoundError:
+            warning = "OFFLINE MAP NOT SAVED\nConnect to the internet and select Download Offline Map."
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(f"Offline map could not be loaded: {exc}")
+            warning = "OFFLINE MAP COULD NOT BE LOADED\nCheck coordinates or download the map again."
 
-                # ── Push extent into AppState ─────────────────────────────────
-                extent = meta.get("extent_meters", [-1000.0, 1000.0, -1000.0, 1000.0])
-                if getattr(self._state, 'offline_map_extent', None) != extent:
-                    self._state.offline_map_extent = extent
-
-                # ── Cache image array (avoid disk I/O on every redraw) ────────
-                if not hasattr(self, '_cached_img_path') or self._cached_img_path != img_path:
-                    from PIL import Image
-                    print(f"Loading and caching background map image: {img_path}")
-                    img = Image.open(img_path)
-                    self._cached_background_img = np.array(img)
-                    self._cached_img_path = img_path
-
-                # ── Render background raster (zorder=0) ───────────────────────
-                self.ax.imshow(
-                    self._cached_background_img,
-                    extent=self._state.offline_map_extent,
-                    origin='upper',
-                    zorder=0,
-                    alpha=0.6,
-                )
-                map_loaded = True
-
-            except Exception:
-                import traceback
-                print(f"=== MAP ASSET LOAD ERROR ===\n{traceback.format_exc()}")
-                map_loaded = False
-        else:
-            print("Warning: Offline map files missing. Rendering fallback grid.")
-
-        # ── Fallback: red HUD warning (zorder=99) ────────────────────────────
-        if not map_loaded:
+        if warning:
             self.ax.text(
                 0.5, 0.5,
-                "[WARNING] OFFLINE MAP NOT LOADED\nCHECK GPS COORDINATES",
+                warning,
                 transform=self.ax.transAxes,
                 ha='center', va='center',
                 fontsize=12, fontweight='bold',
