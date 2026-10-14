@@ -933,6 +933,7 @@ class AppWindow(QMainWindow):
     sig_save_rocket_json_clicked = Signal()   # Export rocket.json
     sig_manual_config_clicked = Signal()
     sig_get_location_clicked = Signal()
+    sig_import_results_clicked = Signal()
 
     OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
 
@@ -1088,7 +1089,18 @@ class AppWindow(QMainWindow):
 
         fm = mb.addMenu("&File")
         fm.addAction(QAction("Load Motor File…", self, triggered=self._on_load_motor))
-        fm.addAction(QAction("Export Results…",  self))
+        self.export_menu = fm.addMenu("Export Results")
+        for label, kind in (("3D Trajectory Image (PNG)…", "profile"),
+                            ("Landing Map Image (PNG)…", "map"),
+                            ("Trajectory / MC Data (CSV)…", "csv"),
+                            ("Result Archive (JSON)…", "json")):
+            action = self.export_menu.addAction(label)
+            action.triggered.connect(lambda checked=False, kind=kind: self._on_export_results(kind))
+        self.action_import_results = fm.addAction("Import Results (JSON)…")
+        self.action_import_results.triggered.connect(self.sig_import_results_clicked.emit)
+        self.state.simulation_result_changed.connect(self._update_result_actions)
+        self.state.is_calculating_changed.connect(self._update_result_actions)
+        self._update_result_actions()
         fm.addSeparator()
         # Phase E: persist the operator-facing AppState (Cd / motor settings,
         # Cd curves) to JSON so a calibrated launch profile can be reloaded
@@ -1101,8 +1113,8 @@ class AppWindow(QMainWindow):
         sm = mb.addMenu("&Simulation")
         sm.addAction(QAction("Advanced Settings...", self, triggered=self._on_advanced_settings))
         sm.addSeparator()
-        sm.addAction(QAction("▶  Run Simulation (F5)", self, triggered=self._on_run))
-        sm.addAction(QAction("⏹  Stop (Esc)",           self, triggered=self._on_stop))
+        self.action_run = sm.addAction("▶  Run Simulation (F5)")
+        self.action_stop = sm.addAction("⏹  Stop (Esc)")
 
         self._view_menu = mb.addMenu("&View")
 
@@ -1112,7 +1124,7 @@ class AppWindow(QMainWindow):
         self.action_show_kde.toggled.connect(lambda c: setattr(self.state, "show_kde", c))
         self._view_menu.addAction(self.action_show_kde)
 
-        self.action_show_cep = QAction("CEP 90% Ellipse", self, checkable=True)
+        self.action_show_cep = QAction("CEP Ellipse / Probability Circles", self, checkable=True)
         self.action_show_cep.setChecked(self.state.show_cep)
         self.action_show_cep.toggled.connect(lambda c: setattr(self.state, "show_cep", c))
         self._view_menu.addAction(self.action_show_cep)
@@ -1131,6 +1143,10 @@ class AppWindow(QMainWindow):
         self.action_show_apogee.setChecked(self.state.show_apogee)
         self.action_show_apogee.toggled.connect(lambda c: setattr(self.state, "show_apogee", c))
         self._view_menu.addAction(self.action_show_apogee)
+
+        for name in ("kde", "cep", "scatter", "burnout", "apogee"):
+            getattr(self.state, f"show_{name}_changed").connect(
+                getattr(self, f"action_show_{name}").setChecked)
 
         hm = mb.addMenu("&Help")
         hm.addAction(QAction("About Kazamidori", self, triggered=self._on_about))
@@ -2057,7 +2073,7 @@ class AppWindow(QMainWindow):
         # Levels start at 0.05 (5 % of peak) so the near-zero padding area
         # outside the scatter cloud is never filled — eliminates the purple square.
         kde_grid = res.get("kde")
-        if kde_grid:
+        if kde_grid and s.show_kde:
             try:
                 _X = np.asarray(kde_grid["X_m"], dtype=float)
                 _Y = np.asarray(kde_grid["Y_m"], dtype=float)
@@ -2073,17 +2089,18 @@ class AppWindow(QMainWindow):
                 color="#45475a", lw=0.8, linestyle=":", alpha=0.35)
 
         # Send raw arrays to canvas for Shift+Scroll animation
-        if "t_hist" in res:
-            self.profile_canvas.set_trajectory(tx, ty, tz, res["t_hist"], ax)
+        times = res.get("t_hist", res.get("t_vals"))
+        if times is not None:
+            self.profile_canvas.set_trajectory(tx, ty, tz, times, ax)
 
         # Draw Solid Error Ellipse on Z=0
         ellipse = res.get("ellipse")
-        if ellipse:
+        if ellipse and s.show_cep:
             try:
                 # Plot outline of ellipse
                 theta = np.linspace(0, 2*np.pi, 100)
-                a = ellipse["width"] / 2
-                b = ellipse["height"] / 2
+                a = ellipse["a"] if "a" in ellipse else ellipse["width"] / 2
+                b = ellipse["b"] if "b" in ellipse else ellipse["height"] / 2
                 cx = ellipse["cx"]
                 cy = ellipse["cy"]
                 angle = ellipse["angle_rad"]
@@ -2124,6 +2141,8 @@ class AppWindow(QMainWindow):
                     ("chute",   "#a6e3a1", "^", 80,  "Chute Deploy"),
                 ]
                 for ev_key, ev_col, ev_mk, ev_sz, ev_lbl in _EV:
+                    if ev_key in ("burnout", "apogee") and not getattr(s, f"show_{ev_key}"):
+                        continue
                     ev = events.get(ev_key)
                     if ev is None:
                         continue
@@ -2139,12 +2158,17 @@ class AppWindow(QMainWindow):
                 ax.add_collection3d(_make_altitude_lc(tx, ty, tz))
             ax.plot([], [], [], color="#89b4fa", lw=2.0,
                     label="Trajectory  (cool = alt)")
-            apex_i = int(np.argmax(tz))
-            ax.scatter([tx[apex_i]], [ty[apex_i]], [apex_z],
-                       c="#f9e2af", s=90, marker="*", zorder=6,
-                       label=f"Apogee  {apex_z:.0f} m")
-            ax.text(tx[apex_i], ty[apex_i], apex_z * 1.04,
-                    f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
+            if s.show_apogee:
+                apex_i = int(np.argmax(tz))
+                ax.scatter([tx[apex_i]], [ty[apex_i]], [apex_z],
+                           c="#f9e2af", s=90, marker="*", zorder=6,
+                           label=f"Apogee  {apex_z:.0f} m")
+                ax.text(tx[apex_i], ty[apex_i], apex_z * 1.04,
+                        f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
+            if s.show_burnout and events and events.get("burnout"):
+                ex, ey, ez = events["burnout"][:3]
+                ax.scatter([ex], [ey], [max(0, ez)], c="#fab387", s=90,
+                           marker="X", zorder=9, label="Burnout")
 
         # ── Wind quivers (shown in both phase and fallback modes) ─────────────
         # ``wind_profile`` only exists on the local AppWindow AppState; after
@@ -2175,7 +2199,7 @@ class AppWindow(QMainWindow):
                    marker="^", zorder=8, label="Launch  (0, 0, 0)")
 
         # MC landing scatter at Z=0 — single scatter3D call, max 500 pts
-        if "mc_scatter_x" in res and res["mc_scatter_x"]:
+        if s.show_scatter and "mc_scatter_x" in res and res["mc_scatter_x"]:
             try:
                 _sc_x = np.asarray(res["mc_scatter_x"][:MAX_SCATTER_POINTS], dtype=float)
                 _sc_y = np.asarray(res["mc_scatter_y"][:MAX_SCATTER_POINTS], dtype=float)
@@ -2207,9 +2231,10 @@ class AppWindow(QMainWindow):
         ax.set_xlim3d(tx_min - pad_x, tx_max + pad_x)
         ax.set_ylim3d(ty_min - pad_y, ty_max + pad_y)
         ax.set_zlim3d(max(0.0, tz_min), max(tz_max + pad_z, 10.0))
-        _mode = getattr(s, "operation_mode", getattr(s, "sim_mode", ""))
-        _spd  = s.wind_profile[0]["speed_ms"] if s.wind_profile else 0.0
-        _dir  = s.wind_profile[0]["dir_deg"] if s.wind_profile else 0.0
+        _mode = s.flight_mode
+        result_wind = res.get("wind_nodes") or s.wind_profile
+        _spd  = result_wind[0]["speed_ms"] if result_wind else 0.0
+        _dir  = result_wind[0]["dir_deg"] if result_wind else 0.0
         _cep  = getattr(s, "landing_prob",    getattr(s, "cep_prob",   90))
         ax.set_title(
             f"Mode: {_mode}   ·   "
@@ -2753,6 +2778,48 @@ class AppWindow(QMainWindow):
         else:
             label.setText("Using Static Value")
             label.setStyleSheet("color: #888888;")
+
+    # ── Result export ───────────────────────────────────────────────────────
+
+    def _update_result_actions(self, *_args) -> None:
+        idle = not self.state.is_calculating
+        result = self.state.simulation_result or {}
+        self.export_menu.setEnabled(idle and bool(result.get("trajectory_x")))
+        self.action_import_results.setEnabled(idle)
+
+    def _on_export_results(self, kind: str) -> None:
+        import io
+        from pathlib import Path
+        from utils.result_io import make_archive, save_archive, save_csv, atomic_write
+
+        if self.state.is_calculating or not (self.state.simulation_result or {}).get("trajectory_x"):
+            self.set_status("Export requires a completed result.", "#f9e2af")
+            return
+        extension = "png" if kind in ("profile", "map") else kind
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export Results", f"kazamidori_{kind}.{extension}",
+            f"{extension.upper()} files (*.{extension})")
+        if not filepath:
+            return
+        if not Path(filepath).suffix:
+            filepath += f".{extension}"
+        try:
+            if extension == "png":
+                figure = self.profile_fig if kind == "profile" else self.map_view.figure
+                buffer = io.BytesIO()
+                figure.savefig(buffer, format="png", dpi=180, facecolor=figure.get_facecolor(), bbox_inches="tight")
+                atomic_write(filepath, buffer.getvalue())
+            else:
+                s = self.state
+                archive = make_archive(s.simulation_result, s.nominal_result, {
+                    "flight_mode": s.flight_mode, "launch_lat": s.launch_lat,
+                    "launch_lon": s.launch_lon, "target_radius": s.target_radius,
+                })
+                (save_csv if kind == "csv" else save_archive)(filepath, archive)
+        except (OSError, ValueError, TypeError) as exc:
+            self.set_status(f"Export failed: {exc}", "#f38ba8")
+            return
+        self.set_status(f"Results exported: {filepath}", "#a6e3a1")
 
     # ── Session persistence (Phase E) ────────────────────────────────────────
 

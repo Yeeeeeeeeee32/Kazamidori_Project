@@ -1,0 +1,28 @@
+{
+  "format": "kazamidori-results", "version": 1, "coordinates": "ENU_m",
+  "context": {"flight_mode": "自由", "launch_lat": 35.5, "launch_lon": 139.5, "target_radius": 300},
+  "nominal": {"apogee_m": 100, "horizontal_distance_m": 22.36, "hang_time": 15},
+  "result": {
+    "trajectory_x": [0, 5, 10, 20], "trajectory_y": [0, 3, 5, 10],
+    "trajectory_z": [0, 40, 100, 0], "t_hist": [0, 1, 5, 15],
+    "impact_x": 20, "impact_y": 10, "land_x": 20, "land_y": 10,
+    "apogee_m": 100, "hang_time": 15, "landing_prob": 90,
+    "mc_scatter_x": [17, 19, 21, 23], "mc_scatter_y": [8, 12, 7, 13],
+    "r_N_radius": 4.25, "cep": 3.8, "n_runs": 4,
+    "mc_avg_apogee": 101, "mc_min_apogee": 99, "mc_avg_hdist": 23, "mc_max_hdist": 26,
+    "ellipse": {"a": 8, "b": 5, "cx": 20, "cy": 10, "angle_rad": 0.2},
+    "phases": {
+      "thrust": {"x": [0, 5], "y": [0, 3], "z": [0, 40]},
+      "coast": {"x": [5, 10], "y": [3, 5], "z": [40, 100]},
+      "chute": {"x": [10, 20], "y": [5, 10], "z": [100, 0]}
+    },
+    "events": {"burnout": [5, 3, 40], "apogee": [10, 5, 100], "chute": [10, 5, 100]},
+    "wind_nodes": [{"alt_m": 3, "speed_ms": 2, "dir_deg": 180}],
+    "kde": {
+      "X_m": [[15, 20, 25], [15, 20, 25], [15, 20, 25]],
+      "Y_m": [[5, 5, 5], [10, 10, 10], [15, 15, 15]],
+      "Z": [[0.1, 0.3, 0.1], [0.3, 1, 0.3], [0.1, 0.3, 0.1]],
+      "x_min_m": 15, "x_max_m": 25, "y_min_m": 5, "y_max_m": 15
+    }
+  }
+}

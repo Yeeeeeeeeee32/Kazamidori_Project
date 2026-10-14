@@ -66,6 +66,9 @@ class SimController(QObject):
         self._tray_icon.show()
 
         self._rewire_buttons()
+        window.action_run.triggered.connect(self._on_run_clicked)
+        window.action_stop.triggered.connect(self._on_stop_clicked)
+        window.sig_import_results_clicked.connect(self._on_import_results)
         self._location_service = LocationService(self)
         window.sig_get_location_clicked.connect(self._on_get_current_location)
         self._location_service.position_ready.connect(self._on_current_location_ready)
@@ -394,6 +397,7 @@ class SimController(QObject):
         self._state.is_calculating = True
         self._set_run_buttons_enabled(False)
         # Map downloads do not implement simulation cancellation.
+        self._window.action_stop.setEnabled(False)
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
             btn.setEnabled(False)
         self._window.set_status("Downloading offline map...", "#f9e2af")
@@ -1683,7 +1687,17 @@ class SimController(QObject):
             wsr = self._window.state.simulation_result
             if isinstance(wsr, dict):
                 wsr["ellipse"] = ellipse_data
-        self._window.update_ellipse_layer(ellipse_data)
+        # Render from the shared result so View toggles also apply after a
+        # percentile edit. The former update_ellipse_layer API no longer exists.
+        sr = self._state.simulation_result
+        if isinstance(sr, dict) and pts is not None and len(pts):
+            sr["landing_prob"] = int(round(self._state.cep_probability))
+            # Use the same empirical radius convention as the worker.
+            radii = np.sort(np.linalg.norm(pts - pts.mean(axis=0), axis=1))
+            index = min(int(self._state.cep_probability / 100.0 * len(pts)), len(pts) - 1)
+            sr["r_N_radius"] = sr["cep_radius"] = float(radii[index])
+            self._state.r90_radius = sr["r_N_radius"]
+            self._state.simulation_result = sr
 
     @Slot(float)
     def _on_cep_prob_changed(self, value: float) -> None:
@@ -1697,7 +1711,73 @@ class SimController(QObject):
         self._state.cep_probability = float(value)
         self._state.landing_prob    = int(round(value))
 
+    @Slot()
+    def _on_import_results(self) -> None:
+        from pathlib import Path
+        from PySide6.QtCore import QSignalBlocker
+        from utils.result_io import load_archive
+        from utils.geo_math import offset_to_latlon
+
+        s, w = self._state, self._window
+        if s.is_calculating:
+            w.set_status("Wait for the current operation before importing results.", "#f9e2af")
+            return
+        filepath, _ = QFileDialog.getOpenFileName(
+            w, "Import Results", "", "Kazamidori result archives (*.json)")
+        if not filepath:
+            return
+        try:
+            archive = load_archive(filepath)
+            result, context = archive["result"], archive["context"]
+            nominal = archive.get("nominal") or result
+            scatter = list(zip(result.get("mc_scatter_x", []), result.get("mc_scatter_y", [])))
+            lat, lon = context.get("launch_lat"), context.get("launch_lon")
+            landing = (offset_to_latlon(lat, lon, result.get("land_x", 0), result.get("land_y", 0))
+                       if lat is not None else (None, None))
+        except (OSError, ValueError, TypeError) as exc:
+            w.set_status(f"Import failed: {exc}", "#f38ba8")
+            return
+
+        # All data is validated before updating shared state. Historical results
+        # do not start a simulation, download a map, or activate wind monitoring.
+        s.phase2_active = False
+        s.cached_mc_scatter = None  # Do not recompute the old result on probability change.
+        s.launch_lat, s.launch_lon = lat, lon
+        s.target_radius = context.get("target_radius")
+        w.mode_combo.setCurrentText(context["flight_mode"])
+        s.flight_mode = context["flight_mode"]
+        probability = result.get("landing_prob", 90)
+        s.landing_prob = int(probability)
+        s.cep_probability = float(probability)
+        s.mc_scatter = scatter
+        s.cached_mc_scatter = np.asarray(scatter, dtype=float).reshape(-1, 2)
+        s.mc_ellipse = result.get("ellipse")
+        s.kde_contours = result.get("kde_contours", [])
+        s.r90_radius = result.get("r_N_radius", 0.0)
+        s.mc_cep = result.get("cep", 0.0)
+        if lat is not None:
+            s.land_lat, s.land_lon = landing
+        s.has_sim_result = True
+        self._nominal_payload = nominal
+        # Only the final result assignment should trigger the profile redraw.
+        with QSignalBlocker(s):
+            s.nominal_result = nominal
+        s.simulation_result = result
+        self.populate_results(nominal, result)
+        if lat is not None:
+            w.map_widget.update_launch(lat, lon)
+            w.map_widget.update_landing(*landing)
+        else:
+            w._map_launch_lbl.setText("Launch: —")
+            w._map_landing_lbl.setText("Landing: —")
+        w.location_label.setText("Launch coordinates restored from result archive; current location has not been acquired.")
+        w.update_status_indicator("IMPORTED RESULT — wind tolerance monitoring inactive")
+        w.set_progress(0, "Imported")
+        w.set_status(f"Results imported: {Path(filepath).name}", "#a6e3a1")
+
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
+        self._window.action_run.setEnabled(enabled)
+        self._window.action_stop.setEnabled(self._state.is_calculating)
         for btn in self._window.findChildren(QPushButton, "btn_run"):
             btn.setEnabled(enabled)
         for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):

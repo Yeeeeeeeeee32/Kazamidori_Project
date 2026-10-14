@@ -246,7 +246,7 @@ class MapView(QWidget):
 
 
             # R90 Circle
-            if r90 > 0:
+            if r90 > 0 and getattr(self._state, 'show_cep', True):
                 r90_circle = patches.Circle((impact_x, impact_y), radius=r90, edgecolor='#cc0000', facecolor='none', linewidth=2, zorder=5)
                 self.ax.add_patch(r90_circle)
                 all_x.extend([impact_x - r90, impact_x + r90])
@@ -266,7 +266,7 @@ class MapView(QWidget):
                 angle_deg = math.degrees(ellipse['angle_rad'])
 
                 ellipse_patch = patches.Ellipse((cx, cy), width, height, angle=angle_deg,
-                                                edgecolor='#00bb00', facecolor='none', linewidth=2, label='90% CEP', zorder=3)
+                                                edgecolor='#00bb00', facecolor='none', linewidth=2, label=f'{prob}% CEP', zorder=3)
                 self.ax.add_patch(ellipse_patch)
 
                 # Approximate ellipse bounds for autoscaling

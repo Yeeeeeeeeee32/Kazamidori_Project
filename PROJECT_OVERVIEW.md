@@ -2,6 +2,8 @@
 
 確認日：2026-10-12。作業フォルダー内の実装を静的に確認した整理資料です。未コミットの変更を含む現在のコードを対象とし、構想資料の「完了」表示より実際の呼び出し経路を優先しています。GUI起動・飛行計算の実行・精度検証は今回行っていません。
 
+追記：2026-10-13、タスク3-6の結果メニュー・表示切替を実装し、Qtの画面部品を使う自動テストとファイル入出力テストで確認しました。飛行計算の精度検証は次のタスク4-0で扱います。
+
 ## 1. プログラムの全体像
 
 モデルロケットの機体・モーター・パラシュート・風・発射条件を入力し、飛行軌道と着地点を予測するデスクトップアプリです。風と推力の不確実性を加えたモンテカルロ計算で着地点の分布を求め、競技モードに応じた発射仰角・方位角の探索も行います。
@@ -31,6 +33,8 @@
 | 実行制御 | 入力チェック、バックグラウンド計算、進捗表示、中止要求、基準軌道を先に表示、完了通知 | `sim_controller.py`、`workers.py` |
 | 判定・監視 | 基準着地点の範囲確認、MC後のGO／NO-GO表示、風の基準値を固定した許容範囲監視 | `sim_controller.py`、`app_state.py` |
 | 設定保存 | Cd・Cd曲線・比推力・推進薬密度をJSONに保存／復元 | `session_manager.py` |
+| 結果保存・復元 | 3D／地図のPNG、軌道・MC着地点CSV、復元用JSON。JSONから結果パネル・描画・表示用の発射条件を復元 | `result_io.py`、`app_window.py`、`sim_controller.py` |
+| 表示メニュー | KDE、CEP楕円・確率円、MC点群、燃焼終了点、最高到達点を切替。Simulationから詳細設定・実行・停止 | `app_window.py`、`map_view.py`、`sim_controller.py` |
 
 ### 競技モード
 
@@ -99,12 +103,18 @@ Kazamidori_Project/
 │  ├─ data_loader.py            Airframe・回収系JSON／各種CSV読込、旧RockSim解析
 │  ├─ geo_math.py               ENUと緯度経度の近似変換、円・楕円の座標
 │  ├─ map_downloader.py         地図タイル取得、画像・メタデータ出力
+│  ├─ result_io.py              結果JSONの検証・保存・復元、軌道・MCのCSV保存
 │  └─ session_manager.py        一部設定のJSON保存／復元
 ├─ assets/
 │  └─ logo.png                  ロゴ画像
 ├─ tests/
 │  ├─ core/test_optimization.py 風のべき指数計算の単体テスト（5ケース）
-│  └─ ui_qt/test_airframe_import.py  Airframe読込・編集・保存・風更新のテスト（16ケース）
+│  ├─ ui_qt/test_airframe_import.py  Airframe読込・編集・保存・風更新のテスト（16ケース）
+│  ├─ ui_qt/test_offline_map.py  オフライン地図の表示・座標操作・取得（17ケース）
+│  ├─ ui_qt/test_location_service.py  現在地取得・失敗・再試行（6ケース）
+│  ├─ ui_qt/test_result_menu.py 結果メニュー・表示切替・Worker出力互換性（9ケース）
+│  ├─ utils/                   地図保存（6ケース）、結果入出力（6ケース）
+│  └─ fixtures/result_archive.json  結果メニュー確認用の架空データ
 ├─ test_physics_core.py          RocketPyの単独確認スクリプト
 ├─ archive/                     過去の監査報告・計画と確認用スクリプト
 ├─ Koinobori/
@@ -209,3 +219,16 @@ JSONの必須キー不足・非数値・非有限値などを読込時に検査�
 Manual Configでは入力中の文字列を保持し、「Apply」で編集を確定、「Cancel」で破棄します。ダイアログ内の「Load airframe」もApplyまで未確定です。「Save airframe」は編集内容とモーター設定をJSONへ保存し、Applyを実行しません。`fin_count` と `nose_shape` は任意項目として保存・読込できます。
 
 機体・パラシュートのファイル名は各Loadボタンの横に表示します。機体の質量・重心・長さの要約はファイル名のツールチップに表示します。計算・探索中も1秒周期の風速情報更新を続け、計算は開始時に収集した入力値を使用します。
+
+## 9. 結果メニュー（タスク3-6、2026-10-13）
+
+- `File → Export Results`：表示中の3D軌道／着地点地図をPNG、軌道とMC着地点をCSV、結果一式をJSONで保存します。計算中や軌道がない状態では保存できません。
+- CSVの列は `record_type,index,time_s,east_m,north_m,altitude_m`。`trajectory` は時系列の軌道、`mc_impact` は各試行の着地点です。座標は発射点を原点とするENU・メートル単位で、時刻は秒です。MC着地点に時刻は付かず、高度は0です。表示を間引いていてもCSVには全着地点を出力します。
+- `Result Archive (JSON)` は基準飛行、MC分布・集計値、描画用のKDE・イベント、表示時の発射座標・モード・Maximum Radiusを保存します。評価できない得点の無限値はJSONの `null` として保存します。
+- `File → Import Results (JSON)`：このアプリで書き出した結果JSONを読み込み、結果パネル・3D軌道・地図を復元します。現在のViewチェック状態は保持します。機体・モーター・風の入力一式を復元して再計算する形式ではありません。CSVは分析用で、復元にはJSONを使います。
+- 地図画像自体はJSONに含みません。復元した座標が保存済み地図の範囲外なら、その旨を地図に表示します。Importによる地図の自動取得は行いません。
+- Import後は過去結果であることを明示し、風の許容範囲監視を無効化します。風情報の受信・表示は継続します。新たに計算を実行すると通常の結果表示へ戻ります。
+- `View`：KDE、CEP楕円・確率円、MC点群、燃焼終了点、最高到達点を個別に切り替えます。非表示設定は着地確率の変更後も維持されます。確率変更では保存済みの点群から楕円と半径を更新し、飛行計算は実行しません。
+- `Simulation`：Advanced Settings、Run、Stopを操作できます。
+
+検証コマンド：`python -B -X utf8 -m unittest discover -s tests/ui_qt -v`、`python -B -X utf8 -m unittest discover -s tests/utils -v`。次工程はRoadmapのタスク4-0（物理計算・最適化の回帰テスト）です。
