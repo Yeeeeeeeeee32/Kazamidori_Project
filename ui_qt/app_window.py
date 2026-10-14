@@ -540,6 +540,34 @@ class AdvancedSettingsDialog(QDialog):
         frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
         tabs.addItem(grp_mc, "🎲 Monte Carlo / Statistics")
 
+        scoring = QWidget()
+        scoring_form = QFormLayout(scoring)
+        self.score_a_input, self.score_b_input = QDoubleSpinBox(), QDoubleSpinBox()
+        for edit in (self.score_a_input, self.score_b_input):
+            edit.setRange(-1000000, 1000000)
+            edit.setDecimals(4)
+            edit.setValue(1)
+            edit.setKeyboardTracking(False)
+        self.sa_budget_input = QSpinBox()
+        self.sa_budget_input.setRange(8, 10000)
+        self.sa_budget_input.setValue(48)
+        scoring_form.addRow(QLabel('Precision score = A × (Maximum Radius − distance) + B × time'))
+        scoring_form.addRow('A (distance)', self.score_a_input)
+        scoring_form.addRow('B (time)', self.score_b_input)
+        scoring_form.addRow('SA evaluations', self.sa_budget_input)
+        scoring_form.addRow(QLabel('設定の保存・復元: File → Save Session / Load Session'))
+        save_settings = QPushButton('Save Settings…')
+        save_settings.clicked.connect(lambda: self.parent()._on_save_session())
+        scoring_form.addRow(save_settings)
+        tabs.addItem(scoring, 'Scoring / Search')
+
+        self.wind_data_btn = QPushButton('Wind Data — API / CSV…')
+        self.wind_data_label = QLabel('Manual wind profile')
+        self.wind_data_label.setWordWrap(True)
+        frm_wind.addWidget(self.wind_data_btn)
+        frm_wind.addWidget(self.wind_data_label)
+        self.wind_data_btn.clicked.connect(self._open_wind_data)
+
         # ── Aerodynamics & Motor group ────────────────────────────────────────
         grp_aero = QWidget()
         frm3 = QFormLayout(grp_aero)
@@ -641,6 +669,11 @@ class AdvancedSettingsDialog(QDialog):
             
         self._wind_table_updating = False
         state.wind_profile_changed.connect(self._on_wind_state_changed)
+
+    def _open_wind_data(self):
+        from ui_qt.wind_data_dialog import WindDataDialog
+        dialog = WindDataDialog(self.state, self)
+        dialog.exec()
 
     def _on_wind_grid_changed(self):
         if getattr(self, '_wind_table_updating', False):
@@ -1081,6 +1114,15 @@ class AppWindow(QMainWindow):
         # global AppState wind_history_updated signal.  Keyed by altitude (m);
         # each value is a list of (relative_time_s, speed_ms) pairs.
         self._wind_hist_buf: dict = {}
+        self._wind_refresh_timer = QTimer(self)
+        self._wind_refresh_timer.setInterval(1000)
+        def refresh_held_wind():
+            import time
+            if time.monotonic() - getattr(self, '_last_wind_draw', 0) >= .9:
+                self.update_wind_plot()
+        self._wind_refresh_timer.timeout.connect(refresh_held_wind)
+        self._wind_refresh_timer.start()
+
 
     # ── Menu bar ───────────────────────────────────────────────────────────────
 
@@ -1723,6 +1765,28 @@ class AppWindow(QMainWindow):
         form_lay2.addRow("Rail Elevation:", self.elev_input)
         form_lay2.addRow("Rail Length:", self.rail_len_input)
         form_lay2.addRow("Rail Azimuth:", self.azim_input)
+        self.azimuth_reference_input = QComboBox()
+        self.azimuth_reference_input.addItem('True North', 'true')
+        self.azimuth_reference_input.addItem('Magnetic North', 'magnetic')
+        self.declination_mode_input = QComboBox()
+        self.declination_mode_input.addItem('Auto (offline WMM)', 'auto')
+        self.declination_mode_input.addItem('Manual override', 'manual')
+        self.declination_input = QDoubleSpinBox()
+        self.declination_input.setRange(-180, 180)
+        self.declination_input.setDecimals(2)
+        self.declination_input.setSuffix('° (East +)')
+        self.declination_input.setKeyboardTracking(False)
+        self.launch_alt_input = QDoubleSpinBox()
+        self.launch_alt_input.setRange(-1000, 10000)
+        self.launch_alt_input.setSuffix(' m MSL')
+        self.launch_alt_input.setKeyboardTracking(False)
+        self.declination_label = QLabel()
+        self.declination_label.setWordWrap(True)
+        form_lay2.addRow('Azimuth reference:', self.azimuth_reference_input)
+        form_lay2.addRow('Site altitude:', self.launch_alt_input)
+        form_lay2.addRow('Declination:', self.declination_mode_input)
+        form_lay2.addRow('Manual declination:', self.declination_input)
+        form_lay2.addRow(self.declination_label)
         form_lay2.addRow("Hellmann Preset:", self.hellmann_preset)
         form_lay2.addRow("Hellmann α:", self.hellmann_alpha_input)
         lay.addLayout(form_lay2)
@@ -1955,6 +2019,7 @@ class AppWindow(QMainWindow):
         s.thrust_uncertainty_changed.connect(lambda v: _push(self.thrust_unc_input, v))
 
         self._adv_dialog._bind_wind_profile_table(s)
+        self._bind_phase4_options()
 
         if hasattr(s, 'launch_lat_changed'):
             try: s.launch_lat_changed.disconnect(self._on_state_lat_changed)
@@ -1968,6 +2033,47 @@ class AppWindow(QMainWindow):
         self.update_profile_plot()
         self.update_map_plot()
         self.update_wind_plot()
+
+    def _bind_phase4_options(self):
+        from PySide6.QtCore import QSignalBlocker
+        from pathlib import Path
+        s, d = self.state, self._adv_dialog
+        controls = [(d.score_a_input, 'score_a'), (d.score_b_input, 'score_b'),
+                    (d.sa_budget_input, 'sa_budget'), (self.launch_alt_input, 'launch_alt_m'),
+                    (self.declination_input, 'manual_declination')]
+        combos = [(self.azimuth_reference_input, 'azimuth_reference'),
+                  (self.declination_mode_input, 'declination_mode')]
+        def refresh(options):
+            for widget, key in controls:
+                with QSignalBlocker(widget):
+                    widget.setValue(options[key])
+            for widget, key in combos:
+                with QSignalBlocker(widget):
+                    widget.setCurrentIndex(widget.findData(options[key]))
+            self.declination_input.setEnabled(options['declination_mode'] == 'manual')
+            d.wind_data_label.setText((Path(options['wind_csv']).name + ' — ' + options['wind_time_utc'])
+                                     if options['wind_csv'] else 'Manual wind profile')
+            self._refresh_declination()
+        for widget, key in controls:
+            widget.valueChanged.connect(lambda value, k=key: setattr(s, 'phase4_options', {k: value}))
+        for widget, key in combos:
+            widget.currentIndexChanged.connect(lambda _, w=widget, k=key: setattr(s, 'phase4_options', {k: w.currentData()}))
+        s.phase4_options_changed.connect(refresh)
+        s.launch_lat_changed.connect(self._refresh_declination)
+        s.launch_lon_changed.connect(self._refresh_declination)
+        refresh(s.phase4_options)
+
+    def _refresh_declination(self, *_):
+        from utils.magnetic import declination_for_site
+        s = self.state
+        try:
+            if s.phase4_options['declination_mode'] == 'auto':
+                # Calculation uses local WMM coefficients. Persist at run time.
+                s.magnetic_declination = declination_for_site(s.launch_lat, s.launch_lon,
+                    s.phase4_options['launch_alt_m'], cache_path=None)
+            self.declination_label.setText(f'Declination: {s.effective_declination:+.2f}° / results: True North')
+        except Exception as exc:
+            self.declination_label.setText(f'WMM unavailable: {exc}')
 
     # ══ Plot: 3-D Flight Profile ══════════════════════════════════════════════
     #
@@ -2265,213 +2371,83 @@ class AppWindow(QMainWindow):
     # Compass orientation: North at top, clockwise (aviation standard).
 
     def update_wind_plot(self) -> None:
-        fig  = self.wind_fig
-        ax_p = self.wind_profile_ax   # left — Cartesian speed profile
-        ax_c = self.wind_ax           # right — polar compass
-        ax_p.cla()
-        ax_c.cla()
-        fig.patch.set_facecolor("#1e1e1e")
+        import time
+        now = time.monotonic()
+        self._last_wind_draw = now
+        ax_p, ax_c = self.wind_profile_ax, self.wind_ax
+        ax_p.clear()
+        ax_c.clear()
+        for ax in (ax_p, ax_c):
+            ax.set_facecolor('#1a1a2e')
+            ax.tick_params(colors='#a6adc8', labelsize=6)
+            ax.grid(True, color='#333355', linewidth=.5, alpha=.7)
+        # Recompute relative timestamps at draw time, even when no packets arrive.
+        history = self.state.wind_history
+        self._wind_hist_buf = {
+            float(alt): [(float(e['ts']) - now, float(e['speed_ms']), float(e['dir_deg']))
+                         for e in entries] for alt, entries in history.items()}
+        pts = self._wind_hist_buf.get(3.0, [])
+        held = self.state.get_wind_zoh(3.0)
+        visible = [p for p in pts if -60 <= p[0] <= 0]
+        before = [p for p in pts if p[0] < -60]
+        line_pts = ([(-60., *before[-1][1:])] if before else []) + visible
+        if not line_pts and held:
+            line_pts = [(-60., float(held['speed_ms']), float(held['dir_deg']))]
+        if line_pts:
+            xs = [p[0] for p in line_pts] + [0.]
+            ys = [p[1] for p in line_pts] + [line_pts[-1][1]]
+            ax_p.plot(xs, ys, drawstyle='steps-post', linestyle='--', lw=1.4,
+                      color=self._NODE_COLORS[0], label='3 m — held value')
+        if visible:
+            # Every reception is a marker, including consecutive equal values.
+            ax_p.scatter([p[0] for p in visible], [p[1] for p in visible],
+                         color=self._NODE_COLORS[0], s=12, zorder=5)
+        ax_p.set(xlim=(-60, 2), xlabel='Time (s)', ylabel='Speed (m/s)', title='Wind Speed History (60 s)')
+        ax_p.set_ylim(bottom=0)
+        for obj in (ax_p.xaxis.label, ax_p.yaxis.label, ax_p.title):
+            obj.set_color('#aaaaaa')
+            obj.set_fontsize(8)
 
-        # ── Gather wind-node data ─────────────────────────────────────────────
-        res   = self.state.simulation_result
-        nodes = res.get("wind_nodes", []) if res is not None else []
-
+        result = self.state.simulation_result or {}
+        nodes = {float(n['alt_m']): dict(n) for n in result.get('wind_nodes', [])}
         if not nodes:
-            nodes = list(getattr(self.state, "wind_profile", []))
-            if not nodes:
-                nodes = [{"alt_m": 0.0, "speed_ms": 0.0, "dir_deg": 0.0}]
-
-        slice5   = nodes[:5]
-        max_spd  = max((float(n.get("speed_ms", 0.0)) for n in slice5), default=1.0)
-        max_spd  = max(max_spd, 1.0)
-        speeds   = [float(n.get("speed_ms", 0.0)) for n in slice5]
-        alts     = [float(n.get("alt_m",    0.0)) for n in slice5]
-        dirs     = [float(n.get("dir_deg",  0.0)) for n in slice5]
-        colors   = [
-            self._NODE_COLORS[i] if i < len(self._NODE_COLORS) else "#cdd6f4"
-            for i in range(len(slice5))
-        ]
-        labels   = [
-            self._NODE_LABELS[i] if i < len(self._NODE_LABELS)
-            else f"{n.get('alt_m', '?'):.0f} m"
-            for i, n in enumerate(slice5)
-        ]
-
-        # ════════════════════════════════════════════════════════════════════
-        # LEFT SUBPLOT: Wind Speed History (60 s rolling) or static profile
-        # ════════════════════════════════════════════════════════════════════
-        ax_p.set_facecolor("#1a1a2e")
-        ax_p.tick_params(colors="#a6adc8", labelsize=6)
-        for spine in ax_p.spines.values():
-            spine.set_edgecolor("#45475a")
-        ax_p.grid(True, color="#333355", linewidth=0.5, alpha=0.7)
-
-        _HIST_ALTS = [3.0]
-        hist_buf   = self._wind_hist_buf
-
-        if hist_buf:
-            # ── Time-series mode: X = relative time (s), Y = speed (m/s) ──────
-            # pts are 3-tuples: (relative_t, speed_ms, dir_deg)
-            for i, alt in enumerate(_HIST_ALTS):
-                pts = hist_buf.get(alt, [])
-
-                col = (self._NODE_COLORS[i] if i < len(self._NODE_COLORS) else "#cdd6f4")
-                lbl = (self._NODE_LABELS[i] if i < len(self._NODE_LABELS) else f"{alt:.0f} m")
-
-                if not pts:
-                    # ZOH Fallback if deque is empty: draw horizontal line at last known speed
-                    fallback_speed = speeds[i] if i < len(speeds) else 0.0
-                    ax_p.axhline(fallback_speed, color=col, lw=1.4, alpha=0.85)
-                    ax_p.plot([0.0], [fallback_speed], linestyle='', marker='o', color=col, markersize=5, zorder=5)
-                    ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
-                    continue
-
-                xs = [p[0] for p in pts]
-                ys = [p[1] for p in pts]
-                # Zero-Order Hold (ZOH): extend horizontal line to current time (t=0.0)
-                if xs and xs[-1] < 0.0:
-                    xs.append(0.0)
-                    ys.append(ys[-1])
-
-                # Plot the continuous line connecting all historical data points
-                # Task 1: The Line Layer
-                ax_p.plot(xs, ys, color=col, lw=1.4, alpha=0.85, linestyle='-', marker='')
-
-                # Add proxy artist for legend
-                ax_p.plot([], [], color=col, lw=1.4, alpha=0.85, label=lbl, marker='o', markersize=4)
-
-                # Draw markers ONLY at the precise timestamps where data was actively fetched
-                # (exclude the synthesized ZOH points where t == 0.0 unless it genuinely is the fetch time)
-                fetch_xs = []
-                fetch_ys = []
-                # Filter to only keep timestamps where the speed value actually changed,
-                # as `pts` contains 1Hz samples that may just be repeats.
-                last_val = None
-                for p in pts:
-                    current_val = p[1]
-                    if current_val != last_val:
-                        fetch_xs.append(p[0])
-                        fetch_ys.append(p[1])
-                        last_val = current_val
-
-                if fetch_xs:
-                    # Task 1: The Scatter/Dot Layer
-                    ax_p.plot(fetch_xs[-1:], fetch_ys[-1:], linestyle='', marker='o', color=col, markersize=5, zorder=5)
-
-                # 10-second rolling average horizontal dotted line
-                recent = [p[1] for p in pts if p[0] >= -10.0]
-                if recent:
-                    avg = sum(recent) / len(recent)
-                    ax_p.axhline(avg, color=col, lw=1.0,
-                                 linestyle="--", alpha=0.55, zorder=4)
-
-            ax_p.axvline(0.0, color="#45475a", lw=0.8, linestyle=":", alpha=0.6)
-            ax_p.set_xlabel("Time  (s)", color="#6c7086", fontsize=7, labelpad=3)
-            ax_p.set_ylabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
-            ax_p.set_title(f"Wind Speed History  ({WIND_HISTORY_SAMPLES} s)",
-                           color="#aaaaaa", fontsize=8, pad=6)
-            ax_p.set_xlim(-60.0, 2.0)
-            ax_p.set_ylim(bottom=0.0)
-
-        else:
-            # ── Static profile fallback (no history received yet) ─────────────
-            for spd, alt, col, lbl in zip(speeds[:1], alts[:1], colors[:1], labels[:1]):
-                marker = "D" if alt == 3.0 else "o"
-                ax_p.scatter([spd], [alt], color=col, s=52, zorder=5,
-                             marker=marker, edgecolors="#1a1a2e", linewidths=0.8)
-                ax_p.text(spd + max_spd * 0.05, alt, f"{spd:.1f}",
-                          color=col, fontsize=6, va="center")
-
-            ax_p.set_xlabel("Speed  (m/s)", color="#6c7086", fontsize=7, labelpad=3)
-            ax_p.set_ylabel("Altitude  (m)", color="#6c7086", fontsize=7, labelpad=3)
-            ax_p.set_title("Wind Speed Profile", color="#aaaaaa", fontsize=8, pad=6)
-            ax_p.set_xlim(0.0, max_spd * 1.40)
-            ax_p.set_ylim(-30.0, max(alts[:1], default=600.0) * 1.18 + 10.0)
-
-            if alts and alts[0] == 3.0:
-                ax_p.annotate(
-                    "⬡ anemometer",
-                    xy=(speeds[0], alts[0]),
-                    xytext=(max_spd * 0.10, 60.0),
-                    fontsize=5, color="#aaaaaa",
-                    arrowprops=dict(arrowstyle="->", color="#555555",
-                                    lw=0.8, shrinkA=4, shrinkB=4),
-                )
-
-        # ════════════════════════════════════════════════════════════════════
-        # RIGHT SUBPLOT: Polar Wind Compass
-        # ════════════════════════════════════════════════════════════════════
-        ax_c.set_facecolor("#1a1a2e")
-        ax_c.tick_params(colors="#555555", labelsize=6)
-        ax_c.grid(True, color="#333355", linewidth=0.6, alpha=0.7)
-
-        # North at top, clockwise — aviation standard
-        ax_c.set_theta_zero_location("N")
+            nodes = {float(n['alt_m']): dict(n) for n in self.state.wind_profile_data}
+        for alt in (3., 10., 150., 300., 600.):
+            latest = self.state.get_wind_zoh(alt)
+            if latest:
+                nodes[alt] = dict(alt_m=alt, speed_ms=latest['speed_ms'], dir_deg=latest['dir_deg'])
+        nodes = [nodes[alt] for alt in sorted(nodes)][:5]
+        history_points = {float(n['alt_m']): [p for p in self._wind_hist_buf.get(float(n['alt_m']), [])
+                                           if -60 <= p[0] <= 0] for n in nodes}
+        max_speed = max([1.] + [float(n['speed_ms']) for n in nodes] +
+                        [p[1] for ps in history_points.values() for p in ps])
+        ax_c.set_theta_zero_location('N')
         ax_c.set_theta_direction(-1)
         ax_c.set_rlabel_position(135)
-        ax_c.set_thetagrids(
-            [0, 45, 90, 135, 180, 225, 270, 315],
-            labels=["0°", "45°", "90°", "135°", "180°", "225°", "270°", "315°"],
-            fontsize=6, color="#888888",
-        )
-
-        # Radial axis: display speed ticks in m/s
-        ax_c.set_rmax(1.05)
-        ax_c.set_rticks([0.25, 0.5, 0.75, 1.0])
-        ax_c.set_yticklabels(
-            [f"{max_spd * r:.1f}" for r in (0.25, 0.5, 0.75, 1.0)],
-            color="#666666", fontsize=5,
-        )
-
-        for spd, alt, d_from, col, lbl in zip(speeds, alts, dirs, colors, labels):
-            r_norm = spd / max_spd
-            # Arrow points TO where wind travels (FROM + 180°)
-            theta  = np.radians((d_from + 180.0) % 360.0)
-
-            ax_c.annotate(
-                "",
-                xy=(theta, r_norm),
-                xytext=(theta, 0.0),
-                arrowprops=dict(
-                    arrowstyle="-|>",
-                    color=col,
-                    lw=2.0,
-                    mutation_scale=16,
-                ),
-            )
-
-            if r_norm > 0.05:
-                ax_c.text(
-                    theta, min(r_norm + 0.09, 1.02),
-                    f"{spd:.1f}",
-                    fontsize=6, color=col,
-                    ha="center", va="center", fontweight="bold",
-                )
-
-            # Legend proxy
-            ax_c.plot([], [], color=col, lw=2.5,
-                      label=f"{lbl}  {spd:.1f} m/s @ {d_from:.0f}°")
-
-        ax_c.set_title("Wind Compass", color="#aaaaaa", fontsize=8, pad=12)
-        # Combined legend for both plots attached to the figure, not individual axes
-        handles_p, labels_p = ax_p.get_legend_handles_labels()
-
-        # Avoid duplicate labels (from ax_p history lines)
-        by_label = dict(zip(labels_p, handles_p))
-        if by_label:
-            fig.legends.clear()
-            fig.legend(
-                by_label.values(), by_label.keys(),
-                loc="center left", bbox_to_anchor=(0.01, 0.5),
-                borderaxespad=0,
-                fontsize=7,
-                facecolor="#1a1a2e", edgecolor="#3a3a52",
-                labelcolor="#cdd6f4", framealpha=0.88,
-                ncol=1
-            )
-
-        # subplots_adjust reserves left margin for the legend
-        fig.subplots_adjust(left=0.25, right=0.95, top=0.90, bottom=0.15, wspace=0.3)
+        ax_c.set_ylim(0, max_speed * 1.2)
+        for i, node in enumerate(reversed(nodes)):
+            # Draw wider upper-level arrows first; thin lower ones stay visible.
+            index = len(nodes) - 1 - i
+            alt, speed, direction = float(node['alt_m']), float(node['speed_ms']), float(node['dir_deg'])
+            color = self._NODE_COLORS[index]
+            past = history_points[alt][:-1]
+            if past:
+                ax_c.scatter(np.radians([(p[2] + 180) % 360 for p in past]),
+                             [p[1] for p in past], s=7, alpha=.22, color=color)
+            theta = np.radians((direction + 180) % 360)
+            ax_c.annotate('', xy=(theta, speed), xytext=(theta, 0),
+                          arrowprops=dict(arrowstyle='-|>', color=color,
+                                          lw=1.8 + index * .9, alpha=.9 - index * .12,
+                                          mutation_scale=12 + index * 2))
+            ax_c.plot([], [], color=color, label=f'{alt:g} m: {speed:.1f} m/s')
+        ax_c.set_title('Wind Compass (TO)', color='#aaaaaa', fontsize=8, pad=12)
+        handles, labels = ax_c.get_legend_handles_labels()
+        self.wind_fig.legends.clear()
+        if handles:
+            self.wind_fig.legend(handles[::-1], labels[::-1], loc='center left',
+                                 bbox_to_anchor=(.005, .5), fontsize=7,
+                                 facecolor='#1a1a2e', labelcolor='#cdd6f4')
+        self.wind_fig.subplots_adjust(left=.25, right=.95, top=.86, bottom=.18, wspace=.4)
         self.wind_canvas.draw_idle()
         self._update_wind_table(nodes)
 

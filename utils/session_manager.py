@@ -129,6 +129,7 @@ def state_to_dict(state: "object") -> dict[str, Any]:
     """
     return {
         "schema_version": _SCHEMA_VERSION,
+        "phase4": dict(getattr(state, 'phase4_options', {})),
         "aerodynamics": {
             "power_on_cd":         float(state.power_on_cd),
             "power_off_cd":        float(state.power_off_cd),
@@ -173,6 +174,14 @@ def dict_to_state(state: "object", data: dict[str, Any]) -> None:
         )
 
     aero = data.get("aerodynamics") or {}
+    phase4 = data.get('phase4', {})
+    if not isinstance(phase4, dict):
+        raise SessionError('phase4 section must be an object')
+    if phase4:
+        try:
+            state.phase4_options = phase4
+        except (ValueError, TypeError) as exc:
+            raise SessionError(str(exc)) from exc
     if not isinstance(aero, dict):
         raise SessionError("`aerodynamics` section must be an object")
 

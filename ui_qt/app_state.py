@@ -39,6 +39,48 @@ _SURFACE_ALT: float = 3.0   # 自作風速計 (hardware anemometer) altitude (m 
 
 class AppState(QObject):
 
+    phase4_options_changed = Signal(object)
+
+    @Property(object, notify=phase4_options_changed)
+    def phase4_options(self):
+        defaults = dict(score_a=1.0, score_b=1.0, sa_budget=48, random_seed=0,
+                        wind_csv='', wind_time_utc='', launch_alt_m=0.0,
+                        declination_mode='auto', manual_declination=0.0,
+                        azimuth_reference='true')
+        defaults.update(getattr(self, '_phase4_options', {}))
+        return defaults
+
+    @phase4_options.setter
+    def phase4_options(self, value):
+        if not isinstance(value, dict):
+            raise ValueError('Phase 4 settings must be an object')
+        options = self.phase4_options
+        options.update({k: v for k, v in value.items() if k in options})
+        for key, lo, hi in (('score_a', -1e6, 1e6), ('score_b', -1e6, 1e6),
+                            ('launch_alt_m', -1000, 10000), ('manual_declination', -180, 180)):
+            options[key] = float(options[key])
+            if not math.isfinite(options[key]) or not lo <= options[key] <= hi:
+                raise ValueError(f'{key} must be between {lo} and {hi}')
+        budget = float(options['sa_budget'])
+        if not budget.is_integer() or not 8 <= budget <= 10000:
+            raise ValueError('SA budget must be 8–10000')
+        options['sa_budget'] = int(budget)
+        seed = float(options['random_seed'])
+        if not seed.is_integer() or not 0 <= seed <= 2147483647:
+            raise ValueError('Random seed must be an integer between 0 and 2147483647')
+        options['random_seed'] = int(seed)
+        if not all(isinstance(options[k], str) for k in ('wind_csv', 'wind_time_utc')):
+            raise ValueError('Wind CSV path and time must be strings')
+        if options['wind_csv']:
+            from utils.wind_data import utc_time
+            utc_time(options['wind_time_utc'])
+        if options['declination_mode'] not in ('auto', 'manual') or options['azimuth_reference'] not in ('true', 'magnetic'):
+            raise ValueError('Invalid bearing reference or declination mode')
+        if self.phase4_options != options:
+            self._phase4_options = options
+            self.phase4_options_changed.emit(dict(options))
+            self.effective_declination_changed.emit(self.effective_declination)
+
     # ── Simulation configuration ───────────────────────────────────────────────
     wind_uncertainty_changed   = Signal(object)
     magnetic_declination_changed = Signal(float)
@@ -592,6 +634,8 @@ class AppState(QObject):
         All components that need the bearing correction should read this
         property rather than magnetic_declination directly.
         """
+        if self.phase4_options['declination_mode'] == 'manual':
+            return float(self.phase4_options['manual_declination'])
         return self._magnetic_declination + self._manual_declination_offset
 
     @Property(list, notify=offline_map_extent_changed)

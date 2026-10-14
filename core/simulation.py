@@ -256,6 +256,34 @@ def make_backfire_trigger(backfire_alt: float):
 
 # ── Core simulation ───────────────────────────────────────────────────────────
 
+class SimulationInputError(ValueError):
+    """A simulation could not run with the supplied model/conditions."""
+
+
+def _unstable_rocket_result(cg: float, cp: float, radius: float, motor, params: dict) -> dict:
+    """Explain a launch stability failure without changing the supplied model."""
+    margin = (cp - cg) / (2.0 * radius)
+    propellant_mass = float(motor.propellant_mass(0))
+    isp = float(params.get("motor_isp", 80.0))
+    return {
+        "ok": False,
+        "error_code": "unstable_rocket",
+        "error": (
+            "Unstable Rocket: launch CG is behind the aerodynamic CP.\n"
+            f"CG with motor/propellant: {cg:.4f} m; CP: {cp:.4f} m (from nose).\n"
+            f"Static margin: {margin:.3f} cal (negative).\n"
+            f"Airframe dry mass: {params['airframe_mass']:.4f} kg; "
+            f"motor dry mass: {params['motor_dry_mass']:.4f} kg.\n"
+            f"Estimated propellant mass: {propellant_mass:.4f} kg "
+            f"from the thrust curve and motor Isp = {isp:g} s.\n"
+            "Check the actual airframe CG/mass, fins, motor position/dry mass, "
+            "and motor-specific Isp. Changing launch angles does not resolve this condition."
+        ),
+        "stability": {"cg_m": cg, "cp_m": cp, "static_margin_cal": margin,
+                      "propellant_mass_kg": propellant_mass, "motor_isp_s": isp},
+    }
+
+
 def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: int = 0) -> dict:
     """Run a two-pass RocketPy simulation and return a result dict.
 
@@ -646,7 +674,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
                     "Check CG/CP/Motor position.",
                     flush=True,
                 )
-                return {"ok": False, "error": "Unstable Rocket"}
+                return _unstable_rocket_result(_p1_cg, _p1_cp, radius, _motor1, params)
 
         # Anti-hang ODE limiters: force a minimum step size and loose tolerances
         # so LSODA cannot stall on chaotic tumbling or extreme AoA transients.
@@ -733,7 +761,7 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
                     "Check CG/CP/Motor position.",
                     flush=True,
                 )
-                return {"ok": False, "error": "Unstable Rocket"}
+                return _unstable_rocket_result(_p2_cg, _p2_cp, radius, _motor2, params)
 
         trig = make_backfire_trigger(backfire_alt)
         rk2.add_parachute(
@@ -1144,7 +1172,7 @@ def simulate_once_mc(
                     "Check CG/CP/Motor position.",
                     flush=True,
                 )
-                return {"ok": False, "error": "Unstable Rocket"}
+                return _unstable_rocket_result(_mc_cg, _mc_cp, radius, motor, params)
 
         trig = make_backfire_trigger(safe_backfire_alt)
         rk.add_parachute(

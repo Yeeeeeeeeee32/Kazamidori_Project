@@ -9,7 +9,7 @@ p1_objective_score(res, mode, r_max, target_x, target_y) -> float
 
 optimize_launch_angle(mode, base_params, r_max, sim_fn, mc_r90_fn,
                       landing_prob, stop_flag, progress_cb) -> dict
-    Coarse grid-search + Monte-Carlo verification (the original
+    Simulated annealing + Monte-Carlo verification (the original
     _optimize_worker logic).  Returns a result dict or raises on error.
 
 p1_params_at_wind(base_params, mu_surf) -> dict
@@ -27,7 +27,7 @@ p1_ellipse_breaches_circle(cx, cy, eigvals, eigvecs, R, n_pts=180) -> bool
 
 run_phase1(base_params, target_r, mode, stop_flag,
            progress_cb) -> Phase1Result
-    Full 5-step Phase-1 analysis (grid search → nominal MC → sensitivity
+    Full 5-step Phase-1 analysis (annealing → nominal MC → sensitivity
     → μ_max binary search → σ_max binary search).
     Raises RuntimeError with a user-readable message on failure.
 
@@ -44,6 +44,7 @@ from __future__ import annotations
 import math
 import random as _random_mod
 import threading
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -52,7 +53,7 @@ import concurrent.futures
 import numpy as np
 
 # Relative imports within the package
-from .simulation import simulate_once
+from .simulation import SimulationInputError, simulate_once
 from .constants  import CHI2_90, OBS_ALT, BLEND_ALT
 
 
@@ -215,6 +216,8 @@ def p1_objective_score(
     r_max: float = float('inf'),
     target_x: float = 0.0,
     target_y: float = 0.0,
+    score_a: float = 1.0,
+    score_b: float = 1.0,
 ) -> float:
     """Return the scalar objective for a simulation result in the given mode.
 
@@ -240,7 +243,7 @@ def p1_objective_score(
     Score definitions
     -----------------
     自由    (Free)              : hang_time  (maximise time aloft)
-    定点滞空 (Precision Landing) : (r_max - dist_to_target) + hang_time
+    定点滞空 (Precision Landing) : A * (r_max - dist_to_target) + B * hang_time
     高度    (Altitude)          : apogee_m
     有翼    (Winged)            : hang_time  (payload air time; bf_abs_time
                                              subtracted when available)
@@ -283,7 +286,7 @@ def p1_objective_score(
 
     if is_precision:
         # Minimise landing distance to target; hang_time breaks ties.
-        return (r_max - dist_to_target) + res.get('hang_time', 0.0)
+        return score_a * (r_max - dist_to_target) + score_b * res.get('hang_time', 0.0)
 
     if is_altitude:
         return res.get('apogee_m', 0.0)
@@ -299,30 +302,6 @@ def p1_objective_score(
 
 # ── Optimiser (from _optimize_worker) ────────────────────────────────────────
 
-def _grid_search_chunk(chunk_configs: list[tuple[float, float]], base_params: dict) -> list[tuple[float, float, dict]]:
-    """Module-level worker for parallel grid search.
-    Strips large trajectory arrays from result to minimise IPC overhead.
-    """
-    results = []
-    for e_, a_ in chunk_configs:
-        res = simulate_once(e_, a_, base_params)
-        if res['ok']:
-            light_res = {
-                'ok': True,
-                'apogee_m': res['apogee_m'],
-                'hang_time': res['hang_time'],
-                'impact_x': res['impact_x'],
-                'impact_y': res['impact_y'],
-                'r_horiz': res['r_horiz'],
-                'backfire_alt': res['backfire_alt'],
-                'bf_abs_time': res.get('bf_abs_time', 0.0),
-            }
-            results.append((e_, a_, light_res))
-        else:
-            results.append((e_, a_, {'ok': False, 'error': res.get('error', 'unknown error')}))
-    return results
-
-
 def optimize_launch_angle(
     mode: str,
     base_params: dict,
@@ -335,32 +314,13 @@ def optimize_launch_angle(
     target_x: float = 0.0,
     target_y: float = 0.0,
 ) -> dict:
-    """Coarse grid-search + MC verification optimiser.
-
-    Phase 1: grid search over (elev, azi) to find feasible candidates.
-    Phase 2: MC r90 check on the top-5 candidates.
-    Phase 3: Final MC analysis on the winner.
-
-    Args:
-        target_x: East offset of the target centre from the launch pad (m).
-                  Default 0.0 (target IS the launch pad — backward compat).
-        target_y: North offset of the target centre from the launch pad (m).
-    """
+    """Simulated annealing followed by independent Monte Carlo verification."""
+    from core.annealing import anneal
     is_free = "free" in mode.lower() or "自由" in mode
-
-    if mode == "Precision Landing" or '定点滞空' in mode:
-        elev_grid = [60, 66, 72, 78, 84, 90]
-        azi_grid  = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330]
-    elif mode == "Altitude Competition" or '高度' in mode:
-        elev_grid = [60, 66, 72, 78, 84, 90]
-        azi_grid  = [0, 45, 90, 135, 180, 225, 270, 315]
-    elif mode == "Winged Hover" or '有翼' in mode:
-        elev_grid = [60, 66, 72, 78, 84, 90]
-        azi_grid  = [0, 45, 90, 135, 180, 225, 270, 315]
-    else:
-        # Free mode fallback
-        elev_grid = [60, 66, 72, 78, 84, 90]
-        azi_grid  = [0, 45, 90, 135, 180, 225, 270, 315]
+    score_a = float(base_params.get('score_a', 1.0))
+    score_b = float(base_params.get('score_b', 1.0))
+    if not all(math.isfinite(v) for v in (score_a, score_b)):
+        raise ValueError('Score coefficients must be finite')
 
     def objective(res, mc_r=None):
         if not res.get('ok', False):
@@ -380,45 +340,38 @@ def optimize_launch_angle(
             if check_dist > r_max:
                 return float('-inf')
 
-        return p1_objective_score(res, mode, r_max, target_x, target_y)
+        return p1_objective_score(res, mode, r_max, target_x, target_y, score_a, score_b)
 
-    candidates = []
-    N       = len(elev_grid) * len(azi_grid)
-    done        = 0
+    failures = Counter()
+    successful = 0
+    N = int(base_params.get('sa_budget', 48))
     phase1_weight = 0.6
 
-    progress_cb(f"Phase 1: Coarse search (0/{N})", 0.0)
+    def evaluate(e, a):
+        nonlocal successful
+        res = simulate_once(e, a, base_params)
+        if not res.get('ok'):
+            reason = str(res.get('error') or 'Unknown simulation error')
+            if res.get('error_code') == 'unstable_rocket':
+                raise SimulationInputError(f'Launch-angle search stopped.\n{reason}')
+            failures[reason] += 1
+            return -math.inf, res
+        successful += 1
+        # Retain scalar summaries only; thousands of candidate trajectories
+        # would otherwise dominate memory. Recompute just the winner below.
+        light = {k: v for k, v in res.items() if isinstance(v, (bool, int, float, str))}
+        return objective(res), light
 
-    import os
-    import time
-
-    _t_start = time.perf_counter()
-
-    for e_ in elev_grid:
-        for a_ in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
-                
-            res = simulate_once(e_, a_, base_params)
-            done += 1
-            if res['ok']:
-                score = objective(res, mc_r=None)
-                candidates.append((score, e_, a_, res))
-            
-            frac = (done / N) * phase1_weight
-            progress_cb(
-                f"Phase 1: Coarse search ({done}/{N}) "
-                f"elev={e_:.0f}° azi={a_:.0f}°", frac)
-
-    elapsed = time.perf_counter() - _t_start
-    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
-
+    candidates = anneal(
+        evaluate, budget=N, seed=base_params.get('random_seed', 0),
+        initial=(90.0, float(base_params.get('azi', 0))), cancelled=stop_flag.is_set,
+        progress=lambda done, total: progress_cb(
+            f'Phase 1: Simulated annealing ({done}/{total})', done / total * phase1_weight))
+    if not successful:
+        details = '\n'.join(f'- {count}/{N}: {reason}' for reason, count in failures.most_common(3))
+        raise SimulationInputError(f'Simulation failed for all {N} candidates.\n{details}')
     if not candidates:
-        raise ValueError(
-            'Simulation failed for all candidates.\n'
-            'Please check your parameters.')
-
-    candidates.sort(key=lambda x: -x[0] if math.isfinite(x[0]) else float('inf'))
+        raise SimulationInputError('No candidate satisfies the maximum landing radius. Check the target and wind settings.')
 
     # Phase 2: MC verification on top-5
     top_n    = min(5, len(candidates))
@@ -436,7 +389,7 @@ def optimize_launch_angle(
             wind_uncertainty=wind_uncertainty,
             thrust_uncertainty=thrust_uncertainty,
             stop_flag=stop_flag)
-        score       = objective(res, mc_r=mc_r)
+        score       = objective(res, mc_r=mc_r) if succ >= landing_prob / 100 else -math.inf
         phase2_span = (1 - phase1_weight) * 0.75
         prog_frac   = phase1_weight + (i + 1) / top_n * phase2_span
         progress_cb(
@@ -458,9 +411,9 @@ def optimize_launch_angle(
     if stop_flag.is_set():
         raise RuntimeError('cancelled')
 
-    # Retrieve full trajectory arrays for the best result
-    # since we stripped them out during the parallel grid search
     full_best_res = simulate_once(best_e, best_a, base_params)
+    if not full_best_res.get('ok'):
+        raise SimulationInputError(full_best_res.get('error', 'Winner simulation failed'))
 
     # Phase 3: final MC
     progress_cb(
@@ -476,7 +429,9 @@ def optimize_launch_angle(
     if stop_flag.is_set():
         raise RuntimeError('cancelled')
 
-    reported_mc_r = final_mc_r if math.isfinite(final_mc_r) else best_mc_r
+    if final_mc_succ < landing_prob / 100 or not math.isfinite(objective(full_best_res, final_mc_r)):
+        raise SimulationInputError('Final Monte Carlo verification failed the landing constraint or success-rate requirement.')
+    reported_mc_r = final_mc_r
     progress_cb('Phase 3: Complete', 1.0)
 
     return {
@@ -508,7 +463,10 @@ def _monte_carlo_r90(
     """
     distances: list[float] = []
     succeeded = 0
-    rng = _random_mod.Random()
+    rng = _random_mod.Random(base_params.get('random_seed', 0) + n_trials)
+    nominal = simulate_once(elev, azi, base_params)
+    if not nominal.get('ok'):
+        return float('inf'), 0.0
     wu  = max(wind_uncertainty, 0.0)
     tu  = max(thrust_uncertainty, 0.0)
     raw_thrust = base_params['thrust_data']
@@ -527,7 +485,7 @@ def _monte_carlo_r90(
 
         r = simulate_once(elev, azi, p)
         if r['ok']:
-            distances.append(math.hypot(r['impact_x'], r['impact_y']))
+            distances.append(math.hypot(r['impact_x'] - nominal['impact_x'], r['impact_y'] - nominal['impact_y']))
             succeeded += 1
 
     if not distances:
@@ -686,7 +644,7 @@ def run_phase1(
 ) -> Phase1Result:
     """Run the full 5-step Phase-1 analysis.
 
-    Step 1 — Grid search (elev 60-90°/6° step, azi 0-345°/15° step).
+    Step 1 — Simulated annealing (elev 60–90°, periodic azimuth).
     Step 2 — Nominal MC: 40-run 90 % error ellipse at nominal wind.
     Step 3 — Landing sensitivity d(cx,cy)/dmu via central difference.
     Step 4 — Binary search for mu_max (deterministic, sigma=0).
@@ -717,45 +675,20 @@ def run_phase1(
     wu = 0.08
     sigma_nom = wu * max(mu_nom, 1.0)
 
-    # ── Step 1: Grid search ───────────────────────────────────────────────────
-    elev_grid    = list(range(60, 91, 6))   # 60, 66, …, 90
-    azi_grid     = list(range(0, 360, 15))  # 24 azimuths
-    use_r_filter = (mode != 'Precision Landing')
-    N        = len(elev_grid) * len(azi_grid)
-    done, cands  = 0, []
-    prog(f'Step 1/5  Grid search (0/{N})', 0.0)
-
-    import os
-    import time
-
-    _t_start = time.perf_counter()
-
+    from core.annealing import anneal
     p_nom = p1_params_at_wind(base_params, mu_nom)
-    
-    for e in elev_grid:
-        for a in azi_grid:
-            if stop_flag.is_set():
-                raise RuntimeError('cancelled')
-                
-            res = simulate_once(e, a, p_nom)
-            done += 1
-            if res['ok']:
-                if not use_r_filter or res['r_horiz'] <= target_r:
-                    score = p1_objective_score(res, mode)
-                    cands.append((score, e, a, res))
-            
-            prog(f'Step 1/5  Grid ({done}/{N})  e={e}° a={a}°',
-                 done / N * 0.25)
-
-    elapsed = time.perf_counter() - _t_start
-    print(f"[BENCHMARK] Phase 1 Grid Search evaluated {N} combinations in {elapsed:.3f} seconds using {os.cpu_count()} workers.")
-
+    def evaluate(e, a):
+        res = simulate_once(e, a, p_nom)
+        if res.get('error_code') == 'unstable_rocket':
+            raise SimulationInputError(res['error'])
+        return p1_objective_score(res, mode, target_r,
+                                  score_a=base_params.get('score_a', 1),
+                                  score_b=base_params.get('score_b', 1)), res
+    cands = anneal(evaluate, budget=int(base_params.get('sa_budget', 48)),
+                  seed=base_params.get('random_seed', 0), cancelled=stop_flag.is_set,
+                  progress=lambda done, total: prog(f'Step 1/5 SA ({done}/{total})', done / total * .25))
     if not cands:
-        raise ValueError(
-            f'No trajectory satisfies r_horiz ≤ {target_r:.0f} m.\n'
-            'Check parameters (r_max, wind speed, airframe specs).')
-
-    cands.sort(key=lambda x: -x[0])
+        raise SimulationInputError('No trajectory satisfies the maximum radius.')
     _, best_e, best_a, best_res = cands[0]
     best_apogee = best_res['apogee_m']
     prog(f'Step 1/5  done  best elev={best_e}° azi={best_a}°'
@@ -852,12 +785,7 @@ def run_phase1(
     prog(f'Step 5/5  σ_max = {sigma_max:.2f} m/s', 0.99)
 
     # ── Compile result ────────────────────────────────────────────────────────
-    if mode == 'Precision Landing':
-        display_score = best_res['r_horiz']
-    elif mode == 'Winged Hover':
-        display_score = best_res['hang_time']
-    else:
-        display_score = best_res['apogee_m']
+    display_score = cands[0][0]
 
     prog('Phase 1 complete ✓', 1.0)
 

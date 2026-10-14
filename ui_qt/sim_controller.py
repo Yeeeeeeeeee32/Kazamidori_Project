@@ -9,8 +9,8 @@ import math
 import random
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal, QSignalBlocker
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton, QSystemTrayIcon, QStyle
+from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal, QSignalBlocker, Qt
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QPushButton, QSystemTrayIcon, QStyle, QMessageBox
 
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
@@ -488,11 +488,7 @@ class SimController(QObject):
             import traceback as _tb
             print(f"[DIAG] _collect_params() RAISED: {_cp_exc}")
             print(_tb.format_exc())
-            self._window.set_status(f"Parameter collection failed: {_cp_exc}", "#f38ba8")
-            self._wind_timer.start()
-            self._state.is_calculating = False
-            self._state.mc_running = False
-            self._set_run_buttons_enabled(True)
+            self._on_error(f"Parameter collection failed: {_cp_exc}")
             return
 
         self._worker = SimulationWorker(collected, parent=self)
@@ -567,11 +563,7 @@ class SimController(QObject):
             import traceback as _tb
             print(f"[DIAG] _on_phase1_clicked: _collect_params() RAISED: {_cp_exc}")
             print(_tb.format_exc())
-            self._window.set_status(f"Parameter collection failed: {_cp_exc}", "#f38ba8")
-            self._wind_timer.start()
-            self._state.is_calculating = False
-            self._state.mc_running = False
-            self._set_run_buttons_enabled(True)
+            self._on_error(f"Parameter collection failed: {_cp_exc}")
             return
 
         from PySide6.QtCore import Qt
@@ -606,7 +598,10 @@ class SimController(QObject):
     def _on_optimization_done(self, elev: float, azi: float) -> None:
         """Update the UI dynamically when the optimal angle is found"""
         self._state.launch_angle = elev
-        self._window.azim_input.setValue(azi)
+        from utils.magnetic import input_bearing
+        reference = self._state.phase4_options['azimuth_reference']
+        declination = self._state.effective_declination
+        self._window.azim_input.setValue(input_bearing(azi, reference, declination))
         self._window.elev_input.setValue(elev)
 
 
@@ -986,8 +981,28 @@ class SimController(QObject):
 
         self._state.mc_running = False
         self._state.is_calculating = False
-        self._window.set_status(f"Simulation error: {msg}", "#f38ba8")
-        self._window.set_progress(0, "Error")
+        self._state.phase2_active = False
+        lines = msg.strip().splitlines() or ["Unknown simulation error"]
+        is_traceback = msg.lstrip().startswith("Traceback")
+        is_unstable = "Unstable Rocket" in msg
+        if is_unstable:
+            title = "機体・モーターの不適合"
+            summary = "機体・モーターが不適合です（機体が不安定）"
+            explanation = (
+                "この機体設計とモーターの組み合わせは不適合です。\n"
+                "機体が空力的に不安定と判定されたため、計算を中止しました。\n"
+                "機体に適合するモーターを選択してください。"
+            )
+            if getattr(self._window, "_motor_thrust_data", None):
+                explanation += f"\n選択したモーター：{self._window.motor_label.text()}"
+            self._window.update_status_indicator("NO-GO — 不適合・不安定")
+        else:
+            title = "シミュレーションエラー"
+            summary = "シミュレーションを実行できませんでした"
+            explanation = lines[-1] if is_traceback else "\n".join(lines)
+            self._window.update_status_indicator("ERROR — シミュレーション失敗")
+        self._window.set_status(f"{title}：{summary}", "#f38ba8")
+        self._window.set_progress(0, "エラー")
         self._set_run_buttons_enabled(True)
 
         if hasattr(self._window, "btn_download_map"):
@@ -996,9 +1011,25 @@ class SimController(QObject):
         # Resume 1 Hz wind monitor even on error so telemetry is not lost.
         self._wind_timer.start()
 
+        # A multi-line cause is unreadable in the one-line status bar or a
+        # short-lived tray balloon. Keep it available until dismissed, while
+        # allowing the Qt event loop (including telemetry) to keep running.
+        previous = getattr(self, "_error_dialog", None)
+        if previous is not None:
+            previous.close()
+            previous.deleteLater()
+        self._error_dialog = QMessageBox(self._window)
+        self._error_dialog.setWindowTitle(title)
+        self._error_dialog.setIcon(QMessageBox.Icon.Warning)
+        self._error_dialog.setTextFormat(Qt.TextFormat.PlainText)
+        self._error_dialog.setText(summary)
+        self._error_dialog.setInformativeText(explanation)
+        self._error_dialog.setDetailedText(msg)
+        self._error_dialog.open()
+
         self._tray_icon.showMessage(
-            "Simulation Error",
-            msg,
+            title,
+            summary,
             QSystemTrayIcon.Warning,
             5000
         )
@@ -1090,6 +1121,18 @@ class SimController(QObject):
         w = self._window
         s = self._state
 
+        from utils.magnetic import declination_for_site, true_bearing
+        options = s.phase4_options
+        if options['declination_mode'] == 'auto':
+            s.magnetic_declination = declination_for_site(s.launch_lat, s.launch_lon, options['launch_alt_m'])
+        self._run_bearing = (options['azimuth_reference'], s.effective_declination)
+        azimuth = true_bearing(w.azim_input.value(), *self._run_bearing)
+        profile = [dict(node) for node in s.wind_profile_data]
+        surface = s.get_wind_zoh(3.0)
+        if surface:
+            profile = [dict(alt_m=3.0, speed_ms=surface['speed_ms'], dir_deg=surface['dir_deg'])] + [
+                node for node in profile if float(node['alt_m']) != 3.0]
+
         # ── Turbulence intensity from 60s surface wind history ────────────────
         # Use population std-dev (÷N, not ÷(N-1)) — we have the full population
         # over the 60s window, not a sample from an infinite process.
@@ -1125,8 +1168,11 @@ class SimController(QObject):
             "launch_lon": w.lon_input.value()  if w.lon_input.value()  != -9999.0 else 139.7590,
             "elev":       s.launch_angle,   # degrees — AppState, default 85.0
             "rail":       s.launch_rail,    # m       — AppState, default 1.0
-            "azim":       w.azim_input.value() if w.azim_input.value() != -9999.0 else 0.0,
-            "wind_profile_data": s.wind_profile_data,
+            **options,
+            "azim":       azimuth,
+            "wind_profile_data": profile,
+            "surf_spd": float(surface['speed_ms']) if surface else 0.,
+            "surf_dir": float(surface['dir_deg']) if surface else 0.,
             "mc_runs":    w.mc_runs_input.value(),
             "wind_unc":   w.wind_unc_input.value(),
             "thrust_unc": w.thrust_unc_input.value(),

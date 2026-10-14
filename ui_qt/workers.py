@@ -56,7 +56,7 @@ import random as _random
 import traceback
 from PySide6.QtCore import QThread, Signal
 
-from core.simulation   import simulate_once, simulate_once_mc
+from core.simulation   import SimulationInputError, simulate_once, simulate_once_mc
 from core.wind_model   import create_wind_profile, sample_wind_nodes
 from core.monte_carlo  import (
     _perturb_wind_profile,
@@ -165,7 +165,7 @@ class SimulationWorker(QThread):
 
             self.progress.emit(2)
             print("[DIAG] Calling _build_wind_profiles...", flush=True)
-            u_prof, v_prof = self._build_wind_profiles(p)
+            u_prof, v_prof = self._build_wind_profiles(p, self._stop_event)
             print(f"[DIAG] _build_wind_profiles OK — u_prof len={len(u_prof)}, v_prof len={len(v_prof)}", flush=True)
             # sample_wind_nodes reads the 5 explicit grid points inserted into
             # the profile by create_wind_profile (3, 10, 150, 300, 600 m AGL)
@@ -211,12 +211,15 @@ class SimulationWorker(QThread):
             )
             print(f"[DIAG] simulate_once returned — ok={nominal.get('ok')}, error={nominal.get('error')}", flush=True)
             if not nominal["ok"]:
-                raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
+                raise SimulationInputError(f"Nominal simulation failed:\n{nominal['error']}")
             self.progress.emit(25)
 
             # Build and augment the nominal payload with turbulence stats so
             # the UI can lock the Phase B baseline immediately on receipt.
             nom_pkg = self._package_nominal(nominal, wind_nodes, flight_mode=p.get("flight_mode", ""))
+            nom_pkg['score'] = p1_objective_score(nominal, p.get('flight_mode', ''),
+                p.get('target_radius', float('inf')), p.get('target_x', 0), p.get('target_y', 0),
+                p.get('score_a', 1.), p.get('score_b', 1.))
             nom_pkg.update({
                 "turb_mu":        float(p.get("turb_mu",        0.0)),
                 "turb_sigma":     float(p.get("turb_sigma",     0.0)),
@@ -471,15 +474,24 @@ class SimulationWorker(QThread):
             if self._stop_event.is_set() or str(_exc) == 'cancelled':
                 self.sig_finished.emit({"cancelled": True})
             else:
-                self.error.emit(traceback.format_exc())
+                self.error.emit(str(_exc) if isinstance(_exc, SimulationInputError) else traceback.format_exc())
 
     # ── Step helpers ───────────────────────────────────────────────────────────
 
     @staticmethod
     def _build_wind_profiles(
         p: dict,
+        stop_flag=None,
     ) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
         wind_profile_data = p.get("wind_profile_data", [])
+        if p.get('wind_csv'):
+            from utils.wind_data import read_wind_snapshot
+            upper = read_wind_snapshot(p['wind_csv'], p.get('wind_time_utc', ''),
+                                      p.get('env_pressure', 101325.), p.get('env_temp', 15.),
+                                      p.get('launch_lat'), p.get('launch_lon'),
+                                      cancelled=stop_flag.is_set if stop_flag is not None else lambda: False)
+            surface = [n for n in wind_profile_data if float(n.get('alt_m', -1)) == 3.0]
+            wind_profile_data = surface + [n for n in upper if n['alt_m'] > 3.0] if surface else upper
         hellmann_exp = float(p.get("hellmann_alpha", 0.14))
         return create_wind_profile(wind_profile_data, hellmann_exp)
 
@@ -655,6 +667,9 @@ class SimulationWorker(QThread):
             "impact_x":   float(nominal["impact_x"]),
             "impact_y":   float(nominal["impact_y"]),
             "r_horiz":    float(nominal["r_horiz"]),
+            "horizontal_distance_m": float(nominal['r_horiz']),
+            "elev":       nominal.get('elev'),
+            "azi":        nominal.get('azi'),  # true north, irrespective of input reference
             # Phase-split trajectory arrays (推進 / 滑空 / パラシュート)
             "phases":     phases,
             # Key-event (x_m, y_m, z_m) tuples (燃焼終了点 / 最高点 / 開傘点)
@@ -774,7 +789,8 @@ class SimulationWorker(QThread):
                 continue
 
             # ── Score and extract scalars ─────────────────────────────────
-            score  = p1_objective_score(r, flight_mode, target_radius, target_x, target_y)
+            score  = p1_objective_score(r, flight_mode, target_radius, target_x, target_y,
+                                       p.get('score_a', 1.0), p.get('score_b', 1.0))
             h_time = float(r["hang_time"])
             bf_t   = float(r.get("bf_abs_time", 0.0))
             if "有翼" in flight_mode or "winged" in flight_mode.lower() or "wing" in flight_mode.lower():
@@ -972,6 +988,9 @@ class SimulationWorker(QThread):
             "kde":            stats.get("kde"),
 
             # ── Flat nominal keys (backward compat — direct field access) ─────
+            "score":     nom_pkg.get('score'),
+            "elev":      nom_pkg.get('elev'),
+            "azi":       nom_pkg.get('azi'),
             "t_vals":    t_vals,
             "x_vals":    x_vals,
             "y_vals":    y_vals,
@@ -1085,7 +1104,7 @@ class OptimizationWorker(QThread):
             # --- 1. Optimization phase ---
             self.progress.emit(2)
             self.sig_status_text.emit("Optimising launch angle...")
-            u_prof, v_prof = SimulationWorker._build_wind_profiles(p)
+            u_prof, v_prof = SimulationWorker._build_wind_profiles(p, self._stop_event)
             wind_nodes = sample_wind_nodes(u_prof, v_prof)
             sim_params = SimulationWorker._build_sim_params(p, u_prof, v_prof)
 
@@ -1159,11 +1178,12 @@ class OptimizationWorker(QThread):
             self.sig_status_text.emit("Simulating...")
             nominal = simulate_once(best_e, best_a, sim_params)
             if not nominal["ok"]:
-                raise RuntimeError(f"Nominal simulation failed: {nominal['error']}")
+                raise SimulationInputError(f"Nominal simulation failed:\n{nominal['error']}")
 
             self.progress.emit(25)
 
             nom_pkg = SimulationWorker._package_nominal(nominal, wind_nodes, flight_mode=mode)
+            nom_pkg['score'] = opt_res['score']
             nom_pkg.update({
                 "turb_mu":        float(p.get("turb_mu",        0.0)),
                 "turb_sigma":     float(p.get("turb_sigma",     0.0)),
@@ -1234,4 +1254,4 @@ class OptimizationWorker(QThread):
             if self._stop_event.is_set() or str(_exc) == 'cancelled':
                 self.sig_finished.emit({"cancelled": True})
             else:
-                self.error.emit(traceback.format_exc())
+                self.error.emit(str(_exc) if isinstance(_exc, SimulationInputError) else traceback.format_exc())

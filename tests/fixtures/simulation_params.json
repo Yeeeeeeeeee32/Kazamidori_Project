@@ -1,0 +1,11 @@
+{
+  "rail": 1.5, "airframe_mass": 0.0872, "airframe_cg": 0.21,
+  "airframe_len": 0.383, "radius": 0.015, "nose_len": 0.08,
+  "fin_root": 0.04, "fin_tip": 0.02, "fin_span": 0.03, "fin_pos": 0.35,
+  "motor_pos": 0.38, "motor_dry_mass": 0.015, "motor_isp": 80,
+  "motor_propellant_density": 1700,
+  "backfire_delay": 4, "para_cd": 0.8, "para_area": 0.126, "para_lag": 0.5,
+  "wind_u_prof": [[0, 0], [1000, 0]], "wind_v_prof": [[0, 0], [1000, 0]],
+  "thrust_data": [[0, 0], [0.1, 40], [2.5, 40], [2.6, 0]],
+  "motor_burn_time": 2.6
+}

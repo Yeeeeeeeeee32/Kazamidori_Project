@@ -1,0 +1,7 @@
+time_utc,alt_m,pressure_hpa,speed_ms,dir_deg,latitude,longitude,source
+2026-10-14T03:00:00Z,10,,3.0,350,,,example
+2026-10-14T03:00:00Z,,975,4.0,355,,,example
+2026-10-14T03:00:00Z,,950,5.0,0,,,example
+2026-10-14T04:00:00Z,10,,3.5,355,,,example
+2026-10-14T04:00:00Z,,975,4.5,0,,,example
+2026-10-14T04:00:00Z,,950,5.5,5,,,example

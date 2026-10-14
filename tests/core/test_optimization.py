@@ -1,24 +1,6 @@
 import math
 import unittest
-from unittest.mock import patch, MagicMock
-import sys
-
-# We need to mock dependencies BEFORE importing core.optimization
-# because core.optimization imports them at the top level.
-mock_constants = MagicMock()
-mock_constants.CHI2_90 = 4.605
-mock_constants.OBS_ALT = 1.5
-mock_constants.BLEND_ALT = 100.0
-
-with patch.dict('sys.modules', {
-    'numpy': MagicMock(),
-    'rocketpy': MagicMock(),
-    'matplotlib': MagicMock(),
-    'matplotlib.pyplot': MagicMock(),
-    'core.simulation': MagicMock(),
-    'core.constants': mock_constants
-}):
-    from core.optimization import _hellmann_alpha
+from core.optimization import _hellmann_alpha
 
 class TestHellmannAlpha(unittest.TestCase):
     def test_hellmann_alpha_normal(self):

@@ -155,13 +155,13 @@ Kazamidori_Project/
 | 項目 | 現在の状態・注意点 |
 |---|---|
 | Koinobori実機接続 | `koinobori_api.py` は固定値を返すダミー。GUI側の1秒周期更新も乱数で風・気圧・気温・湿度を生成しています。実測連携としては未完成です。 |
-| GPV等の外部気象取得 | 状態表示や風モデルの土台はありますが、現行GUI経路に実データを取得するAPI処理は確認できません。 |
+| 外部気象取得 | Open-Meteoの等圧面風データをUTC期間指定で取得しCSV保存。外部CSVの選択・対象時刻の読込に対応（フェーズ4）。 |
 | GPS／現在地取得 | `location_service.py` がOSの位置情報を非同期で取得します。デスクトップPCではWi-Fi等による測位になる場合があり、報告された精度を表示します。OSの位置情報サービス・権限が必要です。 |
 | 任意の目標着地点 | 計算側には `target_x`／`target_y` がありますが、現在の入力経路では通常0となります。発射点とは別の目標地点を設定するUIは未接続です。 |
 | `.rkt`／`.ork` | 現行GUIの機体読込対象は `Airframe.json` です。既存設計ファイルとRockSim解析関数は保持していますが、GUIからは使用しません。 |
-| 最適化方式 | 実際にGUIから呼ばれるのはグリッド探索です。構想資料のOptunaによるベイズ最適化とは異なります。 |
+| 最適化方式 | 自作の焼きなまし法（SA）とMC検証。既定48評価、Advanced Settingsで変更可能。Optunaは未実装です。 |
 | 並列化 | `mc_worker.py` 等に並列処理の補助コードが残っていますが、現行GUIの通常MCと角度探索は逐次処理です。非同期GUIと複数プロセス並列は別です。 |
-| セッション保存 | 空力・モーターの一部設定のみ。機体全体、発射位置、風、計算結果をまとめて復元する完全なセッション保存ではありません。 |
+| セッション保存 | 空力・モーター設定に加え、A/B、SA評価回数、偏角設定、標高、風CSVパスと対象時刻を保存。機体全体やCSV本体・計算結果を包含する保存ではありません。 |
 | 機体の保存 | Manual Configの「Save airframe」で、編集内容を平坦なAirframe JSONへ保存できます。 |
 | GO／NO-GO | 通常MC完了後は `CEP50 <= target_radius` を判定しています。一方、角度探索では目標からの距離とMC半径を組み合わせています。判定条件の統一が必要です。 |
 
@@ -232,3 +232,42 @@ Manual Configでは入力中の文字列を保持し、「Apply」で編集を�
 - `Simulation`：Advanced Settings、Run、Stopを操作できます。
 
 検証コマンド：`python -B -X utf8 -m unittest discover -s tests/ui_qt -v`、`python -B -X utf8 -m unittest discover -s tests/utils -v`。次工程はRoadmapのタスク4-0（物理計算・最適化の回帰テスト）です。
+
+## 10. 「Unstable Rocket」の診断（2026-10-14）
+
+提供された `Airframe.json`／`Parachute.json` と `Estes_G40.csv`、初期設定の Motor Isp = 80 s で再現すると、発射時重心は先端から0.3154 m、圧力中心は0.3056 m、安定余裕は−0.328 calとなります。計算モデルが不安定と判定しているため、飛行積分を開始せず停止します。Maximum Radiusの制約による失敗とは別です。
+
+推力曲線の総力積をIsp×重力加速度で割って推進薬質量を推定しています。この組み合わせの推定値は0.1274 kgで、機体乾燥質量0.0872 kg・モーター乾燥質量0.0150 kgとともに発射時重心へ反映されます。推力CSVを読んでも、実モーターの乾燥質量・位置・Ispは更新されません。G40を使用する際は、これらの入力を実機・モーターの仕様と照合してください。
+
+通常実行・探索のエラーには重心・圧力中心・安定余裕・質量・Ispを含め、閉じるまで読めるダイアログに表示します。探索では発射角度によらない初期不安定を最初の候補で検出すると停止します。他の理由で全候補が失敗した場合も、原因と件数を表示します。機体・モーターの入力値や安定性の判定基準は変更していません。
+
+不安定時の通知は「機体・モーターが不適合です（機体が不安定）」と表示します。ダイアログに選択したモーター名と計算を中止した旨を示し、判定欄は赤い「NO-GO — 不適合・不安定」に切り替え、OS通知にも同じ理由を表示します。重心などの数値はダイアログの詳細から確認できます。その他の計算エラーもダイアログとOS通知で知らせ、原因と詳細を保持します。
+
+追加テストは `tests/core/test_simulation_failures.py`（6ケース）と `tests/ui_qt/test_simulation_errors.py`（3ケース）です。コアの実行コマンドは `python -B -X utf8 -m unittest discover -s tests/core -v`。フェーズ4ではさらに、実飛行の数値基準・得点・探索・CSVと画面連携のpytest回帰テストを追加しました。
+
+## 11. フェーズ4（2026-10-14）
+
+### 操作
+
+- **Advanced Settings → Scoring / Search**: 定点滞空の式 `A × (Maximum Radius − 目標からの距離) + B × 滞空時間` を編集。A/Bの初期値は1。範囲外への着地は係数によらず失格。Save Settings、またはFile → Save Sessionで保存し、Load Sessionで復元します。
+- **Advanced Settings → Wind Profile → Wind Data — API / CSV**: UTCの開始・終了時刻、計算対象時刻を指定。Fetch and Save CSVで取得・保存、Load Wind CSVで既存ファイルを選択。対象時刻だけ変えた場合はApply target time。Use Manual Windで手動風プロファイルへ戻します。
+- APIには発射地点の緯度・経度と指定期間を送信します。[Open-Meteo公式仕様](https://open-meteo.com/en/docs)に従い風速をm/sで取得します。データ提供はOpen-Meteo（CC BY 4.0）。取得可能な過去・予報期間は提供元の制限を受けます。
+- **Launch Settings**: Rail Azimuthの基準をTrue NorthまたはMagnetic Northで選択。既存の入力と互換性を保つ初期設定はTrue Northです。Magnetic Northでは、真方位 = 入力方位 + 偏角（東正）で計算します。Auto WMMとManual overrideを切替可能。結果の方位は真北基準です。
+- Site altitudeはWMM用の海抜標高。WMMは通信せずにローカル係数で計算し、実行時に地点・標高・日付ごとの値を `assets/offline_map/declination_cache.json` へ保存します。[pyGeoMag仕様](https://pygeomag.readthedocs.io/en/latest/api.html)に合わせ、標高をkmへ換算して渡します。
+- 風速履歴では同じ値の連続受信も点で表示。値を水平破線で保持し、1分以上受信がなくても消しません。コンパスは高度別に色・太さ・透明度を変え、過去の風は点、最新の風は矢印です。
+
+### 風CSV
+
+UTF-8の列は `time_utc,alt_m,pressure_hpa,speed_ms,dir_deg,latitude,longitude,source`。時刻はタイムゾーン付きISO 8601、風向は真北基準で風が来る方向（FROM）。`alt_m`（地上高AGL）または `pressure_hpa` の片方を指定し、時間順に並べます。座標とsourceは手動CSVでは省略可能です。例は `tests/fixtures/wind_profile.csv`。
+
+読み込みでは対象時刻以前で1時間未満の最新プロファイルを採用します。対象期間外、NaN、重複高度、異なる地点のデータなどはエラーにします。全期間をメモリへ展開せず、1プロファイルだけ保持。API取得も最大24時間ずつ処理して一時CSVへ書き出し、完了した場合だけ保存先を置換します。地上3 mは現地テレメトリを優先し、上空の風をCSVから補います。
+
+等圧面の高度は `z = T₀/L × [1 − (p/p₀)^(R L/g)]` で地上高に換算します（L=0.0065 K/m、R=287.05 J/(kg K)、g=9.80665 m/s²）。p₀は**観測地点の現地気圧**、T₀は現地気温。海面更正気圧QNHを直接代入する方式ではありません。負の高度は地下として除外します。これは乾燥大気・一定気温減率の近似であり、観測された各層の高度そのものではありません。Koinobori実機のUDP接続はフェーズ5-1に残り、現在の地上テレメトリは模擬値です。
+
+### コードと検証
+
+新規コード: `core/annealing.py`（自作SA）、`core/atmosphere.py`（気圧→AGL）、`utils/wind_data.py`（CSV/API）、`utils/magnetic.py`（WMMとキャッシュ）、`ui_qt/wind_data_dialog.py`（非同期の取得・読込画面）。KDE計算はMC終了後のWorkerで行い、風の描画では実行しません。
+
+SAは射角60–90°・周期的な方位角を探索し、温度を下げながら悪化する候補も確率的に採用します。周期的な広域提案で別の実行可能領域も探します。シードと評価予算で再現可能ですが、大域最適解の保証はありません。上位候補と最終候補をMCで検証し、最終検証の失敗を過去の成功値で置換しません。MC半径は基準着地点からの散らばりとして求め、発射点からの距離を二重加算しないよう修正しました。
+
+開発用依存は `python -m pip install -r requirements-dev.txt`。全テストは `python -B -X utf8 -m pytest -q`。Qt画面はオフスクリーンで検証し、通常テストは外部通信不要です。実飛行の数値基準はRocketPy 1.13で記録した合成推力データによる回帰比較であり、実飛行との一致を保証する試験ではありません。Open-Meteoへの実接続では10高度層のCSV保存・再読込も確認しました。
