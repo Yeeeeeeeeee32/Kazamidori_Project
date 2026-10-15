@@ -3,7 +3,7 @@ import math
 import random
 
 
-def anneal(evaluate, *, budget=48, seed=0, initial=(90.0, 0.0), cancelled=lambda: False,
+def anneal(evaluate, *, budget=48, seed=0, initial=(85.0, 0.0), cancelled=lambda: False,
            progress=lambda *_: None):
     """Maximise an objective over elevation [60,90] and periodic azimuth.
 

@@ -1058,6 +1058,9 @@ class AppState(QObject):
     @wind_profile_data.setter
     def wind_profile_data(self, value: list) -> None:
         self._wind_profile_data = value
+        # An edited profile is a new input snapshot; the charts must not keep
+        # displaying upper-wind readings from the preceding simulation.
+        self.append_wind_nodes(value)
         self.wind_profile_data_changed.emit(value)
         # Keep wind_profile_changed subscribers (e.g. AdvancedSettingsDialog)
         # in sync so they can reflect the new values without a separate
@@ -1128,12 +1131,11 @@ class AppState(QObject):
 
 
     def append_wind_nodes(self, nodes: list) -> None:
-        """Append a full 5-altitude wind snapshot to the history.
+        """Append wind readings at every supplied altitude to the history.
 
         Intended to be called once per simulation run with the ``wind_nodes``
         list produced by ``sample_wind_nodes``.  Each node is written to the
-        deque for its altitude; altitudes not in _WIND_SAMPLE_ALTS are silently
-        ignored so callers do not need to filter.
+        deque for its altitude, including additional levels from external data.
 
         Zero-Order Hold (ZOH) behaviour
         ---------------------------------
@@ -1149,21 +1151,21 @@ class AppState(QObject):
         """
         ts = time.monotonic()
         for node in nodes:
-            alt = float(node.get("alt_m", -1.0))
-            if alt not in self._wind_history:
-                continue
             raw_speed = node.get("speed_ms")
             raw_dir   = node.get("dir_deg")
             # ZOH: skip this tick if data is absent or not a finite number.
             if raw_speed is None or raw_dir is None:
                 continue
             try:
+                alt = float(node.get("alt_m", -1.0))
                 spd = float(raw_speed)
                 drc = float(raw_dir)
             except (TypeError, ValueError):
                 continue
-            if math.isnan(spd) or math.isnan(drc):
+            if not all(math.isfinite(v) for v in (alt, spd, drc)) or alt < 0 or spd < 0:
                 continue
+            if alt not in self._wind_history:
+                self._wind_history[alt] = deque(maxlen=WIND_HISTORY_MAX_SAMPLES)
             entry = {"ts": ts, "speed_ms": spd, "dir_deg": drc}
             self._wind_history[alt].append(entry)
             self._wind_zoh[alt] = entry    # update ZOH cache with last valid value

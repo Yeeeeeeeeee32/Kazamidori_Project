@@ -2386,37 +2386,46 @@ class AppWindow(QMainWindow):
         self._wind_hist_buf = {
             float(alt): [(float(e['ts']) - now, float(e['speed_ms']), float(e['dir_deg']))
                          for e in entries] for alt, entries in history.items()}
-        pts = self._wind_hist_buf.get(3.0, [])
-        held = self.state.get_wind_zoh(3.0)
-        visible = [p for p in pts if -60 <= p[0] <= 0]
-        before = [p for p in pts if p[0] < -60]
-        line_pts = ([(-60., *before[-1][1:])] if before else []) + visible
-        if not line_pts and held:
-            line_pts = [(-60., float(held['speed_ms']), float(held['dir_deg']))]
-        if line_pts:
+        result = self.state.simulation_result or {}
+        nodes_by_alt = {float(n['alt_m']): dict(n) for n in self.state.wind_profile_data}
+        nodes_by_alt.update({float(n['alt_m']): dict(n) for n in result.get('wind_nodes', [])})
+        for alt in set(nodes_by_alt) | set(history):
+            latest = self.state.get_wind_zoh(alt)
+            if latest:
+                nodes_by_alt[alt] = dict(alt_m=alt, speed_ms=latest['speed_ms'], dir_deg=latest['dir_deg'])
+        nodes = [nodes_by_alt[alt] for alt in sorted(nodes_by_alt)]
+        standard_alts = (3., 10., 150., 300., 600.)
+        colors = dict(zip(standard_alts, self._NODE_COLORS))
+        extra_alts = [float(n['alt_m']) for n in nodes if float(n['alt_m']) not in colors]
+        for i, alt in enumerate(extra_alts):
+            colors[alt] = matplotlib.colormaps['tab20'](i % 20)
+
+        for node in nodes:
+            alt = float(node['alt_m'])
+            color = colors[alt]
+            pts = self._wind_hist_buf.get(alt, [])
+            held = self.state.get_wind_zoh(alt)
+            visible = [p for p in pts if -60 <= p[0] <= 0]
+            before = [p for p in pts if p[0] < -60]
+            line_pts = ([(-60., *before[-1][1:])] if before else []) + visible
+            if not line_pts:
+                # Display configured/result data too, without inventing receptions.
+                fallback = held or node
+                line_pts = [(-60., float(fallback['speed_ms']), float(fallback['dir_deg']))]
             xs = [p[0] for p in line_pts] + [0.]
             ys = [p[1] for p in line_pts] + [line_pts[-1][1]]
             ax_p.plot(xs, ys, drawstyle='steps-post', linestyle='--', lw=1.4,
-                      color=self._NODE_COLORS[0], label='3 m — held value')
-        if visible:
-            # Every reception is a marker, including consecutive equal values.
-            ax_p.scatter([p[0] for p in visible], [p[1] for p in visible],
-                         color=self._NODE_COLORS[0], s=12, zorder=5)
+                      color=color, label=f'{alt:g} m')
+            if visible:
+                # Every reception is a marker, including consecutive equal values.
+                ax_p.scatter([p[0] for p in visible], [p[1] for p in visible],
+                             color=color, s=12, zorder=5)
         ax_p.set(xlim=(-60, 2), xlabel='Time (s)', ylabel='Speed (m/s)', title='Wind Speed History (60 s)')
         ax_p.set_ylim(bottom=0)
         for obj in (ax_p.xaxis.label, ax_p.yaxis.label, ax_p.title):
             obj.set_color('#aaaaaa')
             obj.set_fontsize(8)
 
-        result = self.state.simulation_result or {}
-        nodes = {float(n['alt_m']): dict(n) for n in result.get('wind_nodes', [])}
-        if not nodes:
-            nodes = {float(n['alt_m']): dict(n) for n in self.state.wind_profile_data}
-        for alt in (3., 10., 150., 300., 600.):
-            latest = self.state.get_wind_zoh(alt)
-            if latest:
-                nodes[alt] = dict(alt_m=alt, speed_ms=latest['speed_ms'], dir_deg=latest['dir_deg'])
-        nodes = [nodes[alt] for alt in sorted(nodes)][:5]
         history_points = {float(n['alt_m']): [p for p in self._wind_hist_buf.get(float(n['alt_m']), [])
                                            if -60 <= p[0] <= 0] for n in nodes}
         max_speed = max([1.] + [float(n['speed_ms']) for n in nodes] +
@@ -2429,7 +2438,7 @@ class AppWindow(QMainWindow):
             # Draw wider upper-level arrows first; thin lower ones stay visible.
             index = len(nodes) - 1 - i
             alt, speed, direction = float(node['alt_m']), float(node['speed_ms']), float(node['dir_deg'])
-            color = self._NODE_COLORS[index]
+            color = colors[alt]
             past = history_points[alt][:-1]
             if past:
                 ax_c.scatter(np.radians([(p[2] + 180) % 360 for p in past]),
@@ -2437,8 +2446,8 @@ class AppWindow(QMainWindow):
             theta = np.radians((direction + 180) % 360)
             ax_c.annotate('', xy=(theta, speed), xytext=(theta, 0),
                           arrowprops=dict(arrowstyle='-|>', color=color,
-                                          lw=1.8 + index * .9, alpha=.9 - index * .12,
-                                          mutation_scale=12 + index * 2))
+                                          lw=1.8 + min(index, 4) * .9, alpha=max(.35, .9 - index * .12),
+                                          mutation_scale=12 + min(index, 4) * 2))
             ax_c.plot([], [], color=color, label=f'{alt:g} m: {speed:.1f} m/s')
         ax_c.set_title('Wind Compass (TO)', color='#aaaaaa', fontsize=8, pad=12)
         handles, labels = ax_c.get_legend_handles_labels()

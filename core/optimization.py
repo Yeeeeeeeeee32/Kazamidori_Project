@@ -364,7 +364,7 @@ def optimize_launch_angle(
 
     candidates = anneal(
         evaluate, budget=N, seed=base_params.get('random_seed', 0),
-        initial=(90.0, float(base_params.get('azi', 0))), cancelled=stop_flag.is_set,
+        initial=(85.0, float(base_params.get('azi', 0))), cancelled=stop_flag.is_set,
         progress=lambda done, total: progress_cb(
             f'Phase 1: Simulated annealing ({done}/{total})', done / total * phase1_weight))
     if not successful:
