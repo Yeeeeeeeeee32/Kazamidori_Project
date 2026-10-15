@@ -158,7 +158,7 @@ Kazamidori_Project/
 | 外部気象取得 | Open-Meteoの等圧面風データをUTC期間指定で取得しCSV保存。外部CSVの選択・対象時刻の読込に対応（フェーズ4）。 |
 | GPS／現在地取得 | `location_service.py` がOSの位置情報を非同期で取得します。デスクトップPCではWi-Fi等による測位になる場合があり、報告された精度を表示します。OSの位置情報サービス・権限が必要です。 |
 | 任意の目標着地点 | 計算側には `target_x`／`target_y` がありますが、現在の入力経路では通常0となります。発射点とは別の目標地点を設定するUIは未接続です。 |
-| `.rkt`／`.ork` | 現行GUIの機体読込対象は `Airframe.json` です。既存設計ファイルとRockSim解析関数は保持していますが、GUIからは使用しません。 |
+| `.rkt`／`.ork` | 機体全体は `Airframe.json` から読み込みます。Manual Configでは `.ork` からフィン形状を取り込めます。RockSim `.rkt` の解析関数も保持しています。 |
 | 最適化方式 | 自作の焼きなまし法（SA）とMC検証。既定48評価、Advanced Settingsで変更可能。Optunaは未実装です。 |
 | 並列化 | `mc_worker.py` 等に並列処理の補助コードが残っていますが、現行GUIの通常MCと角度探索は逐次処理です。非同期GUIと複数プロセス並列は別です。 |
 | セッション保存 | 空力・モーター設定に加え、A/B、SA評価回数、偏角設定、標高、風CSVパスと対象時刻を保存。機体全体やCSV本体・計算結果を包含する保存ではありません。 |
@@ -273,3 +273,36 @@ SAは85°から開始し、射角60–90°・周期的な方位角を探索し�
 開発用依存は `python -m pip install -r requirements-dev.txt`。全テストは `python -B -X utf8 -m pytest -q`。Qt画面はオフスクリーンで検証し、通常テストは外部通信不要です。実飛行の数値基準はRocketPy 1.13で記録した合成推力データによる回帰比較であり、実飛行との一致を保証する試験ではありません。Open-Meteoへの実接続では10高度層のCSV保存・再読込も確認しました。
 
 フェーズ4の実計算確認では、合成推力の安定モデルでSA 8評価とMC検証まで完了しました。選択射角87.80°、最高高度94.38 m（無風・推力誤差なし）。これは回帰用のモデルケースです。
+
+## 12. CP入力とフィン形状（2026-10-15）
+
+通常のJSON／手動設定では、Manual Configの **CP from Nose [m] (Mach 0)** に先端から圧力中心までの距離を入力できます。空欄は自動計算です。Applyで適用、Cancelで取消。Save airframeでJSONの任意項目 `cp` に保存し、Load airframeで復元します。`cp` がない既存ファイルや `null` は自動計算に戻ります。負の値・非数値・全長を超える値は入力エラーです。OpenRocket全体取込時は、次節の出典優先順位に従います。
+
+手入力CPはMach 0の較正値です。ノーズとフィンそれぞれの空気力の作用位置を同じ距離だけ補正し、機体全体のMach 0 CPを入力値へ合わせます。元のモデルのMach依存性は維持します。補正は安定性判定だけでなく、通常計算の両パス・最適化・MCのモーメント計算にも適用されます。
+
+フィンの形状はManual Configで編集します。
+
+- **Trapezoidal**: Fin Root Chord、Fin Tip Chord、Fin Semi-Span、Fin Sweep Lengthで台形を指定。Sweepは翼根前縁から翼端前縁までの後退距離で、負の値は前進翼です。空欄では従来のRocketPy既定値（翼根長−翼端長）を使います。Fin Cantは取付けのひねり角（度）。
+- **Edit Fin Outline…**: 頂点表とプレビューで自由形状を編集。単位m、始点 `(0,0)` は翼根前縁、xは尾部方向、yは胴体から外側。輪郭に沿って点を並べ、最後を翼根後縁 `(x>0,0)` にします。閉じ線は自動。頂点の追加・削除、交差や不正な輪郭の検出に対応します。自由形状では翼根・翼端・半幅が輪郭から算出されます。
+- **Import Fin Shape (.ork)…**: [OpenRocket形式](https://openrocket.readthedocs.io/en/latest/dev_guide/file_specification.html)のZIP/XML/GZIPから台形・自由形状を読み込みます。楕円フィンは32分割の輪郭として読み込みます。複数セットがあれば選択できます。同一取付位置の同じ輪郭を持つ1枚フィンが等間隔で3〜8枚ある場合は、対称セットとしてまとめます。単独の1〜2枚の部品からは輪郭を読み込み、計算用枚数は画面の現在値を使用する旨を表示します。
+
+読込対象はフィンの輪郭・枚数・後退量・Cantです。Fin LE Position（先端から翼根前縁までの距離）、機体質量・CG・CPは現在の設定を使用します。読み込んだ形状は編集でき、Applyで確定してから計算へ渡ります。JSONには `fin_shape`、`fin_points`、`fin_sweep`、`fin_cant` を保存。自由形状は通常計算とMCの両方でRocketPyのFreeFormFinsへ渡し、台形へ近似置換しません。
+
+追加コードは `core/fin_geometry.py`、`utils/openrocket_fins.py`、`ui_qt/fin_editor.py`。実ファイル「ジョイくん.ork」「モンブラン.ork」の読込とRocketPyの空力モデル生成を確認しました。テストではCPによる実際のモーメントアーム補正、通常2パスとMCの実飛行、輪郭検証、ファイルの保存・復元、Apply／Cancel、取り込み中の既存設定の保持を確認します。
+
+## 13. OpenRocket機体全体の取込と出典（2026-10-15）
+
+メイン画面またはManual Configの **Load Airframe** で `.ork` / `.ork.gz` を選択すると、フィンだけでなく機体全体を解析します。外部通信やOpenRocketのインストールは不要です。Manual Config内の読込はApplyまで未確定で、Cancelで元に戻ります。
+
+- ファイルから取得：全長、胴体半径、ノーズ長・形状、フィン形状・枚数・Cant・取付位置、既定モーター構成の搭載位置・燃焼後遅延時間。位置は先端からの距離に統一し、OpenRocketのtop/middle/bottom/absolute/after指定を解決します。`auto 数値` の寸法も読めます。
+- 機体質量・CG：機体全体を対象とするOpenRocketの質量／CG上書き値を最優先。なければ部品質量、材質密度、形状、取付位置からKazamidoriで推定します。モーターは含めません。ノーズの殻・肩は数値積分、フィンはタブを含む平板、円筒・リングは体積計算です。部品の上書き値も集計に反映します。未対応部品をゼロ質量として省略せず、算出できない項目は手入力として残します。
+- CP：現在の飛行モデルと同じRocketPyのノーズ・フィンからMach 0の値を計算して表示します。過去のOpenRocket飛行結果からCG・CPを流用しません。自動CPはMCの形状変動でも再計算され、固定CPによる補正にはなりません。
+- パラシュートが1つの場合は直径から面積を計算しCdを読み込みます。CdがautoならOpenRocketの既定Cd=0.8を用います。複数の場合は自動選択せず通知します。開傘ラグは手入力またはParachute JSONを使います。OpenRocketの展開イベント／deploydelayをそのまま再現する機能ではありません。
+
+優先順位は **.ork → Kazamidori自動計算 → 手入力**。Manual Configの一覧と入力欄のツールチップで出典を確認できます。取得済みの値は手入力で上書きされないよう固定し、計算へ渡す際にも優先順位を適用します。機体形状の変更はOpenRocketで編集して再読込します。通常のJSON／手動設定では従来の編集操作を使えます。
+
+Save airframeは値と`provenance`（元ファイル名、取得値、計算値、出典、注意事項）を保存します。モーター質量などが未取得でも、取込済み機体はJSONに保存できます。再読込後も優先順位を維持します。必要値が不足する間は計算を実行できません。別の機体を読み込むと、前のモーター推力曲線・未取得の質量・パラシュート設定を引き継ぎません。モーター位置欄は実際の計算上の意味に合わせて **Motor Nozzle Pos. [m]** としました。
+
+取込対象は単段・一定直径の胴体・対応ノーズ・対称フィン1組（3〜8枚）です。無効なステージは除外します。有効な多段、ポッド、複数モーター、段差や未対応ノーズはエラーを表示して読み込みを中止します。OpenRocketが保存したモーター型番だけから推力曲線や燃焼後質量を推測しないため、この2項目は別途指定が必要です。質量・CGの推定値はOpenRocketの計算結果との完全一致を意味しません。
+
+実装：`utils/openrocket_airframe.py`（部品ツリー解析）、`core/airframe_parameters.py`（CP計算と出典優先順位）。参照：[OpenRocketファイル仕様](https://openrocket.readthedocs.io/en/latest/dev_guide/file_specification.html)、[上書き値の仕様](https://github.com/openrocket/openrocket/blob/unstable/docs/source/user_guide/overrides_and_surface_finish.rst)。回帰テストは`tests/fixtures/single_stage.ork`を使い、位置基準、質量／CG上書き、既定モーターの選択、不足値、JSON往復、Apply／Cancel、優先順位が実行パラメータへ反映されることを検証します。

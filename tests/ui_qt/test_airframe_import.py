@@ -6,6 +6,7 @@ import os
 import tempfile
 import unittest
 import warnings
+import numpy as np
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,7 +21,8 @@ from main_qt import DEFAULT_CONFIG
 from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
 from ui_qt.sim_controller import SimController
-from utils.data_loader import AirframeConfigError, load_airframe_config
+from utils.data_loader import AirframeConfigError, load_airframe_config, save_airframe_config
+from ui_qt.fin_editor import FinOutlineDialog
 
 
 AIRFRAME = {
@@ -42,6 +44,21 @@ class AirframeFixture(unittest.TestCase):
 
 
 class TestAirframeLoader(AirframeFixture):
+    def test_optional_cp_round_trip_and_legacy_automatic(self):
+        save_airframe_config(str(self.path), {**AIRFRAME, 'cp': .32})
+        self.assertEqual(load_airframe_config(str(self.path))['cp'], .32)
+        save_airframe_config(str(self.path), {**AIRFRAME, 'cp': None})
+        self.assertIsNone(load_airframe_config(str(self.path))['cp'])
+        self.write(AIRFRAME)
+        self.assertNotIn('cp', load_airframe_config(str(self.path)))
+
+    def test_invalid_cp_rejected(self):
+        for value in (-1, True, float('nan'), float('inf'), .5, 'bad'):
+            with self.subTest(cp=value):
+                self.write({**AIRFRAME, 'cp': value})
+                with self.assertRaisesRegex(AirframeConfigError, 'cp'):
+                    load_airframe_config(str(self.path))
+
     def test_flat_file_including_motor_values_and_utf8_bom(self):
         self.write(AIRFRAME)
         self.assertEqual(load_airframe_config(str(self.path)), AIRFRAME)
@@ -187,6 +204,223 @@ class TestAirframeImport(AirframeFixture):
         self.run_manual(edit)
         self.assertEqual(self.state.fin_tip_chord, 0)
 
+    def test_cp_load_apply_save_and_restore_auto(self):
+        self.write({**AIRFRAME, 'cp': .32})
+        self.load()
+        self.assertEqual(self.state.rocket_cp, .32)
+        self.assertEqual(float(self.window.af_cp_input.text()), .32)
+        saved = self.path.parent / 'manual_cp.json'
+        def edit():
+            self.window.af_cp_input.setText('0.33')
+            self.assertEqual(self.state.rocket_cp, .32)
+            with patch('ui_qt.sim_controller.QFileDialog.getSaveFileName', return_value=(str(saved), '')):
+                self.window._manual_dialog.sig_save_json.emit()
+            self.window._manual_dialog.sig_apply.emit()
+        self.run_manual(edit)
+        self.assertEqual(self.state.rocket_cp, .33)
+        self.assertEqual(load_airframe_config(str(saved))['cp'], .33)
+        def clear():
+            self.window.af_cp_input.clear()
+            self.window._manual_dialog.sig_apply.emit()
+        self.run_manual(clear)
+        self.assertIsNone(self.state.rocket_cp)
+        self.assertNotIn('red', self.window.af_cp_input.styleSheet())
+        self.state.rocket_cp = .31
+        self.write(AIRFRAME)
+        self.load()
+        self.assertIsNone(self.state.rocket_cp)
+        self.assertEqual(self.window.af_cp_input.text(), '')
+
+    def test_cp_cancel_and_invalid_apply_keep_state(self):
+        self.write({**AIRFRAME, 'cp': .32})
+        self.load()
+        def edit():
+            self.window.af_cp_input.setText('0.5')
+            self.window._manual_dialog.sig_apply.emit()
+            self.assertTrue(self.window._manual_dialog.isVisible())
+            self.assertIn('cp', self.window._manual_dialog.error_label.text())
+            self.assertEqual(self.state.rocket_cp, .32)
+            self.window._manual_dialog.reject()
+        self.run_manual(edit)
+        self.assertEqual(self.state.rocket_cp, .32)
+        self.assertEqual(float(self.window.af_cp_input.text()), .32)
+
+    def test_freeform_edit_save_apply_and_legacy_reload(self):
+        self.load()
+        points = [[0,0],[.01,.03],[.04,.03],[.04,0]]
+        saved = self.path.parent/'fins.json'
+        def edit():
+            md = self.window._manual_dialog
+            md._use_outline(points)
+            md.fin_shape_input.setCurrentIndex(md.fin_shape_input.findData('freeform'))
+            self.assertEqual(self.state.fin_options['fin_shape'],'trapezoid')
+            with patch('ui_qt.sim_controller.QFileDialog.getSaveFileName', return_value=(str(saved),'')):
+                md.sig_save_json.emit()
+            md.sig_apply.emit()
+        self.run_manual(edit)
+        self.assertEqual(self.state.fin_options['fin_points'],points)
+        self.assertEqual(load_airframe_config(str(saved))['fin_points'],points)
+        self.assertAlmostEqual(self.state.fin_tip_chord,.03)
+        self.load()
+        self.assertEqual(self.state.fin_options['fin_shape'],'trapezoid')
+        self.assertIsNone(self.state.fin_options['fin_points'])
+
+    def test_openrocket_fin_import_is_staged_and_keeps_mount_position(self):
+        import zipfile
+        self.load()
+        path = self.path.parent/'design.ork'
+        xml = ('<openrocket><rocket><subcomponents><trapezoidfinset>'
+               '<name>Imported fins</name><fincount>3</fincount><rootchord>.05</rootchord>'
+               '<tipchord>.01</tipchord><height>.04</height><sweeplength>.02</sweeplength>'
+               '<cant>2</cant></trapezoidfinset></subcomponents></rocket></openrocket>')
+        with zipfile.ZipFile(path,'w') as z:
+            z.writestr('rocket.ork',xml)
+        def edit():
+            md = self.window._manual_dialog
+            with patch('ui_qt.app_window.QFileDialog.getOpenFileName', return_value=(str(path),'')):
+                md.load_ork_fins_btn.click()
+            self.assertEqual(float(md.af_finroot_input.text()),.05)
+            self.assertEqual(float(md.fin_sweep_input.text()),.02)
+            self.assertEqual(self.state.fin_root_chord,AIRFRAME['fin_root'])
+            md.sig_apply.emit()
+        self.run_manual(edit)
+        self.assertEqual(self.state.fin_root_chord,.05)
+        self.assertEqual(self.state.fin_options['fin_cant'],2)
+        self.assertEqual(self.state.fin_options['fin_sweep'],.02)
+        self.assertEqual(self.state.fin_position,AIRFRAME['fin_pos'])
+        def cancel():
+            md=self.window._manual_dialog
+            md.fin_shape_input.setCurrentIndex(md.fin_shape_input.findData('freeform'))
+            md.reject()
+        self.run_manual(cancel)
+        self.assertEqual(self.state.fin_options['fin_shape'],'trapezoid')
+
+    def test_outline_editor_rejects_crossing_without_closing(self):
+        points=[[0,0],[.01,.03],[.04,.03],[.04,0]]
+        dialog=FinOutlineDialog(points,self.window)
+        dialog.show()
+        dialog.table.item(1,0).setText('.04')
+        dialog.table.item(2,0).setText('.01')
+        dialog.accept()
+        self.assertTrue(dialog.isVisible())
+        self.assertTrue(dialog.error_label.text())
+        dialog.table.item(1,0).setText('.01')
+        dialog.table.item(2,0).setText('.04')
+        dialog.accept()
+        self.assertEqual(dialog.points,points)
+
+    def test_worker_snapshot_includes_cp_and_fin_outline(self):
+        from ui_qt.workers import SimulationWorker
+        self.load()
+        self.state.rocket_cp=.32
+        self.state.fin_options=dict(fin_shape='freeform',fin_points=[[0,0],[.01,.03],[.04,.03],[.04,0]])
+        self.window._motor_thrust_data=[[0,0],[.1,10],[1,0]]
+        self.window._motor_burn_time=1
+        self.window.lat_input.setValue(35)
+        self.window.lon_input.setValue(139)
+        with patch('utils.magnetic.declination_for_site',return_value=-7):
+            p=self.controller._collect_params()
+        sim=SimulationWorker._build_sim_params(p,[(0,0),(1000,0)],[(0,0),(1000,0)])
+        self.assertEqual(sim['cp_override'],.32)
+        self.assertEqual(sim['fin_points'],self.state.fin_options['fin_points'])
+
+    def test_outline_editor_can_recover_after_deleting_all_vertices(self):
+        dialog=FinOutlineDialog([[0,0],[.02,.03],[.04,0]],self.window)
+        dialog.table.selectAll()
+        dialog._remove()
+        self.assertEqual(dialog.table.rowCount(),0)
+        for _ in range(3):
+            dialog._add()
+        dialog.accept()
+        self.assertIsNotNone(dialog.points)
+        self.assertEqual(len(dialog.points),3)
+
+    def test_whole_openrocket_load_sources_and_missing_motor(self):
+        self.load()
+        self.window._motor_thrust_data = [[0,0],[1,10]]
+        fixture = Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork'
+        self.load(str(fixture))
+        self.assertEqual(self.state.rocket_dry_mass,.25)
+        self.assertAlmostEqual(self.state.fin_position,.33)
+        self.assertAlmostEqual(self.state.motor_cg_pos,.405)
+        self.assertIsNone(self.state.motor_dry_mass)
+        self.assertEqual(self.window.motor_dry_mass_input.text(),'')
+        self.assertFalse(self.window.motor_dry_mass_input.isReadOnly())
+        self.assertTrue(self.window.motor_cg_input.isReadOnly())
+        self.assertTrue(self.window.af_mass_input.isReadOnly())
+        self.assertTrue(self.window.af_cp_input.isReadOnly())
+        self.assertIsNone(self.window._motor_thrust_data)
+        self.assertIsNone(self.state.parachute_lag)
+        self.assertAlmostEqual(self.state.parachute_area,np.pi*.25**2)
+        self.assertEqual(self.state.parachute_cd,1)
+        self.assertIn('Estes C5',self.window.motor_label.text())
+        self.assertGreater(self.window._manual_dialog.airframe_sources_table.rowCount(),10)
+        # Manual fallback remains editable; source values beat programmatic edits
+        # too, and the actual simulation keeps dynamic CP from geometry.
+        self.window.motor_dry_mass_input.setText('.016')
+        self.state.rocket_cg=.39
+        self.state.fin_position=.1
+        self.window.lat_input.setValue(35)
+        self.window.lon_input.setValue(139)
+        with patch('utils.magnetic.declination_for_site',return_value=-7):
+            params=self.controller._collect_params()
+        self.assertEqual(params['airframe_cg'],.2)
+        self.assertAlmostEqual(params['fin_pos'],.33)
+        self.assertEqual(params['motor_dry_mass'],.016)
+        self.assertIsNone(params['cp_override'])
+        # Legacy JSON switches back to editable configuration.
+        self.load()
+        self.assertFalse(self.window.af_mass_input.isReadOnly())
+        self.assertFalse(self.window.af_cp_input.isReadOnly())
+        self.assertFalse(self.window.motor_cg_input.isReadOnly())
+        self.assertFalse(self.state.airframe_provenance)
+
+    def test_whole_openrocket_staged_cancel_apply_and_save_preserve_priority(self):
+        self.load()
+        fixture = Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork'
+        def cancel():
+            self.load(str(fixture))
+            self.assertEqual(float(self.window.af_mass_input.text()),.25)
+            self.assertEqual(self.state.rocket_dry_mass,AIRFRAME['mass'])
+            self.assertEqual(self.state.motor_dry_mass,AIRFRAME['motor_dry_mass'])
+            self.window._manual_dialog.reject()
+        self.run_manual(cancel)
+        self.assertEqual(self.state.rocket_dry_mass,AIRFRAME['mass'])
+        self.assertFalse(self.state.airframe_provenance)
+        self.assertFalse(self.window.af_mass_input.isReadOnly())
+        def apply():
+            self.load(str(fixture))
+            self.window.af_mass_input.setText('99')
+            self.window.af_cp_input.setText('.01')
+            self.window._manual_dialog.sig_apply.emit()
+        self.run_manual(apply)
+        self.assertEqual(self.state.rocket_dry_mass,.25)
+        self.assertGreater(self.state.rocket_cp,.1)
+        self.assertIsNone(self.state.motor_dry_mass)
+        saved=self.path.parent/'imported.json'
+        def save():
+            with patch('ui_qt.sim_controller.QFileDialog.getSaveFileName',return_value=(str(saved),'')):
+                self.window._manual_dialog.sig_save_json.emit()
+            self.window._manual_dialog.reject()
+        self.run_manual(save)
+        self.assertTrue(saved.exists())
+        data=load_airframe_config(saved)
+        self.assertEqual(data['provenance']['sources']['mass'],'ork')
+        self.assertIsNone(data['motor_dry_mass'])
+        self.load(str(saved))
+        self.assertTrue(self.window.af_mass_input.isReadOnly())
+
+    def test_imported_parachute_wins_over_json_but_lag_is_manual(self):
+        fixture = Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork'
+        self.load(str(fixture))
+        para=self.path.parent/'parachute.json'
+        para.write_text(json.dumps(dict(cd=.8,area=.1,lag=.5)),encoding='utf-8')
+        with patch('ui_qt.sim_controller.QFileDialog.getOpenFileName',return_value=(str(para),'')):
+            self.window.sig_load_para_json_clicked.emit()
+        self.assertEqual(self.state.parachute_cd,1)
+        self.assertAlmostEqual(self.state.parachute_area,np.pi*.25**2)
+        self.assertEqual(self.state.parachute_lag,.5)
+
     def test_cancel_discards_edits_and_staged_load(self):
         self.load()
         original_label = self.window.airframe_label.text()
@@ -241,7 +475,8 @@ class TestAirframeImport(AirframeFixture):
 
     def test_manual_buttons_and_filename_rows(self):
         names = [button.text() for button in self.window._manual_dialog.findChildren(QPushButton)]
-        self.assertCountEqual(names, ["Apply", "Cancel", "Load airframe", "Save airframe"])
+        self.assertCountEqual(names, ["Apply", "Cancel", "Load airframe", "Save airframe",
+                                      'Edit Fin Outline…', 'Import Fin Shape (.ork)…'])
         self.load()
         para = self.path.parent / "Parachute.json"
         para.write_text(json.dumps({"cd": 0.8, "area": 0.126, "lag": 0.5}), encoding="utf-8")

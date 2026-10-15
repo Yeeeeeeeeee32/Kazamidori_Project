@@ -86,11 +86,11 @@ CHI2_2DOF: dict[int, float] = {
 
 
 def chi2_scale(prob_pct: int) -> float:
-    """Return sqrt(chi²(2, prob_pct/100)) for error-ellipse axis scaling.
-
-    Falls back to the 90 % value for unknown percentages.
-    """
-    return math.sqrt(CHI2_2DOF.get(int(prob_pct), CHI2_90))
+    """Exact bivariate-normal axis scale for any percentage in (0, 100)."""
+    probability = float(prob_pct) / 100.0
+    if not math.isfinite(probability) or not 0 < probability < 1:
+        raise ValueError('Ellipse probability must be between 0 and 100 percent')
+    return math.sqrt(-2.0 * math.log1p(-probability))
 
 
 # ── Internal geometry helpers ─────────────────────────────────────────────────
@@ -261,173 +261,69 @@ def run_mc_scatter(
 
 # ── Error ellipse ─────────────────────────────────────────────────────────────
 
-def compute_error_ellipse(
-    scatter: list[tuple[float, float]],
-    prob_pct: int = 90,
-) -> dict[str, float] | None:
-    """Fit a 2-D covariance error ellipse to the MC landing scatter.
+def compute_error_ellipse(scatter, prob_pct=90):
+    """Covariance ellipse; angle is counterclockwise from East, never azimuth."""
+    return compute_cep_ellipse(scatter, float(prob_pct) / 100.0)
 
-    All calculations are in the metric East-North frame (metres from the
-    launch-point origin).  The UI layer is responsible for converting the
-    returned metric parameters to geographic coordinates for display.
 
-    The scale factor applied to the standard-deviation axes is:
-        k = sqrt(chi²(2, prob_pct/100)) = sqrt(-2 × ln(1 - prob_pct/100))
+def compute_cep_ellipse(points, probability=0.90):
+    """Gaussian population probability ellipse in ENU metres, not a mean CI.
 
-    Args:
-        scatter:  list of (x_east_m, y_north_m) landing positions.
-        prob_pct: Confidence percentage; must be a key in CHI2_2DOF
-                  (50, 68, 80, 85, 90, 95, 99).  Falls back to 90.
-
-    Returns:
-        dict with keys:
-            Math representation (semi-axes):
-                cx, cy     — ellipse centre (metres East/North from origin)
-                a          — semi-major axis length (metres)
-                b          — semi-minor axis length (metres)
-                angle_rad  — major-axis angle from East (radians)
-            UI-ready representation (full extents, degrees):
-                x, y       — ellipse centre (same as cx, cy)
-                width      — full major-axis extent = 2 × a  (metres)
-                height     — full minor-axis extent = 2 × b  (metres)
-                angle_deg  — major-axis angle from East (degrees)
-        or None if fewer than 4 scatter points are available.
+    Both worker and slider use this implementation. No display-sized minimum
+    axis is added: a constant cloud is a point and a collinear cloud is a line.
+    Four finite points are required. Non-normal clouds need not have the same
+    empirical coverage or shape as the KDE highest-density region.
     """
-    if len(scatter) < 4:
+    if not math.isfinite(probability) or not 0 < probability < 1:
         return None
-
-    arr = np.array(scatter, dtype=float)
-    cx  = float(arr[:, 0].mean())
-    cy  = float(arr[:, 1].mean())
-    cov = np.cov(arr[:, 0], arr[:, 1])
-    # Regularise: 1e-6 m² on the diagonal prevents zero minor axis for
-    # perfectly collinear scatter (e.g. zero crosswind variance).
-    cov = cov + np.eye(2) * 1e-6
-
-    eigvals, eigvecs = np.linalg.eigh(cov)   # ascending eigenvalue order
-    lam1      = float(eigvals[1])             # major-axis variance
-    lam2      = float(eigvals[0])             # minor-axis variance
-    major_vec = eigvecs[:, 1]
-    # ENU座標系のため atan2(y, x) -> atan2(East, North) に修正 (Azimuth: 北0度・時計回り)
-    angle_rad = float(math.atan2(float(major_vec[0]), float(major_vec[1])))
-
-    k = chi2_scale(prob_pct)
-    a = k * math.sqrt(max(lam1, 0.0))
-    b = k * math.sqrt(max(lam2, 0.0))
-    b = max(b, max(0.5, a * 0.05))   # floor: prevent degenerate near-zero b
-
-    return {
-        # Math representation — semi-axes, radians
-        'cx': cx, 'cy': cy, 'a': a, 'b': b, 'angle_rad': angle_rad,
-        # UI-ready representation — full extents, degrees, aliased centre
-        'x': cx, 'y': cy,
-        'width':     2.0 * a,
-        'height':    2.0 * b,
-        'angle_deg': math.degrees(angle_rad),
-    }
-
-
-def compute_cep_ellipse(
-    points,
-    probability: float = 0.90,
-) -> "dict[str, float] | None":
-    """Fit a covariance error ellipse to landing scatter for a given probability.
-
-    Standalone utility designed for UI-driven updates: when the operator moves
-    the CEP-probability slider, the controller calls this directly on the cached
-    scatter without re-running the physics simulation.
-
-    Accepts both a plain list of (x, y) tuples and an (N, 2) numpy array.
-
-    Scale factor
-    ------------
-    The 2-D bivariate normal containment probability ``p`` maps to axis scale
-    ``k`` via the inverse chi-squared CDF with 2 degrees of freedom:
-
-        k = sqrt(-2 × ln(1 − p))
-
-    This is the analytic formula — no lookup table, so any probability in (0, 1)
-    is supported continuously, not just discrete table values.
-
-    Args:
-        points:      Landing positions — list of (x, y) tuples or an (N, 2)
-                     float array.  Column 0 is East (m), column 1 is North (m),
-                     measured from the launch point.
-        probability: Containment probability in the open interval (0, 1).
-                     Pass 0.90 for a 90 % ellipse, 0.50 for CEP50, etc.
-                     Defaults to 0.90.
-
-    Returns:
-        dict with keys:
-            Math keys (consumed by _render_overlays):
-                cx, cy     — centroid in metres East/North from launch origin
-                a          — semi-major axis (metres)
-                b          — semi-minor axis (metres)
-                angle_rad  — major-axis angle from East axis (radians)
-            UI-ready keys (full extents, degrees):
-                x, y       — centroid (same as cx, cy)
-                width      — 2 × a  (metres)
-                height     — 2 × b  (metres)
-                angle_deg  — degrees (alias: angle)
-            Metadata:
-                probability — echo of the input probability
-        Safe default dict (all numeric fields 0) when fewer than 2 points.
-        None when probability is outside (0, 1) — caller error, not data error.
-    """
-    _zero = {
-        'cx': 0.0, 'cy': 0.0, 'a': 0.0, 'b': 0.0, 'angle_rad': 0.0,
-        'x':  0.0, 'y':  0.0,
-        'width': 0.0, 'height': 0.0,
-        'angle_deg': 0.0, 'angle': 0.0,
-        'probability': float(probability),
-    }
-
-    if probability <= 0.0 or probability >= 1.0:
-        return None
-
     arr = np.asarray(points, dtype=float)
-    if arr.ndim != 2 or arr.shape[1] != 2 or arr.shape[0] < 2:
-        return _zero
+    if arr.ndim != 2 or arr.shape[1] != 2 or len(arr) < 4 or not np.isfinite(arr).all():
+        return None
+    center = arr.mean(axis=0)
+    cov = np.cov(arr, rowvar=False)
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    k = chi2_scale(probability * 100)
+    a, b = k * np.sqrt(np.maximum(eigvals[::-1], 0))
+    angle = math.atan2(eigvecs[1, 1], eigvecs[0, 1]) % math.pi
+    return dict(cx=float(center[0]), cy=float(center[1]), a=float(a), b=float(b),
+                angle_rad=angle, x=float(center[0]), y=float(center[1]),
+                width=float(2*a), height=float(2*b), angle_deg=math.degrees(angle),
+                angle=math.degrees(angle), probability=float(probability),
+                angle_convention='east_ccw')
 
-    cx = float(arr[:, 0].mean())
-    cy = float(arr[:, 1].mean())
 
-    # Need at least 2 distinct rows for np.cov to return a 2×2 matrix.
-    if arr.shape[0] < 3:
-        return dict(_zero, cx=cx, cy=cy, x=cx, y=cy)
+def ellipse_points(ellipse, n=181):
+    """Closed ENU boundary using East=0, counterclockwise rotation."""
+    t = np.linspace(0, 2*math.pi, n)
+    a, b, theta = ellipse['a'], ellipse['b'], ellipse['angle_rad']
+    x = ellipse['cx'] + a*np.cos(t)*math.cos(theta) - b*np.sin(t)*math.sin(theta)
+    y = ellipse['cy'] + a*np.cos(t)*math.sin(theta) + b*np.sin(t)*math.cos(theta)
+    return np.column_stack((x,y))
 
-    cov = np.cov(arr[:, 0], arr[:, 1])
-    # Tiny regularisation: prevents singular matrix for perfectly collinear
-    # scatter (e.g. zero crosswind in a pure-headwind simulation).
-    cov = cov + np.eye(2) * 1e-9
 
-    eigvals, eigvecs = np.linalg.eigh(cov)   # returns ascending eigenvalue order
+def kde_density_threshold(grid, probability):
+    """Highest-density cutoff by uniform-grid probability mass (not sample weights)."""
+    if not 0 < probability < 1:
+        raise ValueError('KDE probability must be between 0 and 1')
+    z = np.asarray(grid['Z'], dtype=float)
+    if not np.isfinite(z).all() or (z < 0).any() or z.sum() <= 0:
+        raise ValueError('Invalid KDE density grid')
+    ordered = np.sort(z.ravel())[::-1]
+    index = np.searchsorted(np.cumsum(ordered), probability*ordered.sum())
+    return float(ordered[min(index,len(ordered)-1)])
 
-    # Explicit descending sort so major axis is always index 0.
-    order   = eigvals.argsort()[::-1]
-    eigvals = eigvals[order]
-    eigvecs = eigvecs[:, order]
 
-    # Analytic chi²(2, p) inverse CDF — scale factor for each axis.
-    k = float(np.sqrt(-2.0 * np.log(1.0 - probability)))
-
-    a         = k * float(np.sqrt(max(float(eigvals[0]), 0.0)))   # semi-major
-    b         = k * float(np.sqrt(max(float(eigvals[1]), 0.0)))   # semi-minor
-    # ENU座標系のため arctan2(y, x) -> arctan2(East, North) に修正 (Azimuth: 北0度・時計回り)
-    angle_rad = float(np.arctan2(float(eigvecs[0, 0]), float(eigvecs[1, 0])))
-    angle_deg = float(np.degrees(angle_rad))
-
-    return {
-        # Math keys — consumed by _render_overlays
-        'cx': cx, 'cy': cy, 'a': a, 'b': b, 'angle_rad': angle_rad,
-        # UI-ready keys — full extents, degrees
-        'x': cx, 'y': cy,
-        'width':       2.0 * a,
-        'height':      2.0 * b,
-        'angle_deg':   angle_deg,
-        'angle':       angle_deg,   # alias for Folium/external consumers
-        'probability': probability,
-    }
+def landing_region_fraction(points, radius, target=(0,0), attempted=None):
+    """Empirical fraction inside the target disk; failed trials count outside."""
+    arr = np.asarray(points, dtype=float)
+    if arr.size == 0:
+        return 0.0
+    if arr.ndim != 2 or arr.shape[1] != 2 or not np.isfinite(arr).all():
+        raise ValueError('Expected finite ENU landing points')
+    total = len(arr) if attempted is None else int(attempted)
+    if total < len(arr) or total <= 0 or not math.isfinite(radius) or radius < 0:
+        raise ValueError('Invalid trial count or target radius')
+    return float(np.count_nonzero(np.linalg.norm(arr-np.asarray(target),axis=1) <= radius)/total)
 
 
 # ── CEP ───────────────────────────────────────────────────────────────────────
@@ -569,12 +465,12 @@ def compute_kde_grid(
     except Exception:
         return None
 
-    span    = max(float(xs.max() - xs.min()), float(ys.max() - ys.min()), 1.0)
-    pad     = span * padding_frac
-    x_min   = float(xs.min()) - pad
-    x_max   = float(xs.max()) + pad
-    y_min   = float(ys.min()) - pad
-    y_max   = float(ys.max()) + pad
+    # Per-axis padding keeps small / anisotropic clouds resolved. Four kernel
+    # standard deviations leave negligible Gaussian tail mass outside the box.
+    pad_x = max(float(np.ptp(xs))*padding_frac, 4*math.sqrt(kde.covariance[0,0]))
+    pad_y = max(float(np.ptp(ys))*padding_frac, 4*math.sqrt(kde.covariance[1,1]))
+    x_min, x_max = float(xs.min())-pad_x, float(xs.max())+pad_x
+    y_min, y_max = float(ys.min())-pad_y, float(ys.max())+pad_y
 
     gx      = _np.linspace(x_min, x_max, grid_size)
     gy      = _np.linspace(y_min, y_max, grid_size)
@@ -584,13 +480,15 @@ def compute_kde_grid(
     # Peak-normalise to [0, 1]: preserves relative density shape; lets the
     # UI apply any colour map by treating Z as a direct intensity value.
     z_max = float(Z.max())
-    if z_max > 0.0:
-        Z = Z / z_max
+    if not math.isfinite(z_max) or z_max <= 0:
+        return None
+    Z = Z / z_max
 
     return {
         "X_m":     GX.tolist(),
         "Y_m":     GY.tolist(),
         "Z":       Z.tolist(),
+        "sample_density": (kde(np.vstack([xs,ys])) / z_max).tolist(),
         "x_min_m": x_min,
         "x_max_m": x_max,
         "y_min_m": y_min,

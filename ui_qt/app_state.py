@@ -237,6 +237,8 @@ class AppState(QObject):
     # One signal per physical dimension so views can bind selectively.
     rocket_dry_mass_changed = Signal(object)   # airframe dry mass (kg)
     rocket_cg_changed       = Signal(object)   # airframe CG from nose (m)
+    rocket_cp_changed       = Signal(object)   # optional Mach-0 CP from nose (m)
+    fin_options_changed     = Signal(object)
     rocket_length_changed   = Signal(object)   # total airframe length (m)
     rocket_diameter_changed = Signal(object)   # body diameter in metres (= 2×radius)
     nose_length_changed     = Signal(object)   # nose cone length (m)
@@ -430,6 +432,8 @@ class AppState(QObject):
         _f = lambda k: (float(cfg[k]) if k in cfg else None)
         self._rocket_dry_mass  = _f("rocket_dry_mass")   # kg
         self._rocket_cg        = _f("rocket_cg")         # m from nose
+        self._rocket_cp        = _f("rocket_cp")         # None = automatic CP
+        self.airframe_provenance = {}  # OpenRocket source values / calculation provenance
         self._rocket_length    = _f("rocket_length")     # m
         self._rocket_diameter  = _f("rocket_diameter")   # m (= 2 × radius)
         self._nose_length      = _f("nose_length")       # m
@@ -1233,8 +1237,8 @@ class AppState(QObject):
 
         from core.monte_carlo import evaluate_wind_within_bounds
 
-        live_u = speed * math.sin(math.radians(direction))
-        live_v = speed * math.cos(math.radians(direction))
+        from core.wind_model import speed_dir_to_uv
+        live_u, live_v = speed_dir_to_uv(speed, direction)
         mu_u, mu_v = self._locked_mu
         sigma      = self._locked_sigma
         in_bounds = evaluate_wind_within_bounds(live_u, live_v, mu_u, mu_v, sigma)
@@ -1432,6 +1436,37 @@ class AppState(QObject):
             self._rocket_cg = val
             self.rocket_cg_changed.emit(val)
             self._check_readiness()
+
+    @Property(object, notify=rocket_cp_changed)
+    def rocket_cp(self) -> Optional[float]:
+        """Optional Mach-0 CP in metres from the nose; None uses geometry."""
+        return self._rocket_cp
+
+    @rocket_cp.setter
+    def rocket_cp(self, value: Optional[float]) -> None:
+        val = float(value) if value is not None else None
+        if val is not None and (not math.isfinite(val) or val < 0):
+            raise ValueError('CP must be a finite, non-negative distance from the nose')
+        if self._rocket_cp != val:
+            self._rocket_cp = val
+            self.rocket_cp_changed.emit(val)
+
+    @Property(object, notify=fin_options_changed)
+    def fin_options(self):
+        import copy
+        return copy.deepcopy(getattr(self, '_fin_options', dict(
+            fin_shape='trapezoid', fin_points=None, fin_sweep=None, fin_cant=0.0)))
+
+    @fin_options.setter
+    def fin_options(self, value):
+        from core.fin_geometry import validate_fin_options
+        options = self.fin_options
+        options.update(value)
+        checked = validate_fin_options(options)
+        checked = {k: checked[k] for k in ('fin_shape', 'fin_points', 'fin_sweep', 'fin_cant') if k in checked}
+        if self.fin_options != checked:
+            self._fin_options = checked
+            self.fin_options_changed.emit(self.fin_options)
 
     @Property(object, notify=rocket_length_changed)
     def rocket_length(self) -> Optional[float]:

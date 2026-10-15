@@ -900,7 +900,13 @@ class SimController(QObject):
                 "#f9e2af",
             )
         else:
-            is_safe = cep50 <= target_r
+            from core.monte_carlo import landing_region_fraction
+            fraction = landing_region_fraction(
+                _scatter, float(target_r),
+                (getattr(self._state,'target_x',0.) or 0., getattr(self._state,'target_y',0.) or 0.),
+                attempted=result.get('n_attempted',len(_scatter)))
+            is_safe = len(_scatter) >= 4 and fraction >= prob / 100.0
+            self._state.phase2_active = False
             print(
                 f"[DIAG] Phase A result: cep50={cep50:.1f}m {'<=' if is_safe else '>'} "
                 f"target_r={target_r:.1f}m  ->  {'SAFE' if is_safe else 'NOGO'}",
@@ -913,12 +919,12 @@ class SimController(QObject):
                 surf_spd = result.get("nominal_surf_spd", lowest_wind["speed_ms"])
                 surf_dir = result.get("nominal_surf_dir", lowest_wind["dir_deg"])
                 wind_unc = float(self._window.wind_unc_input.value())
-                mu_u = surf_spd * math.sin(math.radians(surf_dir))
-                mu_v = surf_spd * math.cos(math.radians(surf_dir))
+                from core.wind_model import speed_dir_to_uv
+                mu_u, mu_v = speed_dir_to_uv(surf_spd, surf_dir)
                 self._state.set_wind_lock(mu_u, mu_v, wind_unc)
                 self._state.phase2_active = True
                 self._window.update_status_indicator(
-                    f"🟢  GO  (CEP {cep50:.0f} m ≤ {target_r:.0f} m)"
+                    f"🟢  GO  (Target containment {fraction:.1%} ≥ {prob}%)"
                 )
             else:
                 print(
@@ -926,12 +932,12 @@ class SimController(QObject):
                     flush=True,
                 )
                 self._window.update_status_indicator(
-                    f"🔴  NO-GO  (CEP {cep50:.0f} m > {target_r:.0f} m)"
+                    f"🔴  NO-GO  (Target containment {fraction:.1%}; required {prob}%, ≥4 samples)"
                 )
             verdict = (
-                f"SAFE  CEP {cep50:.0f} m <= {target_r:.0f} m"
+                f"GO  Target containment {fraction:.1%} >= {prob}%"
                 if is_safe else
-                f"UNSAFE  CEP {cep50:.0f} m > {target_r:.0f} m"
+                f"NO-GO  Target containment {fraction:.1%}; required {prob}%"
             )
             self._window.set_status(
                 f"{verdict}   |   R{prob}: {r90:.1f} m   |   "
@@ -1158,7 +1164,7 @@ class SimController(QObject):
             safe_motor_pos      = 0.0
             safe_motor_dry_mass = 0.0
 
-        return {
+        params = {
             # ── Simulation / wind config ───────────────────────────────────────
             # cep_prob: read from AppState (authoritative) — updated by both the
             # main-window cep_prob_input widget and the Advanced Settings dialog.
@@ -1193,6 +1199,8 @@ class SimController(QObject):
             # AppState and spinboxes are both SI (m, kg) — no conversion needed.
             "airframe_mass":  s.rocket_dry_mass,       # kg
             "airframe_cg":    s.rocket_cg,             # m from nose
+            "cp_override":    s.rocket_cp,             # optional Mach-0 CP, m from nose
+            **s.fin_options,
             "airframe_len":   s.rocket_length,         # m
             "radius":         s.rocket_diameter / 2.0, # m  (AppState holds diameter)
             "nose_len":       s.nose_length,           # m
@@ -1236,6 +1244,21 @@ class SimController(QObject):
             "cd_curve_power_on":  s.cd_curve_power_on,
             "cd_curve_power_off": s.cd_curve_power_off,
         }
+        if s.airframe_provenance:
+            from core.airframe_parameters import resolve_airframe
+            resolved = resolve_airframe({'provenance': s.airframe_provenance, 'cp':s.rocket_cp})
+            mapping = dict(mass='airframe_mass', cg='airframe_cg', length='airframe_len',
+                           nose_length='nose_len', nose_shape='nose_kind')
+            for key,value in resolved.items():
+                if key not in ('provenance','cp'):
+                    params[mapping.get(key,key)] = value
+            # Displayed calculated CP is a preview. Keep the live geometry model
+            # for MC perturbations rather than forcing a stale CP calibration.
+            params['cp_override'] = (resolved.get('cp')
+                if resolved['provenance']['sources'].get('cp') in ('ork','manual') else None)
+            for key,value in s.airframe_provenance.get('parachute', {}).items():
+                params['para_'+key] = value
+        return params
 
     @Slot(str)
     def _on_flight_mode_changed(self, mode: str) -> None:
@@ -1281,7 +1304,7 @@ class SimController(QObject):
                         return
                     val_str = text.strip()
                     if val_str == "":
-                        _sb.setStyleSheet("border: 1px solid red;")
+                        _sb.setStyleSheet("" if _p == 'rocket_cp' else "border: 1px solid red;")
                         setattr(s, _p, None)
                     else:
                         try:
@@ -1294,7 +1317,7 @@ class SimController(QObject):
 
                 sb.textChanged.connect(validate_and_set)
                 
-                def update_sb(v, _sb=sb, _g=from_si):
+                def update_sb(v, _sb=sb, _g=from_si, _p=prop):
                     if self._manual_editing and w._manual_dialog.isAncestorOf(_sb):
                         return
                     if v is not None:
@@ -1309,7 +1332,7 @@ class SimController(QObject):
                         if v is None:
                             if _sb.text() != "":
                                 _sb.setText("")
-                            _sb.setStyleSheet("border: 1px solid red;")
+                            _sb.setStyleSheet("" if _p == 'rocket_cp' else "border: 1px solid red;")
                         else:
                             val_str = str(round(_g(v), 5))
                             if _sb.text() != val_str:
@@ -1338,6 +1361,7 @@ class SimController(QObject):
         # af_radius_input shows body radius (m); AppState stores full diameter (m)
         _bind("af_mass_input",     "rocket_dry_mass", lambda v: float(v),      lambda v: float(v))
         _bind("af_cg_input",       "rocket_cg",       lambda v: float(v),      lambda v: float(v))
+        _bind("af_cp_input",       "rocket_cp",       lambda v: float(v),      lambda v: float(v))
         _bind("af_len_input",      "rocket_length",   lambda v: float(v),      lambda v: float(v))
         _bind("af_radius_input",   "rocket_diameter", lambda v: v * 2.0,       lambda v: v / 2.0)
         _bind("af_nose_input",     "nose_length",     lambda v: float(v),      lambda v: float(v))
@@ -1389,6 +1413,8 @@ class SimController(QObject):
 
     def _manual_airframe_values(self) -> dict:
         values = dict(self._manual_pending_airframe or {})
+        if self._manual_pending_airframe is None and self._state.airframe_provenance:
+            values['provenance'] = self._state.airframe_provenance
         values.update({key: widget.text().strip()
                        for key, (widget, _, _) in self._manual_geometry_fields().items()})
         for key, prop in (("motor_pos", "motor_cg_pos"), ("motor_dry_mass", "motor_dry_mass"),
@@ -1396,7 +1422,47 @@ class SimController(QObject):
             values.setdefault(key, getattr(self._state, prop))
         values["fin_count"] = self._window.af_fincount_input.value()
         values["nose_shape"] = self._window.af_noseshape_input.currentText()
+        values['cp'] = self._window.af_cp_input.text().strip() or None
+        values.update(self._window._manual_dialog.fin_options())
+        if values.get('provenance'):
+            from core.airframe_parameters import resolve_airframe
+            values = resolve_airframe(values)
         return values
+
+    def _refresh_airframe_sources(self, data=None):
+        """Explain and lock higher-priority values; unfilled values remain editable."""
+        w = self._window
+        d = w._manual_dialog
+        if data is None:
+            data = self._manual_airframe_values()
+        sources = data.get('provenance', {}).get('sources', {})
+        fields = {key:widget for key,(widget,_,_) in self._manual_geometry_fields().items()}
+        fields.update(cp=w.af_cp_input, fin_count=w.af_fincount_input,
+                      nose_shape=w.af_noseshape_input, fin_shape=d.fin_shape_input,
+                      fin_sweep=d.fin_sweep_input, fin_cant=d.fin_cant_input)
+        if not self._manual_editing:
+            fields.update(motor_pos=w.motor_cg_input, motor_dry_mass=w.motor_dry_mass_input,
+                          backfire_delay=w.af_backfire_input)
+        for key,widget in fields.items():
+            source = sources.get(key)
+            locked = source in ('ork','calculated')
+            if hasattr(widget,'setReadOnly'):
+                widget.setReadOnly(locked)
+            else:
+                widget.setEnabled(not locked)
+            if widget.property('original_tooltip') is None:
+                widget.setProperty('original_tooltip',widget.toolTip())
+            widget.setToolTip(('出典: .ork' if source=='ork' else '出典: Kazamidori自動計算')
+                              + '（手入力より優先）' if locked else widget.property('original_tooltip'))
+        locked_fin = sources.get('fin_shape') in ('ork','calculated')
+        d.edit_fin_btn.setEnabled(not locked_fin)
+        d.load_ork_fins_btn.setEnabled(not locked_fin)
+        if not self._manual_editing:
+            para = data.get('provenance',{}).get('parachute',{})
+            for key,widget in (('cd',w.para_cd_input),('area',w.para_area_input)):
+                widget.setReadOnly(key in para)
+                widget.setToolTip('出典: OpenRocket（面積は直径から換算）' if key in para else '')
+        d.show_airframe_sources(data)
 
     @Slot()
     def _on_manual_config_clicked(self) -> None:
@@ -1404,11 +1470,13 @@ class SimController(QObject):
         self._refresh_airframe_inputs()
         w.af_fincount_input.setValue(self._state.fin_count)
         w.af_noseshape_input.setCurrentText(self._state.nose_shape)
+        w._manual_dialog.set_fin_options(self._state.fin_options)
         self._manual_editing = True
         w._manual_draft_active = True
         self._manual_pending_airframe = None
         self._manual_pending_path = None
         w._manual_dialog.error_label.setText("")
+        self._refresh_airframe_sources()
         try:
             w._manual_dialog.exec()
         finally:
@@ -1419,6 +1487,8 @@ class SimController(QObject):
             self._refresh_airframe_inputs()
             w.af_fincount_input.setValue(self._state.fin_count)
             w.af_noseshape_input.setCurrentText(self._state.nose_shape)
+            w._manual_dialog.set_fin_options(self._state.fin_options)
+            self._refresh_airframe_sources()
             w._evaluate_config_deltas()
 
     @Slot()
@@ -1475,14 +1545,14 @@ class SimController(QObject):
             self._window,
             "Load Airframe",
             str(Path(__file__).resolve().parent.parent / "Airframe.json"),
-            "Airframe JSON (*.json);;All Files (*)",
+            "Airframe / OpenRocket (*.json *.ork *.ork.gz);;OpenRocket (*.ork *.ork.gz);;Airframe JSON (*.json)",
         )
         if not path:
             return
         try:
             af = load_airframe_config(path)
         except AirframeConfigError as exc:
-            self._window.set_status(f"Airframe JSON load failed: {exc}", "#f38ba8")
+            self._window.set_status(f"Airframe load failed: {exc}", "#f38ba8")
             if self._manual_editing:
                 self._window._manual_dialog.error_label.setText(str(exc))
             return
@@ -1492,13 +1562,17 @@ class SimController(QObject):
             self._manual_pending_path = path
             for key, (widget, _, _) in self._manual_geometry_fields().items():
                 with QSignalBlocker(widget):
-                    widget.setText(format(af[key], ".12g"))
+                    widget.setText(format(af[key], ".12g") if af.get(key) is not None else '')
+            with QSignalBlocker(self._window.af_cp_input):
+                self._window.af_cp_input.setText(format(af['cp'], '.12g') if af.get('cp') is not None else '')
+            self._window._manual_dialog.set_fin_options(af)
             for widget, value in ((self._window.af_fincount_input, af.get("fin_count", self._state.fin_count)),):
                 with QSignalBlocker(widget):
                     widget.setValue(value)
             with QSignalBlocker(self._window.af_noseshape_input):
                 self._window.af_noseshape_input.setCurrentText(af.get("nose_shape", self._state.nose_shape))
             self._window._manual_dialog.error_label.setText("")
+            self._refresh_airframe_sources(af)
             return
 
         self._apply_airframe_config(af, path)
@@ -1515,10 +1589,18 @@ class SimController(QObject):
             "motor_pos": "motor_cg_pos", "motor_dry_mass": "motor_dry_mass",
             "backfire_delay": "backfire_delay",
         }
+        if af.get('provenance'):
+            from core.airframe_parameters import resolve_airframe
+            af = resolve_airframe(af)
+        from copy import deepcopy
+        s.airframe_provenance = deepcopy(af.get('provenance', {}))
         if path:
             s.original_rocket_config = dict(af)
+        s.rocket_cp = af.get('cp')  # Legacy files restore automatic CP.
+        s.fin_options = {k: af.get(k, default) for k, default in dict(
+            fin_shape='trapezoid', fin_points=None, fin_sweep=None, fin_cant=0.).items()}
         for key, prop in fields.items():
-            if af.get(key) is not None:
+            if af.get(key) is not None or (s.airframe_provenance and key in af):
                 setattr(s, prop, af[key])
         if "fin_count" in af:
             s.fin_count = af["fin_count"]
@@ -1528,6 +1610,30 @@ class SimController(QObject):
         # Airframe.json has no inertia tensor; discard any previous model's MoI.
         s.set_moi(0.0, 0.0, 0.0)
         self._refresh_airframe_inputs()
+        self._window._manual_dialog.set_fin_options(s.fin_options)
+        if s.airframe_provenance:
+            para = s.airframe_provenance.get('parachute', {})
+            if path:
+                # A new design must not inherit the previous design's recovery
+                # system or motor curve without the user choosing them.
+                s.parachute_cd = para.get('cd')
+                s.parachute_area = para.get('area')
+                s.parachute_lag = None
+                self._window.parachute_label.setText(
+                    f"{s.airframe_provenance.get('file','OpenRocket')} (Cd / Area)" if para else 'No parachute loaded')
+                self._window._motor_thrust_data = None
+                self._window._motor_burn_time = None
+                self._window.motor_label.setText(
+                    f".ork: {s.airframe_provenance.get('motor') or '未指定'} — Load Thrust Curve")
+                for label in (self._window.lbl_avg_thrust, self._window.lbl_max_thrust,
+                              self._window.lbl_burn_time, self._window.lbl_total_impulse):
+                    label.setText('—')
+            else:
+                if 'cd' in para:
+                    s.parachute_cd = para['cd']
+                if 'area' in para:
+                    s.parachute_area = para['area']
+        self._refresh_airframe_sources(af)
 
         w = self._window
         name = Path(path).name if path else w.airframe_label.text().split(" (Modified)")[0]
@@ -1539,15 +1645,16 @@ class SimController(QObject):
             name
         )
         w.airframe_label.setToolTip(
-            f"Mass: {af['mass']:.4f} kg | CG: {af['cg']:.5f} m | L: {af['length']:.3f} m"
+            f"Mass: {af.get('mass')} kg | CG: {af.get('cg')} m | L: {af['length']:.3f} m\n"
+            + w._manual_dialog.airframe_sources_note.text()
         )
         w.airframe_label.setStyleSheet(
             "color: #a6e3a1; font-size: 8pt; padding: 2px 4px;"
         )
         w._evaluate_config_deltas()
         w.set_status(
-            f"Airframe loaded: {name}  |  CG {af['cg']:.5f} m  |  "
-            "Geometry: Manual Config; parachute: Load Parachute JSON",
+            f"Airframe loaded: {name}  |  CG {af.get('cg')} m  |  "
+            "Manual Configで出典・未取得項目を確認できます",
             "#a6e3a1",
         )
 
@@ -1585,17 +1692,18 @@ class SimController(QObject):
             return
 
         s = self._state
-        s.parachute_cd   = par["cd"]
-        s.parachute_area = par["area"]
+        imported = s.airframe_provenance.get('parachute', {})
+        s.parachute_cd   = imported.get('cd', par["cd"])
+        s.parachute_area = imported.get('area', par["area"])
         s.parachute_lag  = par["lag"]
 
         name = _os.path.basename(path)
-        self._window.parachute_label.setText(name)
+        self._window.parachute_label.setText(name + (' (Lag; Cd/Area: .ork)' if imported else ''))
         self._window.parachute_label.setToolTip(path)
         self._window.set_status(
             f"Parachute loaded: {name}  ·  "
-            f"Cd {par['cd']:.2f}  ·  "
-            f"Area {par['area']:.4f} m²  ·  "
+            f"Cd {s.parachute_cd:.2f}  ·  "
+            f"Area {s.parachute_area:.4f} m²  ·  "
             f"Lag {par['lag']:.2f} s",
             "#a6e3a1",
         )
@@ -1741,9 +1849,12 @@ class SimController(QObject):
             # Use the same empirical radius convention as the worker.
             radii = np.sort(np.linalg.norm(pts - pts.mean(axis=0), axis=1))
             index = min(int(self._state.cep_probability / 100.0 * len(pts)), len(pts) - 1)
-            sr["r_N_radius"] = sr["cep_radius"] = float(radii[index])
+            sr["r_N_radius"] = sr["cep_radius"] = float(np.quantile(radii, self._state.cep_probability / 100.0))
             self._state.r90_radius = sr["r_N_radius"]
             self._state.simulation_result = sr
+            if self._state.phase2_active:
+                self._state.phase2_active = False
+                self._window.update_status_indicator('確率を変更しました。GO/NO-GO判定は再計算してください。')
 
     @Slot(float)
     def _on_cep_prob_changed(self, value: float) -> None:

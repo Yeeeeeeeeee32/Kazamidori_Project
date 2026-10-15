@@ -350,7 +350,7 @@ class SimulationWorker(QThread):
                 _cy = sum(y for _, y in pts_tuples) / n_pts
                 _radii = sorted(math.hypot(x - _cx, y - _cy) for x, y in pts_tuples)
                 _idx_n = min(int(prob_pct / 100.0 * n_pts), n_pts - 1)
-                r_N    = _radii[_idx_n]
+                r_N    = float(np.quantile(_radii, prob_pct / 100.0))
                 cep_val   = compute_cep(pts_tuples)
                 cov_matrix = None
                 if n_pts >= 4:
@@ -385,6 +385,7 @@ class SimulationWorker(QThread):
                 "kde_contours": [],      # populated after heavy KDE below
                 "kde":          None,
                 "cov_matrix":   cov_matrix,
+                "n_attempted": int(p.get("mc_runs", 50)),
                 "mc_avg_score": avg_score,
                 "mc_min_score": min_score,
                 "mc_avg_alt":   avg_alt,
@@ -413,6 +414,7 @@ class SimulationWorker(QThread):
                 "kde_contours": kde_contours,
                 "kde":          kde_grid,
                 "cov_matrix":   cov_matrix,
+                "n_attempted": int(p.get("mc_runs", 50)),
                 "mc_avg_score": avg_score,
                 "mc_min_score": min_score,
                 "mc_avg_alt":   avg_alt,
@@ -432,31 +434,16 @@ class SimulationWorker(QThread):
             mc_scatter_y_filtered = []
 
             if scatter:
-                sx = [p["x"] if isinstance(p, dict) else p[0] for p in scatter]
-                sy = [p["y"] if isinstance(p, dict) else p[1] for p in scatter]
-
-                try:
-                    from scipy.stats import gaussian_kde
-                    pts_arr = np.vstack([sx, sy])
-                    kde_eval = gaussian_kde(pts_arr)
-                    densities = kde_eval(pts_arr)
-                    
-                    z_sorted = np.sort(densities)[::-1]
-                    cumsum = np.cumsum(z_sorted)
-                    cumsum /= cumsum[-1]
-                    
-                    outer_frac = max(min(prob_pct / 100.0, 0.999), 0.501)
-                    idx = int(np.searchsorted(cumsum, outer_frac))
-                    idx = min(idx, len(z_sorted) - 1)
-                    threshold = float(z_sorted[idx])
-                    
-                    outside_mask = densities < threshold
-                    mc_scatter_x_filtered = np.array(sx)[outside_mask].tolist()[:500]
-                    mc_scatter_y_filtered = np.array(sy)[outside_mask].tolist()[:500]
-                except Exception as e:
-                    print(f"KDE Filtering Error: {e}", flush=True)
-                    mc_scatter_x_filtered = sx[:500]
-                    mc_scatter_y_filtered = sy[:500]
+                sx = [pt["x"] if isinstance(pt, dict) else pt[0] for pt in scatter]
+                sy = [pt["y"] if isinstance(pt, dict) else pt[1] for pt in scatter]
+                if kde_grid:
+                    from core.monte_carlo import kde_density_threshold
+                    cutoff = kde_density_threshold(kde_grid, prob_pct/100)
+                    mask = np.asarray(kde_grid['sample_density']) < cutoff
+                    mc_scatter_x_filtered = np.asarray(sx)[mask].tolist()[:500]
+                    mc_scatter_y_filtered = np.asarray(sy)[mask].tolist()[:500]
+                else:
+                    mc_scatter_x_filtered, mc_scatter_y_filtered = sx[:500], sy[:500]
 
             stats["mc_scatter_x_filtered"] = mc_scatter_x_filtered
             stats["mc_scatter_y_filtered"] = mc_scatter_y_filtered
@@ -866,7 +853,7 @@ class SimulationWorker(QThread):
         radii = sorted(math.hypot(x - cx, y - cy) for x, y in pts)
         n    = len(radii)
         idx  = min(int(prob_pct / 100.0 * n), n - 1)
-        r_N  = radii[idx]
+        r_N  = float(np.quantile(radii, prob_pct / 100.0))
 
         # 2×2 sample covariance matrix (metres²).  None when fewer than 4 points.
         cov_matrix = None
@@ -927,6 +914,8 @@ class SimulationWorker(QThread):
             "kde_contours": stats.get("kde_contours", []),
             "cov_matrix":   stats.get("cov_matrix"),
             "n_runs":       len(scatter),
+            "n_attempted": stats.get("n_attempted", len(scatter)),
+            "cep_circle": stats.get("cep_circle"),
             "landing_prob": prob_pct,
             "mc_avg_score": stats.get("mc_avg_score", 0.0),
             "mc_min_score": stats.get("mc_min_score", 0.0),
@@ -1021,6 +1010,8 @@ class SimulationWorker(QThread):
             "kde":          stats.get("kde"),
             "cov_matrix":   stats.get("cov_matrix"),
             "n_runs":       len(scatter),
+            "n_attempted": stats.get("n_attempted", len(scatter)),
+            "cep_circle": stats.get("cep_circle"),
             "landing_prob": prob_pct,
             "mc_avg_score": stats.get("mc_avg_score", 0.0),
             "mc_min_score": stats.get("mc_min_score", 0.0),
@@ -1233,6 +1224,7 @@ class OptimizationWorker(QThread):
             self.sig_status_text.emit("Computing landing statistics...")
 
             stats = SimulationWorker._compute_stats(scatter, prob_pct)
+            stats["n_attempted"] = int(p.get("mc_runs",50))
 
             self.progress.emit(98)
             self.sig_status_text.emit("Packaging results...")

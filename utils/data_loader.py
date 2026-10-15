@@ -64,6 +64,10 @@ def parse_airframe(raw: dict) -> dict[str, Any]:
             result[key] = float(raw_val)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"airframe['{key}'] = {raw_val!r} is not a number") from exc
+    if 'cp' in raw:
+        result['cp'] = _validate_cp(raw['cp'], result['length'])
+    from core.fin_geometry import validate_fin_options
+    result.update(validate_fin_options(raw))
     return result
 
 
@@ -202,8 +206,29 @@ class AirframeConfigError(ValueError):
     """Raised when an airframe JSON config file cannot be loaded or parsed."""
 
 
+def _validate_cp(raw, length):
+    if raw is None or raw == '':
+        return None
+    try:
+        if isinstance(raw, bool):
+            raise ValueError('boolean')
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        raise AirframeConfigError('cp must be a distance in metres or null (automatic)') from None
+    if not _math.isfinite(value) or not 0 <= value <= float(length):
+        raise AirframeConfigError('cp must be between 0 and the rocket length [m], measured from the nose')
+    return value
+
+
 def load_airframe_config(filepath: str) -> dict[str, float]:
     """Read the flat Airframe.json format in SI units, without default values."""
+    if str(filepath).lower().endswith(('.ork', '.ork.gz')):
+        from utils.openrocket_airframe import load_openrocket_airframe
+        try:
+            data = load_openrocket_airframe(filepath)
+            return validate_airframe_config(data)
+        except (ValueError, TypeError, IndexError, KeyError, OverflowError) as exc:
+            raise AirframeConfigError(f'OpenRocket import failed: {exc}') from exc
     try:
         with open(filepath, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
@@ -217,6 +242,12 @@ def validate_airframe_config(data: dict, required_keys=None) -> dict:
     """Validate imported or manually edited SI airframe values."""
     if not isinstance(data, dict):
         raise AirframeConfigError("Airframe JSON must contain an object at the top level.")
+    if 'provenance' in data:
+        from core.airframe_parameters import resolve_airframe
+        try:
+            data = resolve_airframe(data)
+        except (ValueError, TypeError) as exc:
+            raise AirframeConfigError(str(exc)) from exc
     required = set(_AIRFRAME_DEFAULTS) if required_keys is None else set(required_keys)
     missing = required - data.keys()
     if missing:
@@ -226,6 +257,11 @@ def validate_airframe_config(data: dict, required_keys=None) -> dict:
     airframe = {}
     for key in sorted(required):
         raw = data[key]
+        if raw is None and 'provenance' in data and required_keys is None:
+            # Incomplete imported designs remain saveable; RUN still requires
+            # the missing physical values and never uses another model's values.
+            airframe[key] = None
+            continue
         try:
             if isinstance(raw, bool):
                 raise ValueError("boolean is not a physical quantity")
@@ -236,6 +272,13 @@ def validate_airframe_config(data: dict, required_keys=None) -> dict:
             constraint = "positive" if key in positive else "non-negative"
             raise AirframeConfigError(f"{key} must be finite and {constraint}, got {raw!r}")
         airframe[key] = value
+    if 'cp' in data:
+        airframe['cp'] = _validate_cp(data['cp'], airframe.get('length', data.get('length')))
+    from core.fin_geometry import validate_fin_options
+    try:
+        airframe.update(validate_fin_options(data))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AirframeConfigError(str(exc)) from exc
     if "fin_count" in data:
         value = data["fin_count"]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 3 <= value <= 8 or int(value) != value:
@@ -245,6 +288,8 @@ def validate_airframe_config(data: dict, required_keys=None) -> dict:
         if data["nose_shape"] not in ("vonKarman", "conical", "ogive", "elliptical"):
             raise AirframeConfigError("Unsupported nose_shape")
         airframe["nose_shape"] = data["nose_shape"]
+    if 'provenance' in data:
+        airframe['provenance'] = data['provenance']
     return airframe
 
 

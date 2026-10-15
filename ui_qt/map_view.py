@@ -1,3 +1,4 @@
+import numpy as np
 import math
 import os
 
@@ -254,7 +255,11 @@ class MapView(QWidget):
 
             # CEP Circle
             if cep > 0 and getattr(self._state, 'show_cep', True):
-                cep_circle = patches.Circle((impact_x, impact_y), radius=cep, edgecolor='#9933cc', facecolor='none', linewidth=1.8, linestyle='--', zorder=5)
+                center = result.get('cep_circle') or {}
+                # CEP is measured from the MC centroid, not the nominal impact.
+                cx = center.get('cx_m', float(np.mean(scatter_x)) if len(scatter_x) else impact_x)
+                cy = center.get('cy_m', float(np.mean(scatter_y)) if len(scatter_y) else impact_y)
+                cep_circle = patches.Circle((cx, cy), radius=cep, edgecolor='#9933cc', facecolor='none', linewidth=1.8, linestyle='--', zorder=5)
                 self.ax.add_patch(cep_circle)
 
             # 90% CEP Ellipse
@@ -281,27 +286,19 @@ class MapView(QWidget):
             kde_grid = result.get('kde')
             if kde_grid and getattr(self._state, 'show_kde', True):
                 try:
-                    import numpy as np
                     _X = np.asarray(kde_grid["X_m"], dtype=float)
                     _Y = np.asarray(kde_grid["Y_m"], dtype=float)
                     _Z = np.asarray(kde_grid["Z"],   dtype=float)
 
-                    z_flat = _Z.ravel()
-                    z_sorted = np.sort(z_flat)[::-1]
-                    cumsum = np.cumsum(z_sorted)
-                    cumsum /= cumsum[-1]
-
+                    from core.monte_carlo import kde_density_threshold
                     levels_pm = [0.50, 0.70, prob / 100.0]
-                    levels_val = []
-                    for pm in levels_pm:
-                        idx = int(np.searchsorted(cumsum, pm))
-                        idx = min(idx, len(z_sorted) - 1)
-                        levels_val.append(float(z_sorted[idx]))
-
-                    levels_val = sorted(list(set(levels_val)))
+                    level_labels = {kde_density_threshold(kde_grid, pm): f'{pm*100:g}%'
+                                    for pm in levels_pm}
+                    levels_val = sorted(level_labels)
 
                     if len(levels_val) > 0:
                         cs = self.ax.contour(_X, _Y, _Z, levels=levels_val, colors='#cc5500', linewidths=1.5, zorder=4)
+                        self.ax.clabel(cs, fmt=level_labels, fontsize=7)
 
                         all_x.extend([float(kde_grid["x_min_m"]), float(kde_grid["x_max_m"])])
                         all_y.extend([float(kde_grid["y_min_m"]), float(kde_grid["y_max_m"])])
@@ -310,13 +307,14 @@ class MapView(QWidget):
 
             # Impact Scatter (Filtered by KDE contours)
             if getattr(self._state, 'show_scatter', True):
-                sx = result.get('mc_scatter_x_filtered', [])
-                sy = result.get('mc_scatter_y_filtered', [])
-
-                # Fallback if filtered arrays aren't present
-                if not sx and not sy:
-                    sx = scatter_x[:500]
-                    sy = scatter_y[:500]
+                sx, sy = scatter_x[:500], scatter_y[:500]
+                densities = (kde_grid or {}).get('sample_density', [])
+                if (getattr(self._state, 'show_kde', True) and kde_grid
+                        and len(densities) == len(scatter_x) and len(densities)):
+                    from core.monte_carlo import kde_density_threshold
+                    outside = np.asarray(densities) < kde_density_threshold(kde_grid, prob / 100)
+                    sx = np.asarray(scatter_x)[outside].tolist()[:500]
+                    sy = np.asarray(scatter_y)[outside].tolist()[:500]
 
                 if len(sx) > 0 and len(sy) > 0:
                     self.ax.scatter(sx, sy, c='#ff6633', s=10, alpha=0.5, label='MC Scatter', zorder=2)

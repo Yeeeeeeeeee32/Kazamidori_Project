@@ -25,12 +25,17 @@ params dict keys expected by simulate_once
   rail                     float   metres
   airframe_mass            float   kg
   airframe_cg              float   metres from nose tip  (positive toward tail)
+  cp_override              float|None  Mach-0 CP from nose (m); None uses geometry
   airframe_len             float   metres
   radius                   float   metres
   nose_len                 float   metres
   fin_root, fin_tip        float   metres
   fin_span                 float   metres
   fin_pos                  float   metres from nose tip  (positive toward tail)
+  fin_shape                str     'trapezoid' (default) or 'freeform'
+  fin_points               list    freeform [[x_aft_m, y_outward_m], ...]
+  fin_sweep                float|None  trapezoid sweep (m); None uses RocketPy default
+  fin_cant                 float   fin cant angle, degrees (default 0)
   motor_pos                float   metres from nose tip  (nozzle exit, positive toward tail)
   motor_dry_mass           float   kg
   backfire_delay           float   seconds after burn-out
@@ -255,6 +260,48 @@ def make_backfire_trigger(backfire_alt: float):
 
 
 # ── Core simulation ───────────────────────────────────────────────────────────
+
+def _apply_cp_override(rocket, params):
+    """Calibrate the nose-to-tail aerodynamic model to a supplied Mach-0 CP.
+
+    Translate every component's aerodynamic centre by the same axial offset.
+    This preserves geometry, lift slopes, and the model's Mach-dependent CP
+    variation, while updating the moment arms actually consumed by Flight.
+    Setting only rocket.cp_position would change the stability diagnostic but
+    leave the flight dynamics unchanged.
+    """
+    raw = params.get('cp_override')
+    if raw is None:
+        return
+    cp = float(raw)
+    length = float(params['airframe_len'])
+    if isinstance(raw, bool) or not math.isfinite(cp) or not 0 <= cp <= length:
+        raise SimulationInputError('CP must be between 0 and the rocket length [m] from the nose')
+    automatic_cp = float(rocket.cp_position(0))
+    if not math.isfinite(automatic_cp):
+        raise SimulationInputError('Automatic CP is invalid; cannot apply manual CP')
+    offset = cp - automatic_cp
+    for surface, _ in rocket.aerodynamic_surfaces:
+        # In our nose_to_tail model, positive local cpz is toward the tail.
+        surface.cpz += offset
+        surface.cp = (surface.cpx, surface.cpy, surface.cpz)
+    rocket.evaluate_center_of_pressure()
+    rocket.evaluate_surfaces_cp_to_cdm()
+    rocket.evaluate_stability_margin()
+    rocket.evaluate_static_margin()
+
+
+def _add_fin_set(rocket, params, position, root, tip, span):
+    from .fin_geometry import validate_fin_options
+    options = validate_fin_options(params)
+    common = dict(n=params.get('fin_count', 4), position=position,
+                  cant_angle=options.get('fin_cant', 0.0))
+    if options.get('fin_shape') == 'freeform':
+        return rocket.add_free_form_fins(shape_points=options['fin_points'], **common)
+    if options.get('fin_sweep') is not None:
+        common['sweep_length'] = options['fin_sweep']
+    return rocket.add_trapezoidal_fins(root_chord=root, tip_chord=tip, span=span, **common)
+
 
 class SimulationInputError(ValueError):
     """A simulation could not run with the supplied model/conditions."""
@@ -604,13 +651,8 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
                 flush=True,
             )
 
-            rk.add_trapezoidal_fins(
-                n=params.get("fin_count", 4),
-                root_chord=fin_root,
-                tip_chord=fin_tip,
-                span=fin_span,
-                position=_fin_pos_safe,
-            )
+            _add_fin_set(rk, params, _fin_pos_safe, fin_root, fin_tip, fin_span)
+            _apply_cp_override(rk, params)
 
             try:
                 _wet_mass = float(rk.total_mass(0))
@@ -1124,13 +1166,8 @@ def simulate_once_mc(
                 flush=True,
             )
 
-        rk.add_trapezoidal_fins(
-            n=params.get("fin_count", 4),
-            root_chord=fin_root,
-            tip_chord=fin_tip,
-            span=fin_span,
-            position=_fin_pos_safe_mc,
-        )
+        _add_fin_set(rk, params, _fin_pos_safe_mc, fin_root, fin_tip, fin_span)
+        _apply_cp_override(rk, params)
 
         # ── Single-pass flight with pre-known backfire altitude ───────────────
         safe_backfire_alt = max(float(backfire_alt), 1.0)

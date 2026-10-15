@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<openrocket version="1.10">
+  <rocket>
+    <name>Import regression fixture</name>
+    <motorconfiguration configid="chosen" default="true"><stage number="0" active="true"/></motorconfiguration>
+    <subcomponents><stage>
+      <overridemass>0.25</overridemass><overridesubcomponentsmass>true</overridesubcomponentsmass>
+      <overridecg>0.2</overridecg><overridesubcomponentscg>true</overridesubcomponentscg>
+      <subcomponents>
+        <nosecone>
+          <length>0.1</length><aftradius>0.02</aftradius><shape>conical</shape>
+          <thickness>0.001</thickness><material density="1000"/>
+        </nosecone>
+        <bodytube>
+          <length>0.3</length><radius>0.02</radius><thickness>0.001</thickness>
+          <material density="500"/>
+          <subcomponents>
+            <trapezoidfinset>
+              <name>Fins</name><fincount>3</fincount>
+              <rootchord>0.06</rootchord><tipchord>0.02</tipchord><height>0.05</height><sweeplength>0.03</sweeplength>
+              <axialoffset method="bottom">-0.01</axialoffset><cant>0</cant>
+              <thickness>0.002</thickness><material density="170"/>
+            </trapezoidfinset>
+            <innertube>
+              <length>0.07</length><outerradius>0.0095</outerradius><thickness>0.0005</thickness>
+              <material density="820"/>
+              <axialoffset method="bottom">0</axialoffset>
+              <motormount><overhang>0.005</overhang>
+                <motor configid="other"><designation>G40</designation><delay>9</delay></motor>
+                <motor configid="chosen"><manufacturer>Estes</manufacturer><designation>C5</designation><delay>3</delay></motor>
+              </motormount>
+            </innertube>
+            <parachute>
+              <packedlength>0.02</packedlength><diameter>0.5</diameter><cd>1</cd>
+              <material density="0.017"/><linecount>6</linecount><linelength>0.3</linelength>
+              <linematerial density="0.0018"/><deployevent>ejection</deployevent><deploydelay>2</deploydelay>
+            </parachute>
+          </subcomponents>
+        </bodytube>
+      </subcomponents>
+    </stage></subcomponents>
+  </rocket>
+</openrocket>

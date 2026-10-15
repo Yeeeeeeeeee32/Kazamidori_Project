@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (    QLineEdit,
 from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
 from ui_qt.app_state import AppState
+from core.monte_carlo import ellipse_points
 
 # ── Constants ───────────────────────────────────────────────────────────────
 DEFAULT_AZIMUTH: int = -90
@@ -336,6 +337,9 @@ class ManualSetupDialog(QDialog):
 
         self.af_mass_input      = _dsb(50.0, 4, 0.001, " kg")
         self.af_cg_input        = _dsb( 5.0, 3, 0.001, " m")
+        self.af_cp_input        = _dsb( 5.0, 3, 0.001, " m")
+        self.af_cp_input.setPlaceholderText("空欄：自動計算")
+        self.af_cp_input.setToolTip("先端から圧力中心までの距離 [m]（Mach 0）。空欄では形状から自動計算します。")
         self.af_len_input       = _dsb( 5.0, 3, 0.001, " m")
         self.af_radius_input    = _dsb( 0.5, 4, 0.001, " m")
         self.af_nose_input      = _dsb( 2.0, 3, 0.001, " m")
@@ -354,6 +358,7 @@ class ManualSetupDialog(QDialog):
 
         self.lbl_mass      = QLabel("Mass [kg]:")
         self.lbl_cg        = QLabel("CG from Nose [m]:")
+        self.lbl_cp        = QLabel("CP from Nose [m] (Mach 0):")
         self.lbl_len       = QLabel("Length [m]:")
         self.lbl_radius    = QLabel("Body Radius [m]:")
         self.lbl_nose      = QLabel("Nose Length [m]:")
@@ -366,6 +371,7 @@ class ManualSetupDialog(QDialog):
 
         frm.addRow(self.lbl_mass,      self.af_mass_input)
         frm.addRow(self.lbl_cg,        self.af_cg_input)
+        frm.addRow(self.lbl_cp,        self.af_cp_input)
         frm.addRow(self.lbl_len,       self.af_len_input)
         frm.addRow(self.lbl_radius,    self.af_radius_input)
         frm.addRow(self.lbl_nose,      self.af_nose_input)
@@ -375,6 +381,40 @@ class ManualSetupDialog(QDialog):
         frm.addRow(self.lbl_finspan,   self.af_finspan_input)
         frm.addRow(self.lbl_finpos,    self.af_finpos_input)
         frm.addRow(self.lbl_fincount,  self.af_fincount_input)
+
+        self.fin_shape_input = QComboBox()
+        self.fin_shape_input.addItem('Trapezoidal', 'trapezoid')
+        self.fin_shape_input.addItem('Freeform outline', 'freeform')
+        self.fin_sweep_input = _dsb(10, 5, .001, ' m')
+        self.fin_sweep_input.setValidator(QDoubleValidator(-10, 10, 8, self.fin_sweep_input))
+        self.fin_sweep_input.setPlaceholderText('空欄：自動（後縁を揃える）')
+        self.fin_cant_input = _dsb(90, 3, .1, '°')
+        self.fin_cant_input.setValidator(QDoubleValidator(-90, 90, 8, self.fin_cant_input))
+        self.fin_cant_input.setText('0')
+        self.fin_points = None
+        self.edit_fin_btn = QPushButton('Edit Fin Outline…')
+        self.load_ork_fins_btn = QPushButton('Import Fin Shape (.ork)…')
+        self.fin_shape_note = QLabel('台形：翼根・翼端・半幅・後退量を編集できます。')
+        self.fin_shape_note.setWordWrap(True)
+        frm.addRow('Fin Shape:', self.fin_shape_input)
+        frm.addRow('Fin Sweep Length [m]:', self.fin_sweep_input)
+        frm.addRow('Fin Cant [deg]:', self.fin_cant_input)
+        frm.addRow(self.edit_fin_btn)
+        frm.addRow(self.load_ork_fins_btn)
+        frm.addRow(self.fin_shape_note)
+        self.airframe_sources_note = QLabel('Load airframe は JSON / OpenRocket (.ork) に対応しています。')
+        self.airframe_sources_note.setWordWrap(True)
+        self.airframe_sources_note.setTextFormat(Qt.TextFormat.PlainText)
+        frm.addRow(self.airframe_sources_note)
+        self.airframe_sources_table = QTableWidget(0, 3)
+        self.airframe_sources_table.setHorizontalHeaderLabels(['Parameter', 'Value (SI)', 'Source'])
+        self.airframe_sources_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.airframe_sources_table.setMinimumHeight(220)
+        self.airframe_sources_table.hide()
+        frm.addRow(self.airframe_sources_table)
+        self.fin_shape_input.currentIndexChanged.connect(self._fin_shape_changed)
+        self.edit_fin_btn.clicked.connect(self._edit_fin_outline)
+        self.load_ork_fins_btn.clicked.connect(self._import_fin_shape)
 
 
         inner_lay.addWidget(grp)
@@ -405,7 +445,8 @@ class ManualSetupDialog(QDialog):
 
         # ── Keyboard Navigation (Tab Order) for ManualSetupDialog ─────────────
         QWidget.setTabOrder(self.af_mass_input, self.af_cg_input)
-        QWidget.setTabOrder(self.af_cg_input, self.af_len_input)
+        QWidget.setTabOrder(self.af_cg_input, self.af_cp_input)
+        QWidget.setTabOrder(self.af_cp_input, self.af_len_input)
         QWidget.setTabOrder(self.af_len_input, self.af_radius_input)
         QWidget.setTabOrder(self.af_radius_input, self.af_nose_input)
         QWidget.setTabOrder(self.af_nose_input, self.af_noseshape_input)
@@ -414,7 +455,12 @@ class ManualSetupDialog(QDialog):
         QWidget.setTabOrder(self.af_fintip_input, self.af_finspan_input)
         QWidget.setTabOrder(self.af_finspan_input, self.af_finpos_input)
         QWidget.setTabOrder(self.af_finpos_input, self.af_fincount_input)
-        QWidget.setTabOrder(self.af_fincount_input, btn_load)
+        QWidget.setTabOrder(self.af_fincount_input, self.fin_shape_input)
+        QWidget.setTabOrder(self.fin_shape_input, self.fin_sweep_input)
+        QWidget.setTabOrder(self.fin_sweep_input, self.fin_cant_input)
+        QWidget.setTabOrder(self.fin_cant_input, self.edit_fin_btn)
+        QWidget.setTabOrder(self.edit_fin_btn, self.load_ork_fins_btn)
+        QWidget.setTabOrder(self.load_ork_fins_btn, btn_load)
         QWidget.setTabOrder(btn_load, btn_save)
         QWidget.setTabOrder(btn_save, btn_apply)
         QWidget.setTabOrder(btn_apply, btn_cancel)
@@ -428,6 +474,117 @@ class ManualSetupDialog(QDialog):
         root.addWidget(btns)
 
         self.setMinimumHeight(500)
+
+    def show_airframe_sources(self, data):
+        provenance = data.get('provenance', {})
+        sources = provenance.get('sources', {})
+        self.airframe_sources_table.setVisible(bool(provenance))
+        fields = ('mass','cg','cp','length','radius','nose_length','nose_shape',
+                  'fin_shape','fin_count','fin_root','fin_tip','fin_span','fin_sweep',
+                  'fin_cant','fin_pos','motor_pos','motor_dry_mass','backfire_delay')
+        self.airframe_sources_table.setRowCount(len(fields) if provenance else 0)
+        names = {'ork': '.ork', 'calculated': 'Kazamidori 自動計算', 'manual': '手入力'}
+        for row,key in enumerate(fields if provenance else ()):
+            value = data.get(key)
+            label = names.get(sources.get(key), '未取得・入力が必要')
+            for col,text in enumerate((key, format(value,'.8g') if isinstance(value,(float,int)) else str(value) if value is not None else '—', label)):
+                item = QTableWidgetItem(text)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.airframe_sources_table.setItem(row,col,item)
+        if provenance:
+            note = (f"{provenance.get('file','OpenRocket')}\n"
+                    '優先順位：.ork → Kazamidori自動計算 → 手入力。取得済み項目は固定されます。\n'
+                    '形状を変更する場合はOpenRocketで編集して再読込してください。\n')
+            if provenance.get('motor'):
+                note += f"搭載モーター：{provenance['motor']}\n"
+            note += '\n'.join(provenance.get('warnings', []))
+            self.airframe_sources_note.setText(note)
+        else:
+            self.airframe_sources_note.setText('Load airframe は JSON / OpenRocket (.ork) に対応しています。')
+
+    def fin_options(self):
+        return dict(fin_shape=self.fin_shape_input.currentData(), fin_points=self.fin_points,
+                    fin_sweep=self.fin_sweep_input.text().strip() or None,
+                    fin_cant=self.fin_cant_input.text().strip() or 0.)
+
+    def set_fin_options(self, options):
+        from copy import deepcopy
+        from PySide6.QtCore import QSignalBlocker
+        self.fin_points = deepcopy(options.get('fin_points'))
+        with QSignalBlocker(self.fin_shape_input):
+            self.fin_shape_input.setCurrentIndex(self.fin_shape_input.findData(options.get('fin_shape','trapezoid')))
+        self.fin_sweep_input.setText('' if options.get('fin_sweep') is None else format(float(options['fin_sweep']),'.12g'))
+        self.fin_cant_input.setText(format(float(options.get('fin_cant',0)),'.12g'))
+        self._fin_shape_changed()
+
+    def _outline_from_dimensions(self):
+        root = float(self.af_finroot_input.text() or .04)
+        tip = float(self.af_fintip_input.text() or .02)
+        span = float(self.af_finspan_input.text() or .03)
+        sweep = float(self.fin_sweep_input.text()) if self.fin_sweep_input.text().strip() else root-tip
+        points = [[0.,0.], [sweep,span]]
+        if tip > 0:
+            points.append([sweep+tip,span])
+        return points + [[root,0.]]
+
+    def _use_outline(self, points):
+        from core.fin_geometry import fin_dimensions
+        self.fin_points = points
+        dims = fin_dimensions(points)
+        for widget,key in ((self.af_finroot_input,'fin_root'),(self.af_fintip_input,'fin_tip'),
+                           (self.af_finspan_input,'fin_span'),(self.fin_sweep_input,'fin_sweep')):
+            widget.setText(format(dims[key],'.12g'))
+
+    def _fin_shape_changed(self, *_):
+        free = self.fin_shape_input.currentData() == 'freeform'
+        for widget in (self.af_finroot_input,self.af_fintip_input,self.af_finspan_input,self.fin_sweep_input):
+            widget.setEnabled(not free)
+        if free and not self.fin_points:
+            try:
+                self._use_outline(self._outline_from_dimensions())
+            except ValueError as exc:
+                self.error_label.setText(str(exc))
+        self.fin_shape_note.setText('自由形状：Edit Fin Outlineで頂点を編集。寸法欄は輪郭から計算。' if free else
+                                   '台形：翼根・翼端・半幅・後退量を編集できます。')
+
+    def _edit_fin_outline(self):
+        from ui_qt.fin_editor import FinOutlineDialog
+        try:
+            points = self.fin_points if self.fin_shape_input.currentData() == 'freeform' and self.fin_points else self._outline_from_dimensions()
+            dialog = FinOutlineDialog(points, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._use_outline(dialog.points)
+                self.fin_shape_input.setCurrentIndex(self.fin_shape_input.findData('freeform'))
+        except ValueError as exc:
+            self.error_label.setText(str(exc))
+
+    def _import_fin_shape(self):
+        from utils.openrocket_fins import load_openrocket_fin_sets
+        from PySide6.QtWidgets import QInputDialog
+        path, _ = QFileDialog.getOpenFileName(self, 'Import Fin Shape', '', 'OpenRocket (*.ork *.ork.gz)')
+        if not path:
+            return
+        try:
+            sets = load_openrocket_fin_sets(path)
+            selected = 0
+            if len(sets) > 1:
+                names = [f'{i+1}: {entry["name"]}' for i,entry in enumerate(sets)]
+                name, ok = QInputDialog.getItem(self,'Select Fin Set','Fin set:',names,0,False)
+                if not ok:
+                    return
+                selected = names.index(name)
+            options = sets[selected]
+            for widget,key in ((self.af_finroot_input,'fin_root'),(self.af_fintip_input,'fin_tip'),(self.af_finspan_input,'fin_span')):
+                widget.setText(format(options[key],'.12g'))
+            if options['fin_count'] >= 3:
+                self.af_fincount_input.setValue(options['fin_count'])
+            self.set_fin_options(options)
+            self.error_label.clear()
+            self.fin_shape_note.setText(f'{options["name"]} を読込。Fin LE Position・機体質量・CG・CPは現在値を使用します。Applyで確定。')
+            if options['fin_count'] < 3:
+                self.fin_shape_note.setText(f'{options["name"]}: 原本は{options["fin_count"]}枚。輪郭を読み込みました。計算用の枚数は現在の{self.af_fincount_input.value()}枚です（3〜8枚の対称配置）。Applyで確定。')
+        except (OSError, ValueError) as exc:
+            self.error_label.setText(str(exc))
 
 
 # ── Matplotlib canvas wrapper ─────────────────────────────────────────────────
@@ -879,8 +1036,8 @@ def _draw_ellipse_3d(ax: object, *, cx: float, cy: float, a: float, b: float, an
         label: Legend label.
     """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
-    xe = b * np.sin(t) * np.cos(angle_rad) + a * np.cos(t) * np.sin(angle_rad)
-    ye = -b * np.sin(t) * np.sin(angle_rad) + a * np.cos(t) * np.cos(angle_rad)
+    xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
+    ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
     ax.plot(cx + xe, cy + ye, np.zeros(120),
             color=color, lw=lw, linestyle="--", alpha=0.90,
             label=label if label else "_nolegend_")
@@ -906,8 +1063,8 @@ def _draw_ellipse_2d(ax: object, *, cx: float, cy: float, a: float, b: float, an
         The created Line2D artist.
     """
     t  = np.linspace(0.0, 2.0 * np.pi, 120)
-    xe = b * np.sin(t) * np.cos(angle_rad) + a * np.cos(t) * np.sin(angle_rad)
-    ye = -b * np.sin(t) * np.sin(angle_rad) + a * np.cos(t) * np.cos(angle_rad)
+    xe = a * np.cos(t) * np.cos(angle_rad) - b * np.sin(t) * np.sin(angle_rad)
+    ye = a * np.cos(t) * np.sin(angle_rad) + b * np.sin(t) * np.cos(angle_rad)
     (line,) = ax.plot(cx + xe, cy + ye,
                       color=color, lw=lw, linestyle="--", alpha=alpha,
                       label=label if label else "_nolegend_")
@@ -1028,6 +1185,7 @@ class AppWindow(QMainWindow):
         self._manual_draft_active = False
         self.af_mass_input      = self._manual_dialog.af_mass_input
         self.af_cg_input        = self._manual_dialog.af_cg_input
+        self.af_cp_input        = self._manual_dialog.af_cp_input
         self.af_len_input       = self._manual_dialog.af_len_input
         self.af_radius_input    = self._manual_dialog.af_radius_input
         self.af_nose_input      = self._manual_dialog.af_nose_input
@@ -1050,6 +1208,7 @@ class AppWindow(QMainWindow):
         # Backfire delay explicitly isolated from the dirty/modified flag
         self.af_mass_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_cg_input.textChanged.connect(lambda v: self._mark_modified())
+        self.af_cp_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_len_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_radius_input.textChanged.connect(lambda v: self._mark_modified())
         self.af_nose_input.textChanged.connect(lambda v: self._mark_modified())
@@ -1062,6 +1221,7 @@ class AppWindow(QMainWindow):
         # Phase 2 Tracker evaluation hooks
         self.af_mass_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_cg_input.textChanged.connect(self._evaluate_config_deltas)
+        self.af_cp_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_len_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_radius_input.textChanged.connect(self._evaluate_config_deltas)
         self.af_nose_input.textChanged.connect(self._evaluate_config_deltas)
@@ -1585,7 +1745,8 @@ class AppWindow(QMainWindow):
         self.motor_dry_mass_input.setClearButtonEnabled(True)
         self.motor_dry_mass_input.setText("")
 
-        grp_motor_lay.addRow("Motor CG Pos. [m]:", self.motor_cg_input)
+        grp_motor_lay.addRow("Motor Nozzle Pos. [m]:", self.motor_cg_input)
+        self.motor_cg_input.setToolTip('機体先端からモーターのノズル出口までの距離 [m]。')
         grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
         grp_motor_lay.addRow("Backfire Delay [s]:", self.af_backfire_input)
         grp_motor_lay.addRow(btn_motor)
@@ -2640,10 +2801,9 @@ class AppWindow(QMainWindow):
         if ellipse and "a" in ellipse and "b" in ellipse:
             t   = np.linspace(0.0, 2.0 * np.pi, 120)
             ang = float(ellipse.get("angle_rad", 0.0))
-            xe  = (float(ellipse["b"]) * np.sin(t) * np.cos(ang)
-                   + float(ellipse["a"]) * np.cos(t) * np.sin(ang))
-            ye  = (-float(ellipse["b"]) * np.sin(t) * np.sin(ang)
-                   + float(ellipse["a"]) * np.cos(t) * np.cos(ang))
+            points = ellipse_points(ellipse, len(t))
+            xe = points[:,0] - float(ellipse["cx"])
+            ye = points[:,1] - float(ellipse["cy"])
             (line,) = ax.plot(
                 float(ellipse["cx"]) + xe,
                 float(ellipse["cy"]) + ye,
@@ -2902,6 +3062,10 @@ class AppWindow(QMainWindow):
         md = self._manual_dialog
         _check_and_style(self.af_mass_input,      md.lbl_mass,      "mass")
         _check_and_style(self.af_cg_input,        md.lbl_cg,        "cg")
+        if not self.af_cp_input.text().strip():
+            md.lbl_cp.setStyleSheet("color: #ff5555; font-weight: bold;" if orig.get('cp') is not None else "")
+        else:
+            _check_and_style(self.af_cp_input, md.lbl_cp, 'cp')
         _check_and_style(self.af_len_input,       md.lbl_len,       "length")
         _check_and_style(self.af_radius_input,    md.lbl_radius,    "radius")
         _check_and_style(self.af_nose_input,      md.lbl_nose,      "nose_length")
@@ -2937,6 +3101,7 @@ class AppWindow(QMainWindow):
 
         _set(self.af_mass_input,      "mass")
         _set(self.af_cg_input,        "cg")
+        _set(self.af_cp_input,        "cp")
         _set(self.af_len_input,       "length")
         _set(self.af_radius_input,    "radius")
         _set(self.af_nose_input,      "nose_length")
