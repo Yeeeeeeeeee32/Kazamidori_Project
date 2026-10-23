@@ -6,6 +6,9 @@ from PySide6.QtWidgets import (QDialog, QFormLayout, QDateTimeEdit, QPushButton,
                               QDialogButtonBox, QFileDialog, QLabel, QMessageBox, QCheckBox)
 
 from utils.wind_data import fetch_wind_csv, read_wind_snapshot
+from utils.time_display import format_jst
+
+JST_ZONE = QTimeZone(9 * 3600)
 
 
 class WindDataWorker(QThread):
@@ -37,21 +40,21 @@ class WindDataDialog(QDialog):
         self.state, self.worker = state, None
         self.setWindowTitle('Wind Data — Open-Meteo / CSV')
         form = QFormLayout(self)
-        note = QLabel('日時は UTC。風向は真北からの FROM 方向、風速は m/s。\n'
+        note = QLabel('日時は JST（日本標準時）。風向は真北からの FROM 方向、風速は m/s。\n'
                       '気圧面の高度は実行時の現地気圧で補正します。\n'
                       '提供: Open-Meteo (CC BY 4.0) — https://open-meteo.com/')
         note.setWordWrap(True)
         form.addRow(note)
-        now = QDateTime.currentDateTimeUtc()
+        now = QDateTime.currentDateTimeUtc().toTimeZone(JST_ZONE)
         now = now.addSecs(-now.time().minute() * 60 - now.time().second())
         self.start, self.end, self.target = QDateTimeEdit(now), QDateTimeEdit(now.addSecs(86400)), QDateTimeEdit(now)
         for edit in (self.start, self.end, self.target):
-            edit.setTimeZone(QTimeZone.utc())
-            edit.setDisplayFormat("yyyy-MM-dd HH:00 'UTC'")
+            edit.setTimeZone(JST_ZONE)
+            edit.setDisplayFormat("yyyy-MM-dd HH:00 'JST'")
             edit.setCalendarPopup(True)
-        form.addRow('API Start (UTC)', self.start)
-        form.addRow('API End (UTC)', self.end)
-        form.addRow('Simulation time (UTC)', self.target)
+        form.addRow('Download Start (JST)', self.start)
+        form.addRow('Download End (JST)', self.end)
+        form.addRow('Simulation time (JST)', self.target)
         self.apply_download = QCheckBox('Use downloaded data for this simulation')
         self.apply_download.setChecked(False)
         form.addRow(self.apply_download)
@@ -60,7 +63,7 @@ class WindDataDialog(QDialog):
             from PySide6.QtCore import Qt
             dt = QDateTime.fromString(saved, Qt.DateFormat.ISODate)
             if dt.isValid():
-                self.target.setDateTime(dt.toUTC())
+                self.target.setDateTime(dt.toTimeZone(JST_ZONE))
         self.path_label = QLabel(state.phase4_options['wind_csv'] or 'Manual wind profile')
         self.path_label.setWordWrap(True)
         form.addRow(self.path_label)
@@ -78,7 +81,7 @@ class WindDataDialog(QDialog):
 
     @staticmethod
     def _iso(edit):
-        # Widgets explicitly show UTC; never reinterpret wall time as local time.
+        # Convert the explicitly selected JST instant to the API/cache convention.
         return edit.dateTime().toUTC().toString('yyyy-MM-ddTHH:00:00') + 'Z'
 
     def _choose(self, fetch):
@@ -108,12 +111,12 @@ class WindDataDialog(QDialog):
         def ready(saved):
             if not p['download_only']:
                 self.state.phase4_options = dict(wind_csv=str(Path(saved).resolve()), wind_time_utc=target)
-                self.path_label.setText(f'{Path(saved).name} — {target}')
+                self.path_label.setText(f'{Path(saved).name} — {format_jst(target)}')
             else:
-                self.path_label.setText(f"Downloaded: {Path(saved).name}\n{p['start']} — {p['end']}")
+                self.path_label.setText(f"Downloaded: {Path(saved).name}\n{format_jst(p['start'])} — {format_jst(p['end'])}")
         self.worker.ready.connect(ready)
         self.worker.error.connect(lambda msg: QMessageBox.warning(self, 'Wind data error', msg))
-        self.worker.status.connect(self.path_label.setText)
+        self.worker.status.connect(lambda stamp: self.path_label.setText('Downloading: ' + format_jst(stamp)))
         self.worker.finished.connect(lambda: self._busy(False))
         self._busy(True)
         self.worker.start()

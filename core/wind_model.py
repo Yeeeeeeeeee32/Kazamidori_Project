@@ -8,7 +8,7 @@ WIND_SAMPLE_ALTS : list[float]
     Fixed diagnostic altitudes (m AGL) used by sample_wind_nodes.
 
 ANEMOMETER_ALT : float
-    Altitude (m AGL) of the surface anemometer node (3.0 m).
+    Altitude (m AGL) of the surface anemometer node (1.5 m).
     Matches obs_alt in create_wind_profile and WIND_SAMPLE_ALTS[0].
 
 WindLevel
@@ -22,7 +22,7 @@ uv_to_speed_dir(u, v) -> (speed, dir_deg)
     Returns (0.0, 0.0) for zero or near-zero vectors.
 
 create_wind_profile(gpv_levels, obs_speed, obs_dir,
-                    obs_alt=3.0, blend_alt=100.0) -> (u_prof, v_prof)
+                    obs_alt=1.5, blend_alt=100.0) -> (u_prof, v_prof)
     Build a smooth, physically consistent wind profile from multi-level
     GPV data blended with a surface observation.  All interpolation is
     performed on U/V vector components to eliminate the 0°/360° crossover
@@ -60,23 +60,25 @@ import math
 import random as _random_mod
 from typing import NamedTuple, Union
 
+from core.constants import OBS_ALT
+
 
 # ── Diagnostic sample altitudes ───────────────────────────────────────────────
 
 # Five fixed nodes that span the boundary layer through the mid-troposphere.
 #
 # Data source split:
-#   3 m  → 自作風速計 (custom on-site anemometer) — surface truth
+#   1.5 m  → 自作風速計 (custom on-site anemometer) — surface truth
 #   10 m, 150 m, 300 m, 600 m → upper-wind API (GPV / JMA MSM)
 #
-# The 3 m node is intentionally kept separate because its value is measured
+# The 1.5 m node is intentionally kept separate because its value is measured
 # directly at the launch site; the upper nodes are model/API-derived and may
 # carry larger uncertainty, which is reflected in the MC perturbation budget.
-WIND_SAMPLE_ALTS: list[float] = [3.0, 10.0, 150.0, 300.0, 600.0]
+WIND_SAMPLE_ALTS: list[float] = [OBS_ALT, 10.0, 150.0, 300.0, 600.0]
 
 # Altitude (m AGL) of the surface anemometer observation.
 # Matches obs_alt passed to create_wind_profile and the first WIND_SAMPLE_ALTS entry.
-ANEMOMETER_ALT: float = 3.0
+ANEMOMETER_ALT: float = OBS_ALT
 
 
 # ── Data type ─────────────────────────────────────────────────────────────────
@@ -157,7 +159,7 @@ def sample_wind_nodes(
     shear display.  Each node carries a ``source`` tag that records whether
     the value originates from the on-site anemometer or the upper-wind API:
 
-    * ``"anemometer"`` — 3 m AGL (自作風速計, custom launch-site hardware).
+    * ``"anemometer"`` — 1.5 m AGL (自作風速計, custom launch-site hardware).
       This is surface truth; it is entered directly as ``obs_speed`` /
       ``obs_dir`` in :func:`create_wind_profile` and is NOT inferred from
       any model.
@@ -169,7 +171,7 @@ def sample_wind_nodes(
         u_prof: list of (alt_m, u_m_s) — east wind component, sorted.
         v_prof: list of (alt_m, v_m_s) — north wind component, sorted.
         alts:   Altitudes (m AGL) to sample.  Defaults to
-                :data:`WIND_SAMPLE_ALTS` = [3, 10, 150, 300, 600] m.
+                :data:`WIND_SAMPLE_ALTS` = [1.5, 10, 150, 300, 600] m.
 
     Returns:
         List of dicts (one per altitude, order preserved), each with:
@@ -178,7 +180,7 @@ def sample_wind_nodes(
             ``v``        — north component (m/s, + = northward)
             ``speed_ms`` — wind speed (m/s)
             ``dir_deg``  — meteorological direction (° FROM which wind blows)
-            ``source``   — ``"anemometer"`` for 3 m; ``"api"`` for all others
+            ``source``   — ``"anemometer"`` for 1.5 m; ``"api"`` for all others
     """
     # Enforce the 5-node contract: always sample exactly these altitudes
     # unless the caller explicitly overrides for testing purposes.
@@ -195,7 +197,7 @@ def sample_wind_nodes(
             "v":        float(v),
             "speed_ms": float(speed),
             "dir_deg":  float(dir_deg),
-            # Distinguishes on-site hardware truth (3 m) from API-derived levels
+            # Distinguishes on-site hardware truth (1.5 m) from API-derived levels
             "source":   "anemometer" if alt == ANEMOMETER_ALT else "api",
         })
 
@@ -280,7 +282,7 @@ def create_wind_profile(
     if not nodes:
         return [(0.0, 0.0), (5000.0, 0.0)], [(0.0, 0.0), (5000.0, 0.0)]
 
-    # If we only have 1 surface point (e.g., from Koinobori at 3m),
+    # If we only have 1 surface point (e.g., from Koinobori at 1.5m),
     # extrapolate upper winds using the Hellmann exponential law.
     if len(nodes) == 1:
         base_alt, base_spd, base_dir = nodes[0]

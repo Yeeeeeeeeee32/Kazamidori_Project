@@ -787,7 +787,7 @@ def run_phase1(
     # ── Compile result ────────────────────────────────────────────────────────
     display_score = cands[0][0]
 
-    prog('Phase 1 complete ✓', 1.0)
+    prog('Phase 1 complete', 1.0)
 
     return Phase1Result(
         best_elev             = float(best_e),

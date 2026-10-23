@@ -124,7 +124,7 @@ class TestAirframeImport(AirframeFixture):
     def test_button_loads_all_twelve_fields(self):
         self.state.set_moi(1, 2, 3)
         buttons = [b for b in self.window.findChildren(QPushButton)
-                   if b.text() in ("📂  Load Airframe", "Load airframe")]
+                   if b.text() in ("Load Airframe", "Load airframe")]
         self.assertEqual(len(buttons), 2)
         with patch("ui_qt.sim_controller.select_airframe_files",
                    return_value=("", str(self.path))):
@@ -590,7 +590,7 @@ class TestAirframeImport(AirframeFixture):
         self.load()
         self.state.flight_mode = "Altitude Competition"
         self.controller._wind_timer.start()
-        before = len(self.state.wind_history_for_alt(3.0))
+        before = len(self.state.wind_history_for_alt(1.5))
         with patch("ui_qt.sim_controller.OptimizationWorker"), \
              patch("ui_qt.sim_controller.SimulationWorker"), \
              patch.object(self.controller, "_validate_run_prerequisites", return_value=True), \
@@ -598,7 +598,7 @@ class TestAirframeImport(AirframeFixture):
             self.controller._on_phase1_clicked()
             self.assertTrue(self.controller._wind_timer.isActive())
             QTest.qWait(1250)
-        self.assertGreater(len(self.state.wind_history_for_alt(3.0)), before)
+        self.assertGreater(len(self.state.wind_history_for_alt(1.5)), before)
         self.controller._wind_timer.stop()
 
 

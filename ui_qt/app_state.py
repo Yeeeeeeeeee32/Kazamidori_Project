@@ -27,14 +27,16 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Property
 
+from core.constants import OBS_ALT
+
 # ── Constants ───────────────────────────────────────────────
 WIND_HISTORY_MAX_SAMPLES: int = 60
 
 # ── Wind-history altitude constants ───────────────────────────────────────────
 # Must match core.wind_model.WIND_SAMPLE_ALTS exactly.
-# Defined here to avoid importing from core in the UI state layer.
-_WIND_SAMPLE_ALTS: tuple[float, ...] = (3.0, 10.0, 150.0, 300.0, 600.0)
-_SURFACE_ALT: float = 3.0   # 自作風速計 (hardware anemometer) altitude (m AGL)
+# Use the lightweight shared constant without importing the simulation engine.
+_WIND_SAMPLE_ALTS: tuple[float, ...] = (OBS_ALT, 10.0, 150.0, 300.0, 600.0)
+_SURFACE_ALT: float = OBS_ALT   # 自作風速計 (hardware anemometer) altitude (m AGL)
 
 
 class AppState(QObject):
@@ -208,7 +210,7 @@ class AppState(QObject):
     tolerance_exceeded = Signal(str)
 
     # tolerance_status_changed: emitted only when the status string transitions
-    # (e.g. "✓ In bounds" → "⚠ EXCEEDED" or back).  Used to toggle GO/NO-GO.
+    # GO / NO-GO transitions drive the monitoring indicator.
     tolerance_status_changed = Signal(str)
 
     # ── Simulation busy flag ───────────────────────────────────────────────────
@@ -344,7 +346,7 @@ class AppState(QObject):
             {"alt_m": 500.0, "speed_ms": 8.0, "dir_deg": 90.0}
         ]
         self._wind_profile_data = [
-            {"alt_m": 3.0, "speed_ms": 4.0, "dir_deg": 0.0},
+            {"alt_m": _SURFACE_ALT, "speed_ms": 4.0, "dir_deg": 0.0},
         ]
         self._gust_speed       = 0.0
 
@@ -358,7 +360,7 @@ class AppState(QObject):
         #    "speed_ms": float, wind speed (m/s)
         #    "dir_deg":  float} meteorological direction (° FROM which wind blows)
         #
-        # 3 m (SURFACE_ALT): updated every second from the hardware anemometer.
+        # 1.5 m (SURFACE_ALT): updated every second from the hardware anemometer.
         # 10 m / 150 m / 300 m / 600 m: updated when a new wind profile arrives
         #   (i.e. after each simulation run via append_wind_nodes).  Between runs
         #   these deques hold the last known API values and are NOT padded.
@@ -1092,13 +1094,13 @@ class AppState(QObject):
         """Per-altitude rolling wind history.
 
         Returns a ``dict[float, deque]`` keyed by altitude in metres AGL:
-            {3.0: deque, 10.0: deque, 150.0: deque, 300.0: deque, 600.0: deque}
+            {1.5: deque, 10.0: deque, 150.0: deque, 300.0: deque, 600.0: deque}
 
         Each deque contains up to WIND_HISTORY_MAX_SAMPLES samples of the form:
             {"ts": float, "speed_ms": float, "dir_deg": float}
         sorted oldest → newest (deque order).
 
-        The 3 m deque updates every second from the hardware anemometer.
+        The 1.5 m deque updates every second from the hardware anemometer.
         The upper deques update whenever append_wind_nodes() is called (typically
         once per simulation run).
         """
@@ -1113,13 +1115,13 @@ class AppState(QObject):
         return self._wind_history.get(float(alt_m), deque())
 
     def append_wind_reading(self, speed: float, direction: float) -> None:
-        """Append one surface anemometer sample (3 m AGL) to the history.
+        """Append one surface anemometer sample (1.5 m AGL) to the history.
 
-        Writes exclusively to the _SURFACE_ALT (3 m) deque.  Upper-altitude
+        Writes exclusively to the _SURFACE_ALT (1.5 m) deque.  Upper-altitude
         deques are updated separately by append_wind_nodes() when a new wind
         profile arrives from the simulation.
 
-        Also updates the ZOH cache for 3 m so get_wind_zoh(3.0) always
+        Also updates the ZOH cache for 1.5 m so get_wind_zoh(1.5) always
         returns the most recent anemometer reading.
 
         Args:
@@ -1265,9 +1267,9 @@ class AppState(QObject):
                 f"speed={speed:.2f} m/s vs locked={mu_spd:.2f} m/s sigma={sigma:.2f}",
                 flush=True,
             )
-            new_status = "⚠  NO-GO"
+            new_status = "NO-GO"
         else:
-            new_status = "✓  GO"
+            new_status = "GO"
 
         if new_status != self._tolerance_status:
             self._tolerance_status = new_status

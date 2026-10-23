@@ -35,7 +35,7 @@ RHO_0: float = 1.225  # kg/m³
 
 # Surface anemometer altitude (m AGL) — 自作風速計 installation height.
 # Anchors the bottom of every wind profile and feeds the surface ramp.
-OBS_ALT: float = 3.0  # m AGL
+OBS_ALT: float = 1.5  # m AGL
 
 # Altitude (m AGL) above which GPV / upper-wind data has full weight in
 # the blended profile.  Below this, the profile linearly transitions from

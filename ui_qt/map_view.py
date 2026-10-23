@@ -110,7 +110,7 @@ class MapView(QWidget):
 
         # Keep controls outside the canvas so they cannot obscure mouse input.
         btn_layout = QHBoxLayout()
-        self.btn_reset = QPushButton("🔄 Reset View", self)
+        self.btn_reset = QPushButton("Reset View", self)
         self.btn_reset.setShortcut("Home")
         self.btn_reset.clicked.connect(self._on_reset_view)
         self.btn_reset.setStyleSheet("""

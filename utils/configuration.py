@@ -3,6 +3,7 @@ import json
 import math
 from pathlib import Path
 
+from core.constants import OBS_ALT
 from utils.result_io import atomic_write
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / 'config.json'
@@ -72,6 +73,12 @@ def validate_config(data):
             result['practice_wind'].append(node)
         if len({n['alt_m'] for n in result['practice_wind']}) != len(nodes):
             raise ValueError('Duplicate practice wind altitude')
+        # Older configs stored the Koinobori surface node at 3 m. Preserve
+        # its speed/direction while updating the installation height.
+        if min(n['alt_m'] for n in result['practice_wind']) == 3.0:
+            for node in result['practice_wind']:
+                if node['alt_m'] == 3.0:
+                    node['alt_m'] = OBS_ALT
     return result
 
 

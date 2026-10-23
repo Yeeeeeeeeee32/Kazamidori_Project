@@ -121,7 +121,7 @@ Kazamidori_Project/
 │  ├─ Koinobori_PCB/            KiCad回路図・基板・プロジェクト
 │  └─ Roadmap.txt               自作風向風速計の開発計画
 ├─ .Jules/                      アーキテクチャ規約・監査手順・開発記録
-├─ 技術メモ/                    高速化、気象、多段化、代替モデル等の検討資料
+├─ 技術メモ/                    実装状況・前提を照合した検討資料（README.mdに索引）
 ├─ project_ui_requirements.md   UI要求仕様
 ├─ Concept.txt / Roadmap.txt    全体構想・開発計画
 ├─ memo.txt                     作業メモ
@@ -135,6 +135,8 @@ Kazamidori_Project/
 ```
 
 各Pythonパッケージには `__init__.py` もあります。取得済みの地図は `assets/offline_map/` に保存されます。実行時には `__pycache__/` や `mc_diagnostics.log` が再生成される場合があります。
+
+技術メモは[索引](技術メモ/README.md)と[検証結果](技術メモ/検証結果.md)から参照できます。実装済みの機能、将来案、検証保留の数値を区別しています（確認日：2026-10-24）。
 
 ### オフライン地図の使い方
 
@@ -155,7 +157,7 @@ Kazamidori_Project/
 | 項目 | 現在の状態・注意点 |
 |---|---|
 | Koinobori実機接続 | `koinobori_api.py` は固定値を返すダミー。GUI側の1秒周期更新も乱数で風・気圧・気温・湿度を生成しています。実測連携としては未完成です。 |
-| 外部気象取得 | Open-Meteoの等圧面風データをUTC期間指定で取得しCSV保存。外部CSVの選択・対象時刻の読込に対応（フェーズ4）。 |
+| 外部気象取得 | Open-Meteoの等圧面風データをJST期間指定で取得しCSV保存。外部CSVの選択・対象時刻の読込に対応（フェーズ4）。 |
 | GPS／現在地取得 | `location_service.py` がOSの位置情報を非同期で取得します。デスクトップPCではWi-Fi等による測位になる場合があり、報告された精度を表示します。OSの位置情報サービス・権限が必要です。 |
 | 任意の目標着地点 | 計算側には `target_x`／`target_y` がありますが、現在の入力経路では通常0となります。発射点とは別の目標地点を設定するUIは未接続です。 |
 | `.rkt`／`.ork` | 機体全体は `Airframe.json` から読み込みます。Manual Configでは `.ork` からフィン形状を取り込めます。RockSim `.rkt` の解析関数も保持しています。 |
@@ -250,17 +252,17 @@ Manual Configでは入力中の文字列を保持し、「Apply」で編集を�
 ### 操作
 
 - **Advanced Settings → Scoring / Search**: 定点滞空の式 `A × (Maximum Radius − 目標からの距離) + B × 滞空時間` を編集。A/Bの初期値は1。範囲外への着地は係数によらず失格。Save Settings、またはFile → Save Sessionで保存し、Load Sessionで復元します。
-- **Advanced Settings → Wind Profile → Wind Data — API / CSV**: UTCの開始・終了時刻、計算対象時刻を指定。Fetch and Save CSVで取得・保存、Load Wind CSVで既存ファイルを選択。対象時刻だけ変えた場合はApply target time。Use Manual Windで手動風プロファイルへ戻します。
+- **Advanced Settings → Wind Profile → Wind Data — API / CSV**: JSTの開始・終了時刻、計算対象時刻を指定。Download Specified Periodで取得・保存、Load Wind CSVで既存ファイルを選択。対象時刻だけ変えた場合はApply target time。Use Manual Windで手動風プロファイルへ戻します。
 - APIには発射地点の緯度・経度と指定期間を送信します。[Open-Meteo公式仕様](https://open-meteo.com/en/docs)に従い風速をm/sで取得します。データ提供はOpen-Meteo（CC BY 4.0）。取得可能な過去・予報期間は提供元の制限を受けます。
 - **Launch Settings**: Rail Azimuthの基準をTrue NorthまたはMagnetic Northで選択。既存の入力と互換性を保つ初期設定はTrue Northです。Magnetic Northでは、真方位 = 入力方位 + 偏角（東正）で計算します。Auto WMMとManual overrideを切替可能。結果の方位は真北基準です。
 - Site altitudeはWMM用の海抜標高。WMMは通信せずにローカル係数で計算し、実行時に地点・標高・日付ごとの値を `assets/offline_map/declination_cache.json` へ保存します。[pyGeoMag仕様](https://pygeomag.readthedocs.io/en/latest/api.html)に合わせ、標高をkmへ換算して渡します。
-- 風速履歴は3・10・150・300・600 mの全高度と追加の高度データを色分けして表示します。手動プロファイルの編集も反映し、同じ値の連続受信も点で表示。高度ごとに値を水平破線で保持し、1分以上受信がなくても消しません。コンパスは高度別に色・太さ・透明度を変え、過去の風は点、最新の風は矢印です。
+- 風速は高度別に色分けし、1.5 mでは受信履歴、その他の高度では直近60秒の平均値を表示します。手動プロファイルの編集も反映します。コンパスの過去点は1.5 mだけを表示し、上空は平均方向の矢印にまとめます。受信停止後も最後の表示値を保持します（第17節）。
 
 ### 風CSV
 
 UTF-8の列は `time_utc,alt_m,pressure_hpa,speed_ms,dir_deg,latitude,longitude,source`。時刻はタイムゾーン付きISO 8601、風向は真北基準で風が来る方向（FROM）。`alt_m`（地上高AGL）または `pressure_hpa` の片方を指定し、時間順に並べます。座標とsourceは手動CSVでは省略可能です。例は `tests/fixtures/wind_profile.csv`。
 
-読み込みでは対象時刻以前で1時間未満の最新プロファイルを採用します。対象期間外、NaN、重複高度、異なる地点のデータなどはエラーにします。全期間をメモリへ展開せず、1プロファイルだけ保持。API取得も最大24時間ずつ処理して一時CSVへ書き出し、完了した場合だけ保存先を置換します。地上3 mは現地テレメトリを優先し、上空の風をCSVから補います。
+読み込みでは対象時刻以前で1時間未満の最新プロファイルを採用します。対象期間外、NaN、重複高度、異なる地点のデータなどはエラーにします。全期間をメモリへ展開せず、1プロファイルだけ保持。API取得も最大24時間ずつ処理して一時CSVへ書き出し、完了した場合だけ保存先を置換します。地上1.5 mは現地テレメトリを優先し、上空の風をCSVから補います。
 
 等圧面の高度は `z = T₀/L × [1 − (p/p₀)^(R L/g)]` で地上高に換算します（L=0.0065 K/m、R=287.05 J/(kg K)、g=9.80665 m/s²）。p₀は**観測地点の現地気圧**、T₀は現地気温。海面更正気圧QNHを直接代入する方式ではありません。負の高度は地下として除外します。これは乾燥大気・一定気温減率の近似であり、観測された各層の高度そのものではありません。Koinobori実機のUDP接続はフェーズ5-1に残り、現在の地上テレメトリは模擬値です。
 
@@ -344,7 +346,7 @@ SAは85°から開始し、射角60–90°・周期的な方位角を探索し�
 ## 16. 運用画面・設定・進捗の更新（2026-10-22）
 
 - **方位表示**：3D軌道図の外側にE/N/Upの方位軸を配置しました。カメラ回転と同期し、軌道の座標範囲に影響しません。
-- **事前風データ取得**：風パネルの「Download GPV / Wind Data…」から開始・終了時刻をUTCで指定してCSV保存できます。提供元は既存のOpen-Meteoです。事前ダウンロードだけならSimulation timeを対象期間に合わせる必要はありません。「Use downloaded data for this simulation」を選択したときだけ現在の計算へ適用します。現場ではLoad Wind CSVと対象時刻を指定して利用します。取得可能期間は提供元に依存します。
+- **事前風データ取得**：風パネルの「Download GPV / Wind Data…」から開始・終了時刻をJSTで指定してCSV保存できます。提供元は既存のOpen-Meteoです。事前ダウンロードだけならSimulation timeを対象期間に合わせる必要はありません。「Use downloaded data for this simulation」を選択したときだけ現在の計算へ適用します。現場ではLoad Wind CSVと対象時刻を指定して利用します。取得可能期間は提供元に依存します。
 - **モーター設定**：「Motor Specifications」をAirframeから独立したページに移しました。推力曲線のファイル名をLoadボタン右に表示し、Load/Save Motor Configで設定を読み書きします。Motor Configの項目は`nozzle_pos_m`, `dry_mass_kg`, `backfire_delay_s`, `isp_s`, `propellant_density`です。旧Airframeのモーター項目は互換読込できますが、新しいAirframe保存には含めません。.orkから取得できた取付位置・遅延は従来の出典優先順位を維持します。
 - **パラシュート横流れ**：Recovery / Parachuteの「Horizontal Wind Drift」を0〜200%で指定します。100%はその高度の風速と同じ水平速度、50%は半分、0%は開傘後の水平移動なしです。Parachute JSONの任意キー`wind_drift_pct`、およびconfigにも保存できます。
 - **練習用の風編集**：「Edit Practice Wind…」で高度別の基準風速・風向（FROM）を編集します。基準値とランダムな模擬観測値は分離し、毎秒の風速・風向の揺らぎとMCの乱数を維持します。手動編集するとCSV風の選択を解除します。
@@ -356,3 +358,14 @@ SAは85°から開始し、射角60–90°・周期的な方位角を探索し�
 追加実装：`core/parachute_drift.py`（横流れ積分）、`utils/configuration.py`（検証・保存）、`config.json`（初期設定）。追加テストは`tests/core/test_operator_features.py`と`tests/ui_qt/test_operator_features.py`です。風データ取得は通信をモックして検証し、この変更で外部サービスへの実データ送信は行っていません。
 
 検証結果：全体224件・サブテスト52件が成功。最終調整後は、追加の探索〜完了の進捗テストを含む関連25件も成功しました。
+
+## 17. 表示の整理とJST対応（2026-10-24）
+
+- 風速グラフは1.5 mのみ受信ごとの履歴・点を表示し、ほかの高度は直近60秒の風速の算術平均を水平線で表示します。風向は風速を加味したベクトル平均を使い、上空のコンパスには過去点を描きません。右側の数値表もこの平均に揃えます。受信が止まると最後に表示した平均値を保持します。表示のみの変更で、計算用の風プロファイル・乱数は維持します。
+- 3D図はタイトル、アニメーション時刻、集計値、方位軸、凡例の領域を分けました。イベント位置に重なっていた高度の文字を整理し、軸目盛りを減らして余白を確保しました。通常サイズと縮小サイズ、複数の視点で文字の枠内配置を検証します。
+- ボタン、メニュー、ページ見出し、GO／NO-GOから絵文字を削除し、Run Phase 1 Simulationは青の単色にしました。
+- 風データの開始・終了・計算対象時刻の入力、取得進捗、適用日時はJSTです。日本時間0時前後の日付切替も扱います。既存CSVの`time_utc`、APIとの通信、保存済みセッションの`wind_time_utc`は従来形式のまま保ち、画面との境界で変換します。
+
+描画確認用の画像：[3D図](assets/verification/profile_readability.png)、[風速グラフ](assets/verification/wind_readability.png)。画像はテスト用データによるものです。追加検証は`tests/ui_qt/test_readability.py`、日時の表示変換は`utils/time_display.py`にあります。
+
+変更後の全体テストは229件、サブテスト52件が成功しました。描画検証では通常・縮小の2サイズと4方向の視点を使用しています。

@@ -24,7 +24,7 @@
     "power_off_cd": 0.4
   },
   "practice_wind": [
-    {"alt_m": 3, "speed_ms": 4, "dir_deg": 0},
+    {"alt_m": 1.5, "speed_ms": 4, "dir_deg": 0},
     {"alt_m": 10, "speed_ms": 4.5, "dir_deg": 0},
     {"alt_m": 150, "speed_ms": 6, "dir_deg": 0},
     {"alt_m": 300, "speed_ms": 7, "dir_deg": 0},

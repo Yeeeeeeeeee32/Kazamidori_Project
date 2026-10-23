@@ -18,6 +18,7 @@ from ui_qt.workers import SimulationWorker, OptimizationWorker, MapDownloadWorke
 from ui_qt.location_service import LocationService
 from ui_qt.airframe_load_dialog import select_airframe_files
 from core.monte_carlo  import compute_cep_ellipse
+from core.wind_model import ANEMOMETER_ALT
 from utils.data_loader import (
     RocketConfigError,
     AirframeConfigError,
@@ -325,8 +326,8 @@ class SimController(QObject):
             return False
 
         # ── 60-second surface wind buffer check ───────────────────────────────
-        surface_hist = list(self._state.wind_history_for_alt(3.0))
-        print(f"[DIAG] wind_history_for_alt(3.0) sample count: {len(surface_hist)}")
+        surface_hist = list(self._state.wind_history_for_alt(ANEMOMETER_ALT))
+        print(f"[DIAG] wind_history_for_alt(ANEMOMETER_ALT) sample count: {len(surface_hist)}")
         if len(surface_hist) < 5:
             print(f"[DIAG] BLOCKED: Wind buffer insufficient ({len(surface_hist)} samples < 5). Returning False.")
             self._window.set_status(
@@ -753,22 +754,22 @@ class SimController(QObject):
         if _is_free_mode:
             # Free Mode: distance from launch pad is informational only — never NOGO.
             self._window.update_status_indicator(
-                f"⏳  FREE MODE — Nominal dist {_nom_dist:.0f} m  |  MC running…"
+                f"FREE MODE — Nominal dist {_nom_dist:.0f} m  |  MC running…"
             )
         elif _target_r is None:
             print("[DIAG] NOGO guard: target_r is None in non-Free mode — skipping indicator", flush=True)
-            self._window.update_status_indicator("⏳  CALCULATING — MC running…")
+            self._window.update_status_indicator("CALCULATING — MC running…")
         elif _nom_dist > _target_r:
             print(
                 f"[DIAG] NOGO: _on_nominal_done — nominal {_nom_dist:.1f}m > target_r {_target_r:.1f}m",
                 flush=True,
             )
             self._window.update_status_indicator(
-                f"⚠️  NO-GO — Nominal {_nom_dist:.0f} m > Target {_target_r:.0f} m  |  MC running…"
+                f"NO-GO — Nominal {_nom_dist:.0f} m > Target {_target_r:.0f} m  |  MC running…"
             )
         else:
             self._window.update_status_indicator(
-                f"⏳  CALCULATING — Nominal {_nom_dist:.0f} m / {_target_r:.0f} m  |  MC running…"
+                f"CALCULATING — Nominal {_nom_dist:.0f} m / {_target_r:.0f} m  |  MC running…"
             )
 
         # profile — one call covers all 5 altitudes at once.
@@ -889,7 +890,7 @@ class SimController(QObject):
         if _is_free_mode_mc:
             # Free Mode: no SAFE/UNSAFE concept — display informational summary only.
             self._window.update_status_indicator(
-                f"🟢  FREE MODE — R{prob}: {r90:.0f} m  |  Apogee: {apogee:.0f} m"
+                f"FREE MODE — R{prob}: {r90:.0f} m  |  Apogee: {apogee:.0f} m"
             )
             self._window.set_status(
                 f"Free Mode  |  R{prob}: {r90:.1f} m  |  "
@@ -899,7 +900,7 @@ class SimController(QObject):
         elif target_r is None:
             # Non-Free mode but no target radius set — show a neutral warning.
             print("[DIAG] NOGO guard: target_r is None in non-Free mode — cannot evaluate Phase A", flush=True)
-            self._window.update_status_indicator("⚠️  target_radius not set — cannot evaluate GO/NO-GO")
+            self._window.update_status_indicator("target_radius not set — cannot evaluate GO/NO-GO")
             self._window.set_status(
                 f"target_radius not set  |  R{prob}: {r90:.1f} m  |  "
                 f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s  ({n} runs)",
@@ -929,7 +930,7 @@ class SimController(QObject):
                 self._state.set_wind_lock(mu_u, mu_v, wind_unc)
                 self._state.phase2_active = True
                 self._window.update_status_indicator(
-                    f"🟢  GO  (Target containment {fraction:.1%} ≥ {prob}%)"
+                    f"GO  (Target containment {fraction:.1%} ≥ {prob}%)"
                 )
             else:
                 print(
@@ -937,7 +938,7 @@ class SimController(QObject):
                     flush=True,
                 )
                 self._window.update_status_indicator(
-                    f"🔴  NO-GO  (Target containment {fraction:.1%}; required {prob}%, ≥4 samples)"
+                    f"NO-GO  (Target containment {fraction:.1%}; required {prob}%, ≥4 samples)"
                 )
             verdict = (
                 f"GO  Target containment {fraction:.1%} >= {prob}%"
@@ -1084,7 +1085,7 @@ class SimController(QObject):
         the GO/NO-GO indicator eliminates visual chatter: the label flips exactly
         once per transition, not once per second.
         """
-        in_bounds = status.startswith("✓")
+        in_bounds = status == 'GO'
         self._window.set_go_nogo(in_bounds)
         if in_bounds:
             self._window.set_status(
@@ -1108,7 +1109,7 @@ class SimController(QObject):
         Turbulence intensity
         --------------------
         μ and σ are computed from the 60-second surface wind history buffer
-        (3 m AGL, updated at 1 Hz by the hardware anemometer).  The absolute
+        (1.5 m AGL, updated at 1 Hz by the hardware anemometer).  The absolute
         gust noise passed to the MC perturbation engine is:
 
             auto_gust_ms = σ   (m/s)
@@ -1133,15 +1134,15 @@ class SimController(QObject):
         self._run_bearing = (options['azimuth_reference'], s.effective_declination)
         azimuth = true_bearing(w.azim_input.value(), *self._run_bearing)
         profile = [dict(node) for node in s.wind_profile_data]
-        surface = s.get_wind_zoh(3.0)
+        surface = s.get_wind_zoh(ANEMOMETER_ALT)
         if surface:
-            profile = [dict(alt_m=3.0, speed_ms=surface['speed_ms'], dir_deg=surface['dir_deg'])] + [
-                node for node in profile if float(node['alt_m']) != 3.0]
+            profile = [dict(alt_m=ANEMOMETER_ALT, speed_ms=surface['speed_ms'], dir_deg=surface['dir_deg'])] + [
+                node for node in profile if float(node['alt_m']) != ANEMOMETER_ALT]
 
         # ── Turbulence intensity from 60s surface wind history ────────────────
         # Use population std-dev (÷N, not ÷(N-1)) — we have the full population
         # over the 60s window, not a sample from an infinite process.
-        _hist = list(s.wind_history_for_alt(3.0))
+        _hist = list(s.wind_history_for_alt(ANEMOMETER_ALT))
         if len(_hist) >= 2:
             _speeds     = [e["speed_ms"] for e in _hist]
             _turb_mu    = sum(_speeds) / len(_speeds)

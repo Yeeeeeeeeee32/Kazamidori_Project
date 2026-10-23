@@ -83,7 +83,7 @@ def test_practice_wind_edits_preserve_text_and_random_samples(ui):
     baseline = [dict(n) for n in state.wind_profile_data]
     with patch('ui_qt.sim_controller.random.gauss', return_value=.5):
         controller._on_wind_tick()
-    sample = state.wind_history_for_alt(3)[-1]
+    sample = state.wind_history_for_alt(1.5)[-1]
     assert sample['speed_ms'] == 10.5 and sample['dir_deg'] == 90.5
     assert state.wind_profile_data == baseline
 

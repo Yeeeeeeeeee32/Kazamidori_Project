@@ -68,7 +68,7 @@ def test_history_marks_equal_receptions_and_holds_silent_data(window):
 
 
 def test_compass_uses_live_reading_instead_of_old_simulation(window):
-    window.state.simulation_result = {'wind_nodes': [dict(alt_m=3, speed_ms=1, dir_deg=0)]}
+    window.state.simulation_result = {'wind_nodes': [dict(alt_m=1.5, speed_ms=1, dir_deg=0)]}
     window.state.append_wind_reading(8, 90)
     with patch('scipy.stats.gaussian_kde', side_effect=AssertionError('KDE in redraw')):
         window.update_wind_plot()
@@ -76,7 +76,7 @@ def test_compass_uses_live_reading_instead_of_old_simulation(window):
 
 
 def test_history_and_compass_show_every_altitude_and_hold_each_value(window):
-    alts = [3., 10., 150., 300., 600., 900.]
+    alts = [1.5, 10., 150., 300., 600., 900.]
     now = time.monotonic()
     nodes = [dict(alt_m=alt, speed_ms=i+1, dir_deg=45*i) for i, alt in enumerate(alts)]
     with patch('ui_qt.app_state.time.monotonic', return_value=now-10):
@@ -84,7 +84,7 @@ def test_history_and_compass_show_every_altitude_and_hold_each_value(window):
     window.update_wind_plot()
     ax = window.wind_profile_ax
     assert [line.get_label() for line in ax.lines] == [f'{alt:g} m' for alt in alts]
-    assert len(ax.collections) == len(alts)
+    assert len(ax.collections) == 1  # only 1.5 m retains reception markers
     assert len(window.wind_ax.get_legend_handles_labels()[1]) == len(alts)
     assert [line.get_ydata()[-1] for line in ax.lines] == [1, 2, 3, 4, 5, 6]
     with patch('time.monotonic', return_value=now+100):
@@ -100,28 +100,29 @@ def test_history_and_compass_show_every_altitude_and_hold_each_value(window):
 
 def test_configured_upper_wind_is_visible_before_simulation(window):
     window.state.wind_profile_data = [dict(alt_m=z, speed_ms=i+2, dir_deg=90)
-                                      for i,z in enumerate([3,10,150,300,600])]
+                                      for i,z in enumerate([1.5,10,150,300,600])]
     window.update_wind_plot()
     assert len(window.wind_profile_ax.lines) == 5
-    assert len(window.wind_profile_ax.collections) == 5
+    assert len(window.wind_profile_ax.collections) == 1
     assert [line.get_ydata()[-1] for line in window.wind_profile_ax.lines] == [2,3,4,5,6]
 
 
 def test_manual_wind_edit_replaces_previous_simulation_reading(window):
-    nodes = [dict(alt_m=z, speed_ms=2, dir_deg=90) for z in [3,10,150,300,600]]
+    nodes = [dict(alt_m=z, speed_ms=2, dir_deg=90) for z in [1.5,10,150,300,600]]
     window.state.simulation_result = {'wind_nodes': nodes}
     window.state.append_wind_nodes(nodes)
     window.state.wind_profile_data = [dict(node, speed_ms=8) for node in nodes]
     window.update_wind_plot()
-    assert [line.get_ydata()[-1] for line in window.wind_profile_ax.lines] == [8]*5
+    assert [line.get_ydata()[-1] for line in window.wind_profile_ax.lines] == [8,5,5,5,5]
 
 
 def test_csv_pressure_conversion_is_used_in_worker(tmp_path):
     path = tmp_path/'wind.csv'
     path.write_text('time_utc,pressure_hpa,speed_ms,dir_deg\n2026-10-14T03:00:00Z,900,10,0\n')
     params = dict(wind_csv=str(path), wind_time_utc='2026-10-14T03:00:00Z',
-                  wind_profile_data=[dict(alt_m=3, speed_ms=2, dir_deg=0)], env_pressure=101325.)
+                  wind_profile_data=[dict(alt_m=1.5, speed_ms=2, dir_deg=0)], env_pressure=101325.)
     u1, v1 = SimulationWorker._build_wind_profiles(params)
+    assert u1[0][0] == v1[0][0] == 1.5
     params['env_pressure'] = 100000
     u2, v2 = SimulationWorker._build_wind_profiles(params)
     assert next(v for z,v in v2 if z == 600) < next(v for z,v in v1 if z == 600)
@@ -138,9 +139,11 @@ def test_weather_worker_reports_load_failure():
     assert errors and not successes
 
 
-def test_wind_data_dialog_uses_utc_and_manual_reset(window):
+def test_wind_data_dialog_uses_jst_and_manual_reset(window):
     window.state.phase4_options = dict(wind_csv='saved.csv', wind_time_utc='2026-10-14T03:00:00Z')
     dialog = WindDataDialog(window.state, window)
+    assert dialog.target.dateTime().toString('yyyy-MM-dd HH:mm') == '2026-10-14 12:00'
+    assert 'JST' in dialog.target.displayFormat()
     assert dialog._iso(dialog.target) == '2026-10-14T03:00:00Z'
     dialog._clear()
     assert not window.state.phase4_options['wind_csv']

@@ -42,7 +42,19 @@ def test_shipped_config_validates_and_separates_motor_and_recovery():
     assert config['parachute']['wind_drift_pct'] == 100
     assert config['simulation']['mc_n_runs'] == 50
     assert len(config['practice_wind']) == 5
+    assert config['practice_wind'][0]['alt_m'] == 1.5
     assert 'dry_mass_kg' in config['motor']
+
+
+def test_legacy_surface_height_migrates_without_changing_wind_or_input():
+    legacy = {'practice_wind': [dict(alt_m=3, speed_ms=7, dir_deg=359),
+                                dict(alt_m=10, speed_ms=9, dir_deg=1)]}
+    state = SimpleNamespace()
+    apply_config(state, legacy)
+    assert state.wind_profile_data == [dict(alt_m=1.5, speed_ms=7, dir_deg=359),
+                                       dict(alt_m=10, speed_ms=9, dir_deg=1)]
+    assert legacy['practice_wind'][0]['alt_m'] == 3
+    assert validate_config({'practice_wind': state.wind_profile_data})['practice_wind'] == state.wind_profile_data
 
 
 @pytest.mark.physics

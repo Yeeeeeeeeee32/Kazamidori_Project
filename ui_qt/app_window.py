@@ -50,6 +50,7 @@ from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
 from ui_qt.app_state import AppState
 from core.monte_carlo import ellipse_points
+from core.wind_model import ANEMOMETER_ALT, WIND_SAMPLE_ALTS
 
 # ── Constants ───────────────────────────────────────────────────────────────
 DEFAULT_AZIMUTH: int = -90
@@ -128,14 +129,12 @@ QPushButton#btn_run:hover  { background: #8ed9a8; }
 QPushButton#btn_stop { background: #f38ba8; color: #1e1e1e; border-color: #f38ba8; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
 QPushButton#btn_phase1_run {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #c5a5f7, stop:1 #7eb3ff);
+    background: #7eb3ff;
     color: #1e1e1e; border: none; border-radius: 6px;
     font-size: 10pt; font-weight: bold; padding: 10px 16px;
 }
 QPushButton#btn_phase1_run:hover {
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #d4b5ff, stop:1 #9dc5ff);
+    background: #9dc5ff;
 }
 QPushButton#btn_phase1_run:pressed { background: #7eb3ff; color: #1e1e1e; }
 QPushButton#btn_adv_settings {
@@ -628,7 +627,7 @@ class AdvancedSettingsDialog(QDialog):
         self.wind_grid.addWidget(QLabel("Dir (°)"), 0, 2)
 
         self.wind_inputs = []
-        alts = [3.0, 10.0, 150.0, 300.0, 600.0]
+        alts = WIND_SAMPLE_ALTS
 
         for i, alt in enumerate(alts):
             row = i + 1
@@ -665,7 +664,7 @@ class AdvancedSettingsDialog(QDialog):
             self.wind_inputs.append((alt, spd_edit, dir_edit))
 
         frm_wind.addLayout(self.wind_grid)
-        tabs.addItem(grp_wind, "🌬️ Wind Profile")
+        tabs.addItem(grp_wind, "Wind Profile")
 
         # ── Monte Carlo group ─────────────────────────────────────────────────
         grp_mc = QWidget()
@@ -699,7 +698,7 @@ class AdvancedSettingsDialog(QDialog):
         frm2.addRow("MC Runs:",            self.mc_runs_input)
         frm2.addRow("Wind Uncertainty:",   self.wind_unc_input)
         frm2.addRow("Thrust Uncertainty:", self.thrust_unc_input)
-        tabs.addItem(grp_mc, "🎲 Monte Carlo / Statistics")
+        tabs.addItem(grp_mc, "Monte Carlo / Statistics")
 
         scoring = QWidget()
         scoring_form = QFormLayout(scoring)
@@ -799,7 +798,7 @@ class AdvancedSettingsDialog(QDialog):
         frm3.addRow("Power-Off Cd Curve:",    _row_off)
         frm3.addRow("Motor Isp:",             self.motor_isp_input)
         frm3.addRow("Propellant Density:",    self.motor_propellant_density_input)
-        tabs.addItem(grp_aero, "✈️ Aerodynamics & Motor")
+        tabs.addItem(grp_aero, "Aerodynamics & Motor")
 
         root.addWidget(tabs)
 
@@ -920,6 +919,8 @@ class _AzimCanvas(FigureCanvasQTAgg):
         self._traj_z = None
         self._traj_t = None
         self.rocket_marker = None
+        if self._time_label is not None:
+            self._time_label.remove()
         self._time_label = None
 
     def set_trajectory(self, x: np.ndarray, y: np.ndarray, z: np.ndarray, t: np.ndarray, ax: object) -> None:
@@ -952,8 +953,8 @@ class _AzimCanvas(FigureCanvasQTAgg):
         # Draw the marker point using plot for faster rendering on update
         self.rocket_marker, = ax.plot([x[0]], [y[0]], [z[0]], marker='o', markersize=8, color='red', zorder=100)
 
-        # Use text2D on the axis to place it at the top-left
-        self._time_label = ax.text2D(0.05, 0.95, f"Time: {t[0]:.1f}s, Alt: {z[0]:.1f}m", transform=ax.transAxes, color='#cdd6f4', fontsize=10, weight='bold')
+        self._time_label = self.figure.text(.08, .875,
+            f"Time: {t[0]:.1f} s\nAltitude: {z[0]:.1f} m", color='#cdd6f4', fontsize=7, va='top')
         self.draw_idle()
 
     def _update_marker(self) -> None:
@@ -963,7 +964,7 @@ class _AzimCanvas(FigureCanvasQTAgg):
             self.rocket_marker.set_data([self._traj_x[idx]], [self._traj_y[idx]])
             self.rocket_marker.set_3d_properties([self._traj_z[idx]])
             if self._time_label:
-                self._time_label.set_text(f"Time: {self._traj_t[idx]:.1f}s, Alt: {self._traj_z[idx]:.1f}m")
+                self._time_label.set_text(f"Time: {self._traj_t[idx]:.1f} s\nAltitude: {self._traj_z[idx]:.1f} m")
             self.draw_idle()
 
 
@@ -1257,9 +1258,13 @@ class AppWindow(QMainWindow):
     def _build_figures(self) -> None:
         self.profile_fig    = Figure(figsize=(5, 5), facecolor="#1e1e2e")
         self.profile_ax     = self.profile_fig.add_subplot(111, projection="3d")
-        self.orientation_ax = self.profile_fig.add_axes([.82, .72, .17, .25], projection='3d')
+        self.orientation_ax = self.profile_fig.add_axes([.79, .66, .19, .20], projection='3d')
         self.orientation_ax.set_in_layout(False)
+        self.orientation_ax.disable_mouse_rotation()
+        self._profile_header = self.profile_fig.text(.08, .97, '', color='#a6adc8', fontsize=8, va='top')
+        self._profile_summary = self.profile_fig.text(.79, .97, '', color='#cdd6f4', fontsize=7, va='top')
         self.profile_canvas = _AzimCanvas(self.profile_fig, self.state)
+        self.profile_canvas.mpl_connect('resize_event', lambda event: self._layout_profile())
         # Disable the default Matplotlib click-drag rotation; azimuth is
         # controlled exclusively by the QSlider + wheel event below.
         try:
@@ -1330,8 +1335,8 @@ class AppWindow(QMainWindow):
         sm = mb.addMenu("&Simulation")
         sm.addAction(QAction("Advanced Settings...", self, triggered=self._on_advanced_settings))
         sm.addSeparator()
-        self.action_run = sm.addAction("▶  Run Simulation (F5)")
-        self.action_stop = sm.addAction("⏹  Stop (Esc)")
+        self.action_run = sm.addAction("Run Simulation (F5)")
+        self.action_stop = sm.addAction("Stop (Esc)")
 
         self._view_menu = mb.addMenu("&View")
 
@@ -1383,8 +1388,8 @@ class AppWindow(QMainWindow):
             sep.setStyleSheet("color: #45475a;")
             tb.addWidget(sep)
 
-        btn_run  = QPushButton("▶  Run",  tb); btn_run.setObjectName("btn_run")
-        btn_stop = QPushButton("⏹  Stop", tb); btn_stop.setObjectName("btn_stop")
+        btn_run  = QPushButton("Run",  tb); btn_run.setObjectName("btn_run")
+        btn_stop = QPushButton("Stop", tb); btn_stop.setObjectName("btn_stop")
 
         btn_run.setFixedWidth(90);  btn_run.clicked.connect(self._on_run)
         btn_run.setShortcut("F5")
@@ -1570,9 +1575,9 @@ class AppWindow(QMainWindow):
         tb = QToolBox(container)
         tb.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
-        tb.addItem(self._build_airframe_page(),        "🚀  Airframe")
-        tb.addItem(self.motor_settings_page, '🔥  Motor Specifications')
-        tb.addItem(self._build_launch_settings_page(), "📍  Launch Settings")
+        tb.addItem(self._build_airframe_page(),        "Airframe")
+        tb.addItem(self.motor_settings_page, 'Motor Specifications')
+        tb.addItem(self._build_launch_settings_page(), "Launch Settings")
         # QSS min-height on QToolBox::tab is ignored at widget-level; set height
         # directly on the internal QAbstractButton children instead.
         for _tab_btn in tb.findChildren(QAbstractButton):
@@ -1671,7 +1676,7 @@ class AppWindow(QMainWindow):
         lay.addWidget(self._results_grp)
 
         # ── Run button ────────────────────────────────────────────────────────
-        btn_run = QPushButton("🚀   RUN PHASE 1 SIMULATION", container)
+        btn_run = QPushButton("Run Phase 1 Simulation", container)
         btn_run.setObjectName("btn_phase1_run")
         btn_run.setMinimumHeight(48)
         btn_run.clicked.connect(self._on_phase1)
@@ -1699,7 +1704,7 @@ class AppWindow(QMainWindow):
         lay.setSpacing(4)
 
         # ── Model loading buttons ─────────────────────────────────────────────
-        btn_airframe = QPushButton("📂  Load Airframe", w)
+        btn_airframe = QPushButton("Load Airframe", w)
         btn_airframe.clicked.connect(self.sig_load_airframe_json_clicked.emit)
 
         self.airframe_label = QLabel("No airframe loaded. Click 'Load Airframe' to begin.", w)
@@ -1710,10 +1715,10 @@ class AppWindow(QMainWindow):
         self.airframe_label.setMinimumWidth(0)
         self.airframe_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
-        btn_manual = QPushButton("⚙  Manual Config…", w)
+        btn_manual = QPushButton("Manual Config…", w)
         btn_manual.clicked.connect(self._on_manual_config)
 
-        btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
+        btn_motor = QPushButton("Load Thrust Curve (.csv)", w)
         btn_motor.setObjectName('btn_load_thrust')
         btn_motor.clicked.connect(self._on_load_motor)
 
@@ -1814,7 +1819,7 @@ class AppWindow(QMainWindow):
         self.state.parachute_wind_drift_changed.connect(self.para_drift_input.setValue)
         frm_para.addRow('Horizontal Wind Drift:', self.para_drift_input)
 
-        btn_para_json = QPushButton("📂  Load Parachute JSON", w)
+        btn_para_json = QPushButton("Load Parachute JSON", w)
         btn_para_json.clicked.connect(self.sig_load_para_json_clicked.emit)
         self.parachute_label = QLabel("No file loaded", grp_para)
         self.parachute_label.setMinimumWidth(0)
@@ -1942,10 +1947,10 @@ class AppWindow(QMainWindow):
 
         self.hellmann_preset.currentIndexChanged.connect(_on_hellmann_preset_changed)
 
-        self.btn_download_map = QPushButton("🗺️  Download Offline Map", w)
+        self.btn_download_map = QPushButton("Download Offline Map", w)
         self.btn_download_map.setObjectName("btn_download_map")
 
-        btn_gps = self.btn_get_location = QPushButton("📍  Get Current Location", w)
+        btn_gps = self.btn_get_location = QPushButton("Get Current Location", w)
         btn_gps.clicked.connect(self._on_get_location)
         self.location_label = QLabel(location_note, w)
         self.location_label.setWordWrap(True)
@@ -2259,7 +2264,8 @@ class AppWindow(QMainWindow):
                 with QSignalBlocker(widget):
                     widget.setCurrentIndex(widget.findData(options[key]))
             self.declination_input.setEnabled(options['declination_mode'] == 'manual')
-            d.wind_data_label.setText((Path(options['wind_csv']).name + ' — ' + options['wind_time_utc'])
+            from utils.time_display import format_jst
+            d.wind_data_label.setText((Path(options['wind_csv']).name + ' — ' + format_jst(options['wind_time_utc']))
                                      if options['wind_csv'] else 'Manual wind profile')
             self._refresh_declination()
         for widget, key in controls:
@@ -2296,6 +2302,8 @@ class AppWindow(QMainWindow):
         ax = self.profile_ax
         ax.cla()
         self.profile_canvas.clear_trajectory()
+        self._profile_header.set_text('')
+        self._profile_summary.set_text('')
         _style_3d(ax, self.profile_fig)
 
         s   = self.state
@@ -2306,9 +2314,12 @@ class AppWindow(QMainWindow):
         else:
             self._draw_empty_profile(ax)
 
-        ax.set_xlabel("East  (m)",  color="#6c7086", fontsize=8, labelpad=4)
-        ax.set_ylabel("North  (m)", color="#6c7086", fontsize=8, labelpad=4)
-        ax.set_zlabel("Alt  (m)",   color="#6c7086", fontsize=8, labelpad=4)
+        ax.set_xlabel("East (m)",  color="#a6adc8", fontsize=7, labelpad=1)
+        ax.set_ylabel("North (m)", color="#a6adc8", fontsize=7, labelpad=1)
+        ax.set_zlabel("Alt (m)",   color="#a6adc8", fontsize=7, labelpad=1)
+        from matplotlib.ticker import MaxNLocator
+        for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+            axis.set_major_locator(MaxNLocator(nbins=3))
         azim = getattr(self, '_azim_slider', None)
         ax.view_init(elev=25, azim=azim.value() if azim is not None else DEFAULT_AZIMUTH)
         if res is not None:
@@ -2338,8 +2349,23 @@ class AppWindow(QMainWindow):
         ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
         ax.set_box_aspect([1, 1, 1])
 
-        self.profile_fig.subplots_adjust(left=0, right=.81, bottom=.02, top=.98)
+        self._layout_profile()
         self.profile_canvas.draw_idle()
+
+    def _layout_profile(self):
+        # Reserve separate header, animation, compass and legend areas.
+        self.profile_fig.subplots_adjust(left=.12, right=.70, bottom=.12, top=.80)
+        font = min(7., max(6., self.profile_fig.bbox.width * .013))
+        self._profile_header.set_fontsize(font + .5)
+        self._profile_summary.set_fontsize(font)
+        legend = self.profile_ax.get_legend()
+        if legend:
+            handles, labels = self.profile_ax.get_legend_handles_labels()
+            self.profile_ax.legend(handles, labels, loc='upper left',
+                bbox_to_anchor=(.76,.61), bbox_transform=self.profile_fig.transFigure,
+                fontsize=font, handlelength=1., handletextpad=.3, borderpad=.3,
+                borderaxespad=0., facecolor='#1e1e2e', edgecolor='#45475a',
+                labelcolor='#cdd6f4', framealpha=.88, markerscale=.5)
 
     def _draw_empty_profile(self, ax) -> None:
         ax.set_xlim3d(-80, 80); ax.set_ylim3d(-80, 80); ax.set_zlim3d(0, 200)
@@ -2350,14 +2376,12 @@ class AppWindow(QMainWindow):
             ([0, 0],    [0, 0],    [0, span], "#89b4fa", "Up"),
         ):
             ax.plot(xs, ys, zs, color=c, lw=1.0, alpha=alpha, linestyle="--")
-            ax.text(xs[-1]*1.07, ys[-1]*1.07, zs[-1]*1.07,
-                    lbl, color=c, fontsize=7, alpha=alpha)
         ax.scatter([0], [0], [0], c="#a6e3a1", s=100, marker="^", zorder=5,
                    label="Launch (0, 0, 0)")
         ax.text2D(0.5, 0.40, "Configure parameters and click\n'Run' (F5) to begin simulation.",
                   transform=ax.transAxes, ha="center", va="center",
                   color="#45475a", fontsize=10, linespacing=1.8)
-        ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.05), fontsize=7,
+        ax.legend(loc="upper left", bbox_to_anchor=(.78,.61), bbox_transform=self.profile_fig.transFigure, fontsize=7,
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.85, markerscale=1.5)
 
@@ -2442,9 +2466,9 @@ class AppWindow(QMainWindow):
         if phases:
             # ── Phase-coloured trajectory: Thrust / Coast / Parachute ─────────
             _PH = [
-                ("thrust", "#f38ba8", "Thrust  (推進)"),
-                ("coast",  "#89b4fa", "Coast  (滑空)"),
-                ("chute",  "#a6e3a1", "Parachute  (降下)"),
+                ("thrust", "#f38ba8", "Thrust"),
+                ("coast",  "#89b4fa", "Coast"),
+                ("chute",  "#a6e3a1", "Parachute"),
             ]
             for ph_key, ph_col, ph_lbl in _PH:
                 ph = phases.get(ph_key, {})
@@ -2472,8 +2496,6 @@ class AppWindow(QMainWindow):
                     ez = max(0.0, float(ev[2]))
                     ax.scatter([ex], [ey], [ez], c=ev_col, s=ev_sz,
                                marker=ev_mk, zorder=9, label=ev_lbl)
-                    ax.text(ex, ey, ez * 1.04 + 1.5,
-                            f"  {ez:.0f} m", color=ev_col, fontsize=6)
         else:
             # ── Fallback: altitude-gradient single line ───────────────────────
             if len(tx) > 1:
@@ -2485,8 +2507,6 @@ class AppWindow(QMainWindow):
                 ax.scatter([tx[apex_i]], [ty[apex_i]], [apex_z],
                            c="#f9e2af", s=90, marker="*", zorder=6,
                            label=f"Apogee  {apex_z:.0f} m")
-                ax.text(tx[apex_i], ty[apex_i], apex_z * 1.04,
-                        f"  {apex_z:.0f} m", color="#f9e2af", fontsize=7)
             if s.show_burnout and events and events.get("burnout"):
                 ex, ey, ez = events["burnout"][:3]
                 ax.scatter([ex], [ey], [max(0, ez)], c="#fab387", s=90,
@@ -2532,13 +2552,8 @@ class AppWindow(QMainWindow):
                 print(f"Drawing Error (3D MC scatter): {e}")
 
         h_dist = float(np.hypot(land_x, land_y))
-        ax.text2D(0.98, 0.98,
-                  f"Apogee:  {apex_z:.0f} m\nH-dist:  {h_dist:.0f} m",
-                  transform=ax.transAxes, ha="right", va="top",
-                  color="#cdd6f4", fontsize=7.5,
-                  bbox=dict(boxstyle="round,pad=0.4", facecolor="#313244",
-                            edgecolor="#45475a", alpha=0.88))
-        ax.legend(loc="upper left", fontsize=7,
+        self._profile_summary.set_text(f"Apogee\n{apex_z:.0f} m\nH-distance\n{h_dist:.0f} m")
+        ax.legend(loc="upper left", bbox_to_anchor=(.78,.61), bbox_transform=self.profile_fig.transFigure, fontsize=7,
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.88, borderpad=0.6)
 
@@ -2558,12 +2573,8 @@ class AppWindow(QMainWindow):
         _spd  = result_wind[0]["speed_ms"] if result_wind else 0.0
         _dir  = result_wind[0]["dir_deg"] if result_wind else 0.0
         _cep  = getattr(s, "landing_prob",    getattr(s, "cep_prob",   90))
-        ax.set_title(
-            f"Mode: {_mode}   ·   "
-            f"Wind: {_spd:.1f} m/s @ {_dir:.0f}°   ·   "
-            f"CEP: {_cep} %",
-            color="#a6adc8", fontsize=9, pad=8,
-        )
+        self._profile_header.set_text(
+            f"Mode: {_mode}  ·  CEP: {_cep}%\nWind: {_spd:.1f} m/s @ {_dir:.0f}°")
 
     # ══ Plot: 2-D Landing Map ═════════════════════════════════════════════════
 
@@ -2571,10 +2582,10 @@ class AppWindow(QMainWindow):
         pass # Migrated to MapView
 
     # ── Wind-node colour / label constants ───────────────────────────────────
-    # One entry per WIND_SAMPLE_ALTS level: [3, 10, 150, 300, 600] m
+    # One entry per WIND_SAMPLE_ALTS level: [1.5, 10, 150, 300, 600] m
     # Warm (low alt) → cool (high alt) so the profile and compass share one key.
     _NODE_COLORS = ["#f38ba8", "#fab387", "#f9e2af", "#a6e3a1", "#89b4fa"]
-    _NODE_LABELS = ["3 m", "10 m", "150 m", "300 m", "600 m"]
+    _NODE_LABELS = [f"{alt:g} m" for alt in WIND_SAMPLE_ALTS]
 
     # ══ Plot: Dual Wind Panel (Speed Profile  +  Polar Compass) ══════════════
     #
@@ -2610,7 +2621,26 @@ class AppWindow(QMainWindow):
             if latest:
                 nodes_by_alt[alt] = dict(alt_m=alt, speed_ms=latest['speed_ms'], dir_deg=latest['dir_deg'])
         nodes = [nodes_by_alt[alt] for alt in sorted(nodes_by_alt)]
-        standard_alts = (3., 10., 150., 300., 600.)
+        means = getattr(self, '_upper_wind_means', {})
+        for node in nodes:
+            alt = float(node['alt_m'])
+            if alt == ANEMOMETER_ALT:
+                continue
+            pts = self._wind_hist_buf.get(alt, [])
+            recent = [p for p in pts if -60 <= p[0] <= 0]
+            samples = recent or (pts if alt not in means else [])
+            if samples:
+                speeds = np.asarray([p[1] for p in samples])
+                directions = np.radians([p[2] for p in samples])
+                east = float(np.mean(speeds*np.sin(directions)))
+                north = float(np.mean(speeds*np.cos(directions)))
+                direction = (float(np.degrees(np.arctan2(east,north))) % 360
+                             if np.hypot(east,north) > 1e-9 else float(node['dir_deg']))
+                means[alt] = dict(alt_m=alt, speed_ms=float(speeds.mean()), dir_deg=direction)
+            node.update(means.get(alt, node))
+        self._upper_wind_means = means
+        self._displayed_wind_nodes = {float(n['alt_m']):dict(n) for n in nodes}
+        standard_alts = WIND_SAMPLE_ALTS
         colors = dict(zip(standard_alts, self._NODE_COLORS))
         extra_alts = [float(n['alt_m']) for n in nodes if float(n['alt_m']) not in colors]
         for i, alt in enumerate(extra_alts):
@@ -2619,6 +2649,10 @@ class AppWindow(QMainWindow):
         for node in nodes:
             alt = float(node['alt_m'])
             color = colors[alt]
+            if alt != ANEMOMETER_ALT:
+                ax_p.plot([-60.,0.], [node['speed_ms']]*2, linestyle=':', lw=1.2,
+                          alpha=.8, color=color, label=f'{alt:g} m')
+                continue
             pts = self._wind_hist_buf.get(alt, [])
             held = self.state.get_wind_zoh(alt)
             visible = [p for p in pts if -60 <= p[0] <= 0]
@@ -2636,7 +2670,8 @@ class AppWindow(QMainWindow):
                 # Every reception is a marker, including consecutive equal values.
                 ax_p.scatter([p[0] for p in visible], [p[1] for p in visible],
                              color=color, s=12, zorder=5)
-        ax_p.set(xlim=(-60, 2), xlabel='Time (s)', ylabel='Speed (m/s)', title='Wind Speed History (60 s)')
+        ax_p.set(xlim=(-60, 2), xlabel='Time (s)', ylabel='Speed (m/s)',
+                 title='Wind Speed (60 s)\n1.5 m: history / other heights: mean')
         ax_p.set_ylim(bottom=0)
         for obj in (ax_p.xaxis.label, ax_p.yaxis.label, ax_p.title):
             obj.set_color('#aaaaaa')
@@ -2645,7 +2680,7 @@ class AppWindow(QMainWindow):
         history_points = {float(n['alt_m']): [p for p in self._wind_hist_buf.get(float(n['alt_m']), [])
                                            if -60 <= p[0] <= 0] for n in nodes}
         max_speed = max([1.] + [float(n['speed_ms']) for n in nodes] +
-                        [p[1] for ps in history_points.values() for p in ps])
+                        [p[1] for p in history_points.get(ANEMOMETER_ALT, [])])
         ax_c.set_theta_zero_location('N')
         ax_c.set_theta_direction(-1)
         ax_c.set_rlabel_position(135)
@@ -2655,7 +2690,7 @@ class AppWindow(QMainWindow):
             index = len(nodes) - 1 - i
             alt, speed, direction = float(node['alt_m']), float(node['speed_ms']), float(node['dir_deg'])
             color = colors[alt]
-            past = history_points[alt][:-1]
+            past = history_points[alt][:-1] if alt == ANEMOMETER_ALT else []
             if past:
                 ax_c.scatter(np.radians([(p[2] + 180) % 360 for p in past]),
                              [p[1] for p in past], s=7, alpha=.22, color=color)
@@ -2665,14 +2700,14 @@ class AppWindow(QMainWindow):
                                           lw=1.8 + min(index, 4) * .9, alpha=max(.35, .9 - index * .12),
                                           mutation_scale=12 + min(index, 4) * 2))
             ax_c.plot([], [], color=color, label=f'{alt:g} m: {speed:.1f} m/s')
-        ax_c.set_title('Wind Compass (TO)', color='#aaaaaa', fontsize=8, pad=12)
+        ax_c.set_title('Wind Compass (TO)\nOther heights: mean', color='#aaaaaa', fontsize=8, pad=12)
         handles, labels = ax_c.get_legend_handles_labels()
         self.wind_fig.legends.clear()
         if handles:
             self.wind_fig.legend(handles[::-1], labels[::-1], loc='center left',
                                  bbox_to_anchor=(.005, .5), fontsize=7,
                                  facecolor='#1a1a2e', labelcolor='#cdd6f4')
-        self.wind_fig.subplots_adjust(left=.25, right=.95, top=.86, bottom=.18, wspace=.4)
+        self.wind_fig.subplots_adjust(left=.25, right=.95, top=.75, bottom=.20, wspace=.4)
         self.wind_canvas.draw_idle()
         self._update_wind_table(nodes)
 
@@ -2711,12 +2746,16 @@ class AppWindow(QMainWindow):
             nodes = res.get("wind_nodes", []) if res is not None else []
 
         for r, (alt, lbl) in enumerate(zip(
-                [3.0, 10.0, 150.0, 300.0, 600.0], self._NODE_LABELS)):
+                WIND_SAMPLE_ALTS, self._NODE_LABELS)):
             spd_str = "—"
             dir_str = "—"
 
             pts = hist_buf.get(alt, [])
-            if pts:
+            if alt != ANEMOMETER_ALT and alt in getattr(self, '_displayed_wind_nodes', {}):
+                displayed = self._displayed_wind_nodes[alt]
+                spd_str = f"{displayed['speed_ms']:.1f}"
+                dir_str = f"{displayed['dir_deg']:.0f}"
+            elif pts:
                 # 3-tuple: (relative_t, speed_ms, dir_deg)
                 spd_str = f"{pts[-1][1]:.1f}"
                 dir_str = f"{pts[-1][2]:.0f}"
@@ -2740,8 +2779,8 @@ class AppWindow(QMainWindow):
                 if c == 0:
                     item.setData(Qt.ItemDataRole.ForegroundRole, QColor(col))
 
-        # Update Telemetry Stats for 3.0m altitude
-        surf_pts = hist_buf.get(3.0, [])
+        # Update Telemetry Stats for 1.5m altitude
+        surf_pts = hist_buf.get(ANEMOMETER_ALT, [])
         if surf_pts:
             speeds = [p[1] for p in surf_pts]
             max_gust = max(speeds)
@@ -3299,7 +3338,7 @@ class AppWindow(QMainWindow):
         is_free = "free" in mode.lower() or "自由" in mode
         self.rmax_input.setEnabled(not is_free)
         if is_free:
-            self.update_status_indicator("🟢 GO (FREE FLIGHT MODE)")
+            self.update_status_indicator("GO (FREE FLIGHT MODE)")
         else:
             self.update_status_indicator("⬤  STANDBY")
         if mode == "定点滞空":
@@ -3381,9 +3420,9 @@ class AppWindow(QMainWindow):
     def set_go_nogo(self, go: bool) -> None:
         """Binary GO/NO-GO update — delegates to update_status_indicator."""
         if go:
-            self.update_status_indicator("🟢  GO  (LAUNCH CLEAR)")
+            self.update_status_indicator("GO (LAUNCH CLEAR)")
         else:
-            self.update_status_indicator("🔴  NO-GO  (WIND LIMIT EXCEEDED)")
+            self.update_status_indicator("NO-GO (WIND LIMIT EXCEEDED)")
 
     def set_progress(self, value: int, label: str = "") -> None:
         self._progress.setValue(max(0, min(100, value)))

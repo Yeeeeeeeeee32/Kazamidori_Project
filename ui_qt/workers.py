@@ -57,7 +57,7 @@ import traceback
 from PySide6.QtCore import QThread, Signal
 
 from core.simulation   import SimulationInputError, simulate_once, simulate_once_mc
-from core.wind_model   import create_wind_profile, sample_wind_nodes
+from core.wind_model   import ANEMOMETER_ALT, create_wind_profile, sample_wind_nodes
 from core.monte_carlo  import (
     _perturb_wind_profile,
     compute_error_ellipse,
@@ -168,7 +168,7 @@ class SimulationWorker(QThread):
             u_prof, v_prof = self._build_wind_profiles(p, self._stop_event)
             print(f"[DIAG] _build_wind_profiles OK — u_prof len={len(u_prof)}, v_prof len={len(v_prof)}", flush=True)
             # sample_wind_nodes reads the 5 explicit grid points inserted into
-            # the profile by create_wind_profile (3, 10, 150, 300, 600 m AGL)
+            # the profile by create_wind_profile (1.5, 10, 150, 300, 600 m AGL)
             wind_nodes = sample_wind_nodes(u_prof, v_prof)
 
             self.progress.emit(5)
@@ -476,8 +476,8 @@ class SimulationWorker(QThread):
                                       p.get('env_pressure', 101325.), p.get('env_temp', 15.),
                                       p.get('launch_lat'), p.get('launch_lon'),
                                       cancelled=stop_flag.is_set if stop_flag is not None else lambda: False)
-            surface = [n for n in wind_profile_data if float(n.get('alt_m', -1)) == 3.0]
-            wind_profile_data = surface + [n for n in upper if n['alt_m'] > 3.0] if surface else upper
+            surface = [n for n in wind_profile_data if float(n.get('alt_m', -1)) == ANEMOMETER_ALT]
+            wind_profile_data = surface + [n for n in upper if n['alt_m'] > ANEMOMETER_ALT] if surface else upper
         hellmann_exp = float(p.get("hellmann_alpha", 0.14))
         return create_wind_profile(wind_profile_data, hellmann_exp)
 
@@ -591,9 +591,9 @@ class SimulationWorker(QThread):
         Wind nodes
         ----------
         ``wind_by_alt``       — dict keyed by altitude (float) for O(1) per-level lookup
-                                e.g. payload["wind_by_alt"][3.0] → node dict for 3 m AGL
-        ``wind_nodes``        — ordered list of all 5 nodes (3, 10, 150, 300, 600 m)
-        ``surface_wind``      — alias for wind_nodes[0] (anemometer, 3 m)
+                                e.g. payload["wind_by_alt"][1.5] → node dict for 1.5 m AGL
+        ``wind_nodes``        — ordered list of all 5 nodes (1.5, 10, 150, 300, 600 m)
+        ``surface_wind``      — alias for wind_nodes[0] (anemometer, 1.5 m)
         ``upper_wind_nodes``  — alias for wind_nodes[1:] (API levels)
         """
         def _to_list(v):
