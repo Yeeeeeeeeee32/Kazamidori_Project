@@ -16,6 +16,7 @@ from ui_qt.app_state import AppState
 from ui_qt.app_window import AppWindow
 from ui_qt.workers import SimulationWorker, OptimizationWorker, MapDownloadWorker
 from ui_qt.location_service import LocationService
+from ui_qt.airframe_load_dialog import select_airframe_files
 from core.monte_carlo  import compute_cep_ellipse
 from utils.data_loader import (
     RocketConfigError,
@@ -217,10 +218,9 @@ class SimController(QObject):
         # Connection order guarantees hist_buf is populated before the table reads it.
         state.wind_history_updated.connect(lambda _: window._update_wind_table())
 
-        # progress_changed fires after every MC iteration (0–100 int) → push the
-        # value into the toolbar QProgressBar so the operator sees live progress.
+        # Progress is the whole operation's percentage; labels arrive separately.
         state.progress_changed.connect(
-            lambda pct: window.set_progress(pct, f"MC  {pct}%")
+            lambda pct: window.set_progress(pct)
         )
 
         # NOTE: simulation_result_changed → update_map_plot and update_profile_plot
@@ -272,7 +272,7 @@ class SimController(QObject):
             s._nose_length, s._fin_root_chord, s._fin_tip_chord, s._fin_span,
             s._fin_position
         )):
-            missing.append("Rocket Geometry (All fields in Airframe tab must be filled manually or loaded via JSON)")
+            missing.append("Rocket Geometry (Load an OpenRocket design with its supplement JSON, or fill the fields manually)")
 
         if s.motor_cg_pos is None or s.motor_dry_mass is None:
             missing.append("Motor Physical Parameters (Motor CG Pos and Motor Dry Mass must be filled manually)")
@@ -394,6 +394,7 @@ class SimController(QObject):
             pass
 
         self._window.btn_download_map.setEnabled(False)
+        self._state.progress_percentage = 0
         self._state.is_calculating = True
         self._set_run_buttons_enabled(False)
         # Map downloads do not implement simulation cancellation.
@@ -470,6 +471,8 @@ class SimController(QObject):
         self._set_run_buttons_enabled(False)
         self._window.set_status("Simulation running...", "#f9e2af")
         self._window.set_progress(0, "Simulating...")
+        self._state.progress_percentage = 0
+        self._progress_message = 'Simulating...'
 
         # Clear stale data from the previous run.
         # IMPORTANT: bypass the public setter to avoid emitting needs_redraw
@@ -547,6 +550,8 @@ class SimController(QObject):
         self._set_run_buttons_enabled(False)
         self._window.set_status("Optimisation running...", "#fab387")
         self._window.set_progress(0, "Optimising...")
+        self._state.progress_percentage = 0
+        self._progress_message = 'Optimising...'
 
         # Clear stale data from the previous run.
         # IMPORTANT: bypass the public setter to avoid emitting needs_redraw
@@ -624,7 +629,9 @@ class SimController(QObject):
 
     @Slot(int)
     def _on_progress(self, value: int) -> None:
-        self._window.set_progress(value)
+        value = max(self._state.progress_percentage, value) if self._state.is_calculating else value
+        self._state.progress_percentage = value
+        self._window.set_progress(value, getattr(self, '_progress_message', 'Preparing'))
 
     def populate_results(self, nominal_data: dict, mc_data: dict) -> None:
         """Populates the Simulation Results panel in AppWindow based on mode."""
@@ -793,9 +800,8 @@ class SimController(QObject):
         queued connection, so the AppState write always happens on the GUI thread.
         """
         pct = int((current / total) * 100) if total > 0 else 0
-        self._state.progress_percentage = pct
-        self._window._progress.setValue(pct)
-        self._window._status_label.setText(msg)
+        self._on_worker_status(msg)
+        self._on_progress(pct)
 
     @Slot(dict)
     def _on_mc_done(self, result: dict) -> None:
@@ -861,16 +867,15 @@ class SimController(QObject):
         # each — no duplicate redraws, no GUI thread flooding.
         self._state.simulation_result = self._adapt_for_window(result)
 
-        # ── Phase A verification: CEP50 ≤ target_radius → SAFE → Phase B ────────
+        # Phase A verification: target containment at the selected probability.
         # FREE MODE: no target radius / landing zone concept — skip entirely.
-        cep50    = self._state.mc_cep
         target_r = self._state.target_radius
         _mode_str_mc = str(self._state.flight_mode)
         _is_free_mode_mc = "free" in _mode_str_mc.lower() or "自由" in _mode_str_mc
         print(
             f"[DIAG] _on_mc_done Phase A check: "
             f"mode={_mode_str_mc!r} is_free={_is_free_mode_mc} "
-            f"cep50={cep50:.1f}m target_r={target_r}",
+            f"target_r={target_r}",
             flush=True,
         )
 
@@ -880,6 +885,7 @@ class SimController(QObject):
         n      = result.get("n_runs",    0)
         prob   = result.get("landing_prob", int(self._window.cep_prob_input.value()))
 
+        self._state.phase2_active = False
         if _is_free_mode_mc:
             # Free Mode: no SAFE/UNSAFE concept — display informational summary only.
             self._window.update_status_indicator(
@@ -906,9 +912,8 @@ class SimController(QObject):
                 (getattr(self._state,'target_x',0.) or 0., getattr(self._state,'target_y',0.) or 0.),
                 attempted=result.get('n_attempted',len(_scatter)))
             is_safe = len(_scatter) >= 4 and fraction >= prob / 100.0
-            self._state.phase2_active = False
             print(
-                f"[DIAG] Phase A result: cep50={cep50:.1f}m {'<=' if is_safe else '>'} "
+                f"[DIAG] Phase A result: containment={fraction:.1%}, required={prob}% "
                 f"target_r={target_r:.1f}m  ->  {'SAFE' if is_safe else 'NOGO'}",
                 flush=True,
             )
@@ -928,7 +933,7 @@ class SimController(QObject):
                 )
             else:
                 print(
-                    f"[DIAG] NOGO: _on_mc_done — cep50={cep50:.1f}m > target_r={target_r:.1f}m",
+                    f"[DIAG] NOGO: containment={fraction:.1%}, required={prob}%, samples={len(_scatter)}",
                     flush=True,
                 )
                 self._window.update_status_indicator(
@@ -955,11 +960,9 @@ class SimController(QObject):
         # Broadcast smart-redraw lifecycle signals.
         self._state.needs_full_redraw.emit(result)
         self._state.simulation_finished.emit(result)
-        # Reset AppState progress flag (fires progress_changed(0) → lambda calls
-        # set_progress(0, "MC  0%") synchronously on the GUI thread).
-        self._state.progress_percentage = 0
-        # Override the "MC  0%" label from the lambda with a clean idle state.
-        self._window.set_progress(0, "Idle")
+        # Keep 100% visible until the next operation starts.
+        self._state.progress_percentage = 100
+        self._window.set_progress(100, 'Completed')
         self._state.is_calculating = False
 
         self._set_run_buttons_enabled(True)
@@ -1043,14 +1046,10 @@ class SimController(QObject):
     @Slot(str)
     def _on_worker_status(self, msg: str) -> None:
         print(f"[DIAG] _on_worker_status: {msg!r}", flush=True)
-        # SAFE-ONLY UPDATE: touch ONLY plain QLabel widgets via setText().
-        # Do NOT call set_status() or set_progress() here — those methods call
-        # QProgressBar.setValue() / setFormat() which enqueue a Qt repaint event.
-        # If this slot fires while Matplotlib's Qt backend (backend_qt.py) is
-        # initialising its canvas, the repaint re-enters the Qt event loop from
-        # within an active paint handler, producing the observed GUI deadlock.
-        # Text labels are synchronous property writes that bypass the render queue.
+        # All labels and the progress bar are updated on the GUI thread.
         self._window._status_label.setText(msg)
+        self._progress_message = msg
+        self._window.set_progress(self._state.progress_percentage, msg)
         self._window._status_label.setStyleSheet("color: #f9e2af; padding-left: 8px;")
         _phase_lbl = getattr(self._window, '_phase_label', None)
         if _phase_lbl is not None:
@@ -1216,6 +1215,7 @@ class SimController(QObject):
             "para_cd":        s.parachute_cd,              # parachute Cd (for CdS product)
             "para_area":      s.parachute_area,            # m²
             "para_lag":       s.parachute_lag,         # s
+            "para_wind_drift_ratio": s.parachute_wind_drift_pct / 100.,
             "backfire_delay": None if s.backfire_delay == -9999.0 else s.backfire_delay,        # s
             # ── Motor thrust curve — persisted by AppWindow._on_load_motor() ──
             "target_radius":  s.target_radius,              # m  (rmax_input spinbox)
@@ -1255,7 +1255,7 @@ class SimController(QObject):
             # Displayed calculated CP is a preview. Keep the live geometry model
             # for MC perturbations rather than forcing a stale CP calibration.
             params['cp_override'] = (resolved.get('cp')
-                if resolved['provenance']['sources'].get('cp') in ('ork','manual') else None)
+                if resolved['provenance']['sources'].get('cp') in ('ork','json','manual') else None)
             for key,value in s.airframe_provenance.get('parachute', {}).items():
                 params['para_'+key] = value
         return params
@@ -1454,6 +1454,8 @@ class SimController(QObject):
                 widget.setProperty('original_tooltip',widget.toolTip())
             widget.setToolTip(('出典: .ork' if source=='ork' else '出典: Kazamidori自動計算')
                               + '（手入力より優先）' if locked else widget.property('original_tooltip'))
+            if source == 'json':
+                widget.setToolTip('出典: 補完JSON（未取得項目の補完・編集可能）')
         locked_fin = sources.get('fin_shape') in ('ork','calculated')
         d.edit_fin_btn.setEnabled(not locked_fin)
         d.load_ork_fins_btn.setEnabled(not locked_fin)
@@ -1538,19 +1540,16 @@ class SimController(QObject):
 
     @Slot()
     def _on_load_airframe_json(self) -> None:
-        """Load the flat Airframe.json into geometry and motor input fields."""
+        """Load a design and its supplement together, with staged Apply/Cancel."""
         from pathlib import Path
 
-        path, _ = QFileDialog.getOpenFileName(
-            self._window,
-            "Load Airframe",
-            str(Path(__file__).resolve().parent.parent / "Airframe.json"),
-            "Airframe / OpenRocket (*.json *.ork *.ork.gz);;OpenRocket (*.ork *.ork.gz);;Airframe JSON (*.json)",
-        )
-        if not path:
+        selection = select_airframe_files(self._window._manual_dialog if self._manual_editing else self._window)
+        if selection is None:
             return
+        ork_path, json_path = selection
+        path = ork_path or json_path
         try:
-            af = load_airframe_config(path)
+            af = load_airframe_config(path, json_path if ork_path and json_path else None)
         except AirframeConfigError as exc:
             self._window.set_status(f"Airframe load failed: {exc}", "#f38ba8")
             if self._manual_editing:
@@ -1637,6 +1636,12 @@ class SimController(QObject):
 
         w = self._window
         name = Path(path).name if path else w.airframe_label.text().split(" (Modified)")[0]
+        if path and s.airframe_provenance.get('source_path'):
+            name = Path(s.airframe_provenance['source_path']).name
+            supplement = (path if str(path).lower().endswith('.json')
+                          else s.airframe_provenance.get('supplement_path'))
+            if supplement:
+                name += f" + {Path(supplement).name}"
         if not path:
             if name.startswith("No airframe"):
                 name = "Manual configuration"
@@ -1696,6 +1701,7 @@ class SimController(QObject):
         s.parachute_cd   = imported.get('cd', par["cd"])
         s.parachute_area = imported.get('area', par["area"])
         s.parachute_lag  = par["lag"]
+        s.parachute_wind_drift_pct = par.get('wind_drift_pct', 100.)
 
         name = _os.path.basename(path)
         self._window.parachute_label.setText(name + (' (Lag; Cd/Area: .ork)' if imported else ''))
@@ -1723,7 +1729,16 @@ class SimController(QObject):
         direction = (base_dir + random.gauss(0.0, 3.0)) % 360.0
 
         # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
-        self._state.append_wind_reading(speed, direction)
+        nodes = [dict(alt_m=float(n['alt_m']),
+                      speed_ms=max(0., float(n['speed_ms']) + random.gauss(0., float(n['speed_ms'])*.05+.1)),
+                      dir_deg=(float(n['dir_deg'])+random.gauss(0.,3.))%360)
+                 for n in wp]
+        if nodes:
+            nodes.sort(key=lambda n: n['alt_m'])
+            speed, direction = nodes[0]['speed_ms'], nodes[0]['dir_deg']
+            self._state.append_wind_nodes(nodes)
+        else:
+            self._state.append_wind_reading(speed, direction)
 
         # Mock Koinobori environmental data (Pressure, Temp, Humidity)
         # Assuming sea-level launch baseline (101325 Pa, 15°C, 50% Hum) with small noise.
@@ -1848,7 +1863,6 @@ class SimController(QObject):
             sr["landing_prob"] = int(round(self._state.cep_probability))
             # Use the same empirical radius convention as the worker.
             radii = np.sort(np.linalg.norm(pts - pts.mean(axis=0), axis=1))
-            index = min(int(self._state.cep_probability / 100.0 * len(pts)), len(pts) - 1)
             sr["r_N_radius"] = sr["cep_radius"] = float(np.quantile(radii, self._state.cep_probability / 100.0))
             self._state.r90_radius = sr["r_N_radius"]
             self._state.simulation_result = sr

@@ -72,6 +72,10 @@ def resolve_airframe(data):
             pass
     provenance['sources'] = {key: 'manual' for key in result
                              if key not in ('provenance',) and result[key] is not None}
+    # Supplemental JSON values are editable fallbacks, not immutable overrides.
+    for key, value in provenance.get('supplement_values', {}).items():
+        if result.get(key) == value and value is not None:
+            provenance['sources'][key] = 'json'
     provenance['sources'].update({key: 'calculated' for key in calculated})
     provenance['sources'].update({key: 'ork' for key in ork})
     return result

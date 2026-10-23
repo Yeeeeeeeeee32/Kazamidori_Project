@@ -349,7 +349,6 @@ class SimulationWorker(QThread):
                 _cx = sum(x for x, _ in pts_tuples) / n_pts
                 _cy = sum(y for _, y in pts_tuples) / n_pts
                 _radii = sorted(math.hypot(x - _cx, y - _cy) for x, y in pts_tuples)
-                _idx_n = min(int(prob_pct / 100.0 * n_pts), n_pts - 1)
                 r_N    = float(np.quantile(_radii, prob_pct / 100.0))
                 cep_val   = compute_cep(pts_tuples)
                 cov_matrix = None
@@ -799,8 +798,8 @@ class SimulationWorker(QThread):
             _done = i + 1
             if _done % _emit_every == 0 or _done == n_total:
                 self.sig_progress.emit(
-                    _done, n_total,
-                    f"Phase 2: Monte Carlo Simulation ({_done}/{n_total})",
+                    min(25 + int(_done / n_total * 65), 90), 100,
+                    f"Monte Carlo ({_done}/{n_total})",
                 )
                 self.progress.emit(min(25 + int(_done / n_total * 65), 90))
 
@@ -825,7 +824,7 @@ class SimulationWorker(QThread):
             "r_N_radius":   0.0,
             "cep":          0.0,
             "ellipse":      None,
-
+            "cep_circle":   None,
             "kde_contours": [],
             "kde":          None,
             "cov_matrix":   None,
@@ -851,8 +850,6 @@ class SimulationWorker(QThread):
         cx = sum(x for x, y in pts) / len(pts)
         cy = sum(y for x, y in pts) / len(pts)
         radii = sorted(math.hypot(x - cx, y - cy) for x, y in pts)
-        n    = len(radii)
-        idx  = min(int(prob_pct / 100.0 * n), n - 1)
         r_N  = float(np.quantile(radii, prob_pct / 100.0))
 
         # 2×2 sample covariance matrix (metres²).  None when fewer than 4 points.
@@ -872,7 +869,7 @@ class SimulationWorker(QThread):
             #   math: cx, cy, a, b, angle_rad
             #   UI:   x, y, width (=2a), height (=2b), angle_deg
             "ellipse":      compute_error_ellipse(pts, prob_pct=prob_pct),
-
+            "cep_circle":   compute_cep_circle(pts),
             "kde_contours": [],
             # kde: {X_m, Y_m, Z, x_min_m, x_max_m, y_min_m, y_max_m}
             # All arrays are Python lists of lists — ready for heatmap rendering.
@@ -1134,7 +1131,7 @@ class OptimizationWorker(QThread):
                 # sig_progress carries (completed, total, msg), so map the
                 # fraction onto a /100 scale that _on_progress_updated converts
                 # straight to a percent without surprises.
-                self.sig_progress.emit(int(frac * 100), 100, msg)
+                self.sig_progress.emit(2 + int(frac * 63), 100, msg)
 
             opt_res = optimize_launch_angle(
                 mode=mode,
@@ -1163,7 +1160,7 @@ class OptimizationWorker(QThread):
             p["elev"] = best_e
             p["azim"] = best_a
 
-            self.progress.emit(20)
+            self.progress.emit(65)
 
             # --- 2. Full simulation pipeline (mimic SimulationWorker) ---
             self.sig_status_text.emit("Simulating...")
@@ -1171,7 +1168,7 @@ class OptimizationWorker(QThread):
             if not nominal["ok"]:
                 raise SimulationInputError(f"Nominal simulation failed:\n{nominal['error']}")
 
-            self.progress.emit(25)
+            self.progress.emit(75)
 
             nom_pkg = SimulationWorker._package_nominal(nominal, wind_nodes, flight_mode=mode)
             nom_pkg['score'] = opt_res['score']
@@ -1208,8 +1205,9 @@ class OptimizationWorker(QThread):
             # instance or just use a helper. But it's easier to create a dummy worker here:
             dummy_worker = SimulationWorker(p)
             dummy_worker._stop_event = self._stop_event
-            dummy_worker.progress.connect(self.progress.emit)
-            dummy_worker.sig_progress.connect(self.sig_progress.emit)
+            dummy_worker.progress.connect(lambda value: self.progress.emit(75 + int((value-25)*19/65)))
+            dummy_worker.sig_progress.connect(lambda value, total, msg:
+                self.sig_progress.emit(75 + int((value-25)*19/65), 100, msg))
 
             scatter = dummy_worker._run_mc_loop(sim_params, p)
 
@@ -1220,7 +1218,7 @@ class OptimizationWorker(QThread):
             prob_pct = int(p.get("cep_prob", 90))
             n_pts    = len(scatter)
 
-            self.progress.emit(92)
+            self.progress.emit(95)
             self.sig_status_text.emit("Computing landing statistics...")
 
             stats = SimulationWorker._compute_stats(scatter, prob_pct)

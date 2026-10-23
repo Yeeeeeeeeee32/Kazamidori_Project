@@ -849,6 +849,11 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         else:
             idx_para = -1
 
+        from .parachute_drift import apply_parachute_drift
+        x_vals, y_vals = apply_parachute_drift(
+            t_vals, x_vals, y_vals, z_vals, para_open_time,
+            wind_u_prof, wind_v_prof, params.get('para_wind_drift_ratio'))
+
         # Apogee (最高点) and landing
         apogee_idx = int(np.argmax(z_vals))
         apogee_m   = float(z_vals[apogee_idx])
@@ -1248,6 +1253,10 @@ def simulate_once_mc(
         else:
             idx_para = -1
 
+        from .parachute_drift import apply_parachute_drift
+        x_vals, y_vals = apply_parachute_drift(
+            t_vals, x_vals, y_vals, z_vals, para_open_time,
+            wind_u_prof, wind_v_prof, params.get('para_wind_drift_ratio'))
         apogee_idx = int(np.argmax(z_vals))
         apogee_m   = float(z_vals[apogee_idx])
         impact_x   = float(x_vals[-1])

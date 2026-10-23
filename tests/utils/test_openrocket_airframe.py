@@ -41,13 +41,13 @@ def test_priority_survives_conflicts_and_json_roundtrip(tmp_path):
     data['provenance']['calculated']['mass'] = 8
     path=tmp_path/'airframe.json'
     save_airframe_config(path,data)
-    result=load_airframe_config(path)
+    result=load_airframe_config(FIXTURE, path)
     assert result['mass']==original['mass']
     assert result['cg']==original['cg']
     assert result['length']==original['length']
     assert result['cp']==pytest.approx(original['cp'])
-    assert result['motor_dry_mass']==.016
-    assert result['provenance']['sources']['motor_dry_mass']=='manual'
+    assert result['motor_dry_mass'] is None
+    assert 'motor_dry_mass' not in result['provenance']['sources']
     # A CP explicitly provided by the source outranks the geometry calculation.
     result['provenance']['ork']['cp']=.3
     assert resolve_airframe(result)['cp']==.3
@@ -57,7 +57,7 @@ def test_incomplete_import_is_saveable_without_fake_motor_mass(tmp_path):
     data=load_airframe_config(FIXTURE)
     path=tmp_path/'partial.json'
     save_airframe_config(path,data)
-    assert load_airframe_config(path)['motor_dry_mass'] is None
+    assert load_airframe_config(FIXTURE, path)['motor_dry_mass'] is None
 
 
 def mutate(tmp_path, change):

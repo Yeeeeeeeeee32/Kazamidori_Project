@@ -26,9 +26,9 @@ compute_error_ellipse(scatter, prob_pct=90) -> dict | None
 
 compute_cep_ellipse(points, probability=0.90) -> dict | None
     Standalone ellipse calculator for UI-driven updates (list-of-tuples or
-    numpy input, float probability in (0, 1)).  Explicit descending eigen-sort;
-    analytic chi²(2) scale factor.  Returns safe default dict (not None) on
-    degenerate input; None only when probability is outside (0, 1).
+    numpy input, float probability in (0, 1)). Uses the same covariance and
+    exact chi²(2) scale as compute_error_ellipse. Returns None for invalid
+    probability, nonfinite data, or fewer than four points.
 
 compute_cep(scatter) -> float
     Return the CEP: 50th-percentile distance from the scatter centroid.
@@ -419,8 +419,8 @@ def compute_kde_grid(
     visual improvement at typical map zoom levels.
 
     Grid cells are spaced uniformly in metres.  The bounding box is expanded by
-    *padding_frac* × max(x_range, y_range) on all four sides to avoid edge
-    artefacts at the KDE bandwidth boundary.
+    each axis's range times *padding_frac*, or four kernel standard deviations,
+    whichever is larger, to resolve small clouds and include Gaussian tails.
 
     Normalisation
     -------------
@@ -510,14 +510,15 @@ def evaluate_wind_within_bounds(
 
     Computes the Euclidean distance between the live wind vector and the
     Phase A baseline (locked_mu), then compares it against k × σ × |μ|.
-    A minimum absolute bound of 1.0 m/s is applied so a near-calm baseline
-    does not shrink the acceptance region to zero.
+    The reference speed is floored at 1.0 m/s so a near-calm baseline does not
+    shrink the acceptance region to zero when sigma is positive. This is a
+    heuristic tolerance, not a calibrated two-dimensional coverage probability.
 
     Args:
         live_u, live_v: Current East/North wind components (m/s).
         mu_u, mu_v:     Phase A locked baseline East/North components (m/s).
         sigma:          Fractional 1-σ wind uncertainty from Phase A (e.g. 0.20).
-        k:              Sigma multiplier (default 2.0 → 95 % single-trial bound).
+        k:              Tolerance multiplier (default 2.0).
 
     Returns:
         True  → within bounds (🟢 GO).

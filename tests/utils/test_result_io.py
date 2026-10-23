@@ -32,6 +32,19 @@ class TestResultIO(unittest.TestCase):
         result["trajectory_x"][0] = 999
         self.assertEqual(restored["result"]["trajectory_x"][0], 0)
 
+    def test_old_ellipse_is_recomputed_once_from_scatter(self):
+        source=Path(__file__).parents[1]/'fixtures'/'result_archive.json'
+        raw=json.loads(source.read_text(encoding='utf-8'))
+        self.assertNotIn('angle_convention',raw['result']['ellipse'])
+        fixed=load_archive(source)
+        from core.monte_carlo import compute_error_ellipse
+        points=list(zip(raw['result']['mc_scatter_x'],raw['result']['mc_scatter_y']))
+        self.assertEqual(fixed['result']['ellipse'],compute_error_ellipse(points,90))
+        self.assertTrue(fixed['migration_notes'])
+        path=self.root/'fixed.json'
+        save_archive(path,fixed)
+        self.assertEqual(load_archive(path),fixed)
+
     def test_csv_contains_all_samples_with_units(self):
         path = self.root / "results.csv"
         save_csv(path, self.sample)

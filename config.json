@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "simulation": {
+    "wind_uncertainty": 0.2,
+    "thrust_uncertainty": 0.05,
+    "landing_prob": 90,
+    "mc_n_runs": 50
+  },
+  "motor": {
+    "nozzle_pos_m": null,
+    "dry_mass_kg": null,
+    "backfire_delay_s": null,
+    "isp_s": 80,
+    "propellant_density": 1700
+  },
+  "parachute": {
+    "cd": null,
+    "area_m2": null,
+    "lag_s": null,
+    "wind_drift_pct": 100
+  },
+  "aerodynamics": {
+    "power_on_cd": 0.45,
+    "power_off_cd": 0.4
+  },
+  "practice_wind": [
+    {"alt_m": 3, "speed_ms": 4, "dir_deg": 0},
+    {"alt_m": 10, "speed_ms": 4.5, "dir_deg": 0},
+    {"alt_m": 150, "speed_ms": 6, "dir_deg": 0},
+    {"alt_m": 300, "speed_ms": 7, "dir_deg": 0},
+    {"alt_m": 600, "speed_ms": 8, "dir_deg": 0}
+  ]
+}

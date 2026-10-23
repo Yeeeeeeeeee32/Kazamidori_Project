@@ -21,6 +21,7 @@ Standalone preview:
 from __future__ import annotations
 
 import sys
+import math
 from typing import Optional
 
 import matplotlib
@@ -481,9 +482,9 @@ class ManualSetupDialog(QDialog):
         self.airframe_sources_table.setVisible(bool(provenance))
         fields = ('mass','cg','cp','length','radius','nose_length','nose_shape',
                   'fin_shape','fin_count','fin_root','fin_tip','fin_span','fin_sweep',
-                  'fin_cant','fin_pos','motor_pos','motor_dry_mass','backfire_delay')
+                  'fin_cant','fin_pos')
         self.airframe_sources_table.setRowCount(len(fields) if provenance else 0)
-        names = {'ork': '.ork', 'calculated': 'Kazamidori 自動計算', 'manual': '手入力'}
+        names = {'ork': '.ork', 'calculated': 'Kazamidori 自動計算', 'json': '補完JSON', 'manual': '手入力'}
         for row,key in enumerate(fields if provenance else ()):
             value = data.get(key)
             label = names.get(sources.get(key), '未取得・入力が必要')
@@ -493,14 +494,16 @@ class ManualSetupDialog(QDialog):
                 self.airframe_sources_table.setItem(row,col,item)
         if provenance:
             note = (f"{provenance.get('file','OpenRocket')}\n"
-                    '優先順位：.ork → Kazamidori自動計算 → 手入力。取得済み項目は固定されます。\n'
+                    '優先順位：.ork → Kazamidori自動計算 → 補完JSON・手入力。取得済み項目は固定されます。\n'
                     '形状を変更する場合はOpenRocketで編集して再読込してください。\n')
-            if provenance.get('motor'):
-                note += f"搭載モーター：{provenance['motor']}\n"
+            if provenance.get('supplement_path'):
+                from pathlib import Path
+                note += f"補完JSON：{Path(provenance['supplement_path']).name}\n"
+            note += 'Save airframeは不足項目だけをJSONに保存します。読込時は2ファイルを選択してください。\n'
             note += '\n'.join(provenance.get('warnings', []))
             self.airframe_sources_note.setText(note)
         else:
-            self.airframe_sources_note.setText('Load airframe は JSON / OpenRocket (.ork) に対応しています。')
+            self.airframe_sources_note.setText('Load airframeで.orkと補完JSONをそれぞれ手動で選択してください。')
 
     def fin_options(self):
         return dict(fin_shape=self.fin_shape_input.currentData(), fin_points=self.fin_points,
@@ -608,6 +611,7 @@ class AdvancedSettingsDialog(QDialog):
 
         # ── Tab Widget ────────────────────────────────────────────────────────
         tabs = QToolBox()
+        self.sections = tabs
 
         # ── Wind group ────────────────────────────────────────────────────────
         grp_wind = QWidget()
@@ -818,7 +822,7 @@ class AdvancedSettingsDialog(QDialog):
         self.state = state
         self._wind_table_updating = True
         
-        state_map = {float(n.get("alt_m", 0)): n for n in state.wind_profile}
+        state_map = {float(n.get("alt_m", 0)): n for n in state.wind_profile_data}
         for alt, spd_edit, dir_edit in self.wind_inputs:
             node = state_map.get(alt, {"speed_ms": 0.0, "dir_deg": 0.0})
             spd_edit.setText(str(node.get("speed_ms", 0.0)))
@@ -838,12 +842,19 @@ class AdvancedSettingsDialog(QDialog):
         profile = []
         for alt, spd_edit, dir_edit in self.wind_inputs:
             try:
-                spd = float(spd_edit.text() or 0.0)
-                dir_deg = float(dir_edit.text() or 0.0)
+                spd = float(spd_edit.text())
+                dir_deg = float(dir_edit.text())
+                if not math.isfinite(spd) or spd < 0 or not math.isfinite(dir_deg) or not 0 <= dir_deg <= 360:
+                    return
                 profile.append({"alt_m": alt, "speed_ms": spd, "dir_deg": dir_deg})
             except ValueError:
-                profile.append({"alt_m": alt, "speed_ms": 0.0, "dir_deg": 0.0})
-        self.state.wind_profile_data = profile
+                return
+        self._wind_grid_updating = True
+        try:
+            self.state.phase4_options = dict(wind_csv='', wind_time_utc='')
+            self.state.wind_profile_data = profile
+        finally:
+            self._wind_grid_updating = False
 
     def _on_wind_state_changed(self, profile):
         if getattr(self, '_wind_grid_updating', False):
@@ -1246,6 +1257,8 @@ class AppWindow(QMainWindow):
     def _build_figures(self) -> None:
         self.profile_fig    = Figure(figsize=(5, 5), facecolor="#1e1e2e")
         self.profile_ax     = self.profile_fig.add_subplot(111, projection="3d")
+        self.orientation_ax = self.profile_fig.add_axes([.82, .72, .17, .25], projection='3d')
+        self.orientation_ax.set_in_layout(False)
         self.profile_canvas = _AzimCanvas(self.profile_fig, self.state)
         # Disable the default Matplotlib click-drag rotation; azimuth is
         # controlled exclusively by the QSlider + wheel event below.
@@ -1309,6 +1322,8 @@ class AppWindow(QMainWindow):
         # in a future session without re-entering every value.
         fm.addAction(QAction("Save Session…", self, triggered=self._on_save_session))
         fm.addAction(QAction("Load Session…", self, triggered=self._on_load_session))
+        fm.addAction(QAction('Save Config…', self, triggered=lambda: self._config_file(True)))
+        fm.addAction(QAction('Load Config…', self, triggered=lambda: self._config_file(False)))
         fm.addSeparator()
         fm.addAction(QAction("Quit", self, triggered=self.close))
 
@@ -1386,7 +1401,7 @@ class AppWindow(QMainWindow):
         tb.addWidget(spacer)
 
         self._progress = QProgressBar(tb)
-        self._progress.setFixedWidth(140)
+        self._progress.setFixedWidth(280)
         self._progress.setValue(0)
         self._progress.setFormat("%p%")
         self._progress.setTextVisible(True)
@@ -1556,6 +1571,7 @@ class AppWindow(QMainWindow):
         tb.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.MinimumExpanding)
         tb.addItem(self._build_airframe_page(),        "🚀  Airframe")
+        tb.addItem(self.motor_settings_page, '🔥  Motor Specifications')
         tb.addItem(self._build_launch_settings_page(), "📍  Launch Settings")
         # QSS min-height on QToolBox::tab is ignored at widget-level; set height
         # directly on the internal QAbstractButton children instead.
@@ -1698,6 +1714,7 @@ class AppWindow(QMainWindow):
         btn_manual.clicked.connect(self._on_manual_config)
 
         btn_motor = QPushButton("📂  Load Thrust Curve (.csv)", w)
+        btn_motor.setObjectName('btn_load_thrust')
         btn_motor.clicked.connect(self._on_load_motor)
 
         self.motor_label = QLabel("No motor loaded. Click 'Load Thrust Curve' to begin.", w)
@@ -1749,8 +1766,21 @@ class AppWindow(QMainWindow):
         self.motor_cg_input.setToolTip('機体先端からモーターのノズル出口までの距離 [m]。')
         grp_motor_lay.addRow("Motor Dry Mass [kg]:", self.motor_dry_mass_input)
         grp_motor_lay.addRow("Backfire Delay [s]:", self.af_backfire_input)
-        grp_motor_lay.addRow(btn_motor)
-        grp_motor_lay.addRow(self.motor_label)
+        motor_load_row = QHBoxLayout()
+        motor_load_row.addWidget(btn_motor)
+        motor_load_row.addWidget(self.motor_label, 1)
+        self.motor_label.setMinimumWidth(0)
+        self.motor_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.motor_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        grp_motor_lay.addRow(motor_load_row)
+        load_motor_settings = QPushButton('Load Motor Config…')
+        save_motor_settings = QPushButton('Save Motor Config…')
+        load_motor_settings.clicked.connect(lambda: self._motor_config_file(False))
+        save_motor_settings.clicked.connect(lambda: self._motor_config_file(True))
+        settings_row = QHBoxLayout()
+        settings_row.addWidget(load_motor_settings)
+        settings_row.addWidget(save_motor_settings)
+        grp_motor_lay.addRow(settings_row)
 
         # ── Recovery / Parachute parameters ──────────────────────────────────
         grp_para     = QGroupBox("Recovery / Parachute", w)
@@ -1775,6 +1805,14 @@ class AppWindow(QMainWindow):
         frm_para.addRow("Drag Coeff. Cd:",     self.para_cd_input)
         frm_para.addRow("Canopy Area [m²]:",   self.para_area_input)
         frm_para.addRow("Deployment Lag [s]:", self.para_lag_input)
+        self.para_drift_input = QDoubleSpinBox(grp_para)
+        self.para_drift_input.setRange(0, 200)
+        self.para_drift_input.setSuffix(' %')
+        self.para_drift_input.setValue(self.state.parachute_wind_drift_pct)
+        self.para_drift_input.setToolTip('開傘後の水平速度を、その高度の風速の指定割合で与える近似です。')
+        self.para_drift_input.valueChanged.connect(lambda v: setattr(self.state, 'parachute_wind_drift_pct', v))
+        self.state.parachute_wind_drift_changed.connect(self.para_drift_input.setValue)
+        frm_para.addRow('Horizontal Wind Drift:', self.para_drift_input)
 
         btn_para_json = QPushButton("📂  Load Parachute JSON", w)
         btn_para_json.clicked.connect(self.sig_load_para_json_clicked.emit)
@@ -1792,7 +1830,10 @@ class AppWindow(QMainWindow):
         lay.addLayout(airframe_load_layout)
 
         lay.addWidget(btn_manual)
-        lay.addWidget(grp_motor)
+        self.motor_settings_page = QWidget()
+        motor_page_layout = QVBoxLayout(self.motor_settings_page)
+        motor_page_layout.addWidget(grp_motor)
+        motor_page_layout.addStretch()
         lay.addWidget(grp_para)
 
         # ── Keyboard Navigation (Tab Order) for Airframe panel ───────────────
@@ -2065,6 +2106,12 @@ class AppWindow(QMainWindow):
                 self._wind_table.setItem(r, c, item)
 
         right_lay.addWidget(self._wind_table)
+        practice_btn = QPushButton('Edit Practice Wind…', right_col)
+        practice_btn.clicked.connect(self._open_practice_wind)
+        right_lay.addWidget(practice_btn)
+        weather_btn = QPushButton('Download GPV / Wind Data…', right_col)
+        weather_btn.clicked.connect(self._adv_dialog._open_wind_data)
+        right_lay.addWidget(weather_btn)
 
         # ── System Status Labels (stacked under the table) ────────────────────
         status_lay = QHBoxLayout()
@@ -2271,13 +2318,7 @@ class AppWindow(QMainWindow):
             apogee_m = float(res.get("apogee_m", float(tz.max()) if len(tz) > 0 else 0.0))
             _equalise_3d_axes(ax, tx, ty, apogee_m)
 
-        # Draw Compass Rose in 3D
-        cx, cy, cz = 0, 0, 0
-        span = max(10, ax.get_xlim3d()[1] * 0.1)
-        ax.quiver(cx, cy, cz, 0, span, 0, color="#a6e3a1", arrow_length_ratio=0.1, alpha=0.8) # North
-        ax.quiver(cx, cy, cz, span, 0, 0, color="#f38ba8", arrow_length_ratio=0.1, alpha=0.8) # East
-        ax.text(cx, cy + span*1.1, cz, "N", color="#a6e3a1", fontsize=8, fontweight="bold", ha="center")
-        ax.text(cx + span*1.1, cy, cz, "E", color="#f38ba8", fontsize=8, fontweight="bold", ha="center")
+        self._draw_orientation_compass(ax.azim)
 
         x_limits = ax.get_xlim3d()
         y_limits = ax.get_ylim3d()
@@ -2297,7 +2338,7 @@ class AppWindow(QMainWindow):
         ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
         ax.set_box_aspect([1, 1, 1])
 
-        self.profile_fig.tight_layout(pad=0.5)
+        self.profile_fig.subplots_adjust(left=0, right=.81, bottom=.02, top=.98)
         self.profile_canvas.draw_idle()
 
     def _draw_empty_profile(self, ax) -> None:
@@ -2319,6 +2360,20 @@ class AppWindow(QMainWindow):
         ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.05), fontsize=7,
                   facecolor="#1e1e2e", edgecolor="#45475a",
                   labelcolor="#cdd6f4", framealpha=0.85, markerscale=1.5)
+
+    def _draw_orientation_compass(self, azimuth):
+        ax = self.orientation_ax
+        ax.clear()
+        ax.set_facecolor(self.profile_fig.get_facecolor())
+        ax.set_axis_off()
+        for vector, label, color in (((1,0,0), 'E', '#f38ba8'),
+                                      ((0,1,0), 'N', '#a6e3a1'),
+                                      ((0,0,1), 'Up', '#89b4fa')):
+            ax.quiver(0,0,0,*vector, color=color, arrow_length_ratio=.15)
+            ax.text(*(1.2*np.asarray(vector)), label, color=color, fontsize=8)
+        ax.set(xlim=(-.3,1.4), ylim=(-.3,1.4), zlim=(-.3,1.4))
+        ax.set_box_aspect((1,1,1))
+        ax.view_init(elev=25, azim=azimuth)
 
     def _draw_real_result(self, ax, res: dict) -> None:
         s = self.state
@@ -2867,6 +2922,7 @@ class AppWindow(QMainWindow):
     def _on_azim_changed(self, value: int) -> None:
         """Rotate the 3-D profile to the new azimuth without a full redraw."""
         self.profile_ax.view_init(elev=25, azim=value)
+        self._draw_orientation_compass(value)
         self.profile_canvas.draw_idle()
 
 
@@ -2994,6 +3050,33 @@ class AppWindow(QMainWindow):
 
         self.set_status(f"Session saved successfully to: {filepath}", "#a6e3a1")
 
+    def _config_file(self, save):
+        from utils.configuration import CONFIG_PATH, save_config, read_config, apply_config
+        choose = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
+        path, _ = choose(self, 'Save Config' if save else 'Load Config', str(CONFIG_PATH), 'JSON (*.json)')
+        if not path:
+            return
+        try:
+            if save:
+                save_config(self.state, path)
+            else:
+                apply_config(self.state, read_config(path))
+            self.set_status(f"Config {'saved' if save else 'loaded'}: {path}")
+        except (OSError, ValueError, TypeError) as exc:
+            self.set_status(f'Config error: {exc}', '#f38ba8')
+
+    def _motor_config_file(self, save):
+        from utils.configuration import load_motor_config, save_motor_config
+        choose = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
+        path, _ = choose(self, 'Motor Config', 'Motor.json' if save else '', 'JSON (*.json)')
+        if not path:
+            return
+        try:
+            (save_motor_config if save else load_motor_config)(self.state, path)
+            self.set_status(f"Motor config {'saved' if save else 'loaded'}: {path}")
+        except (OSError, ValueError, TypeError) as exc:
+            self.set_status(f'Motor config error: {exc}', '#f38ba8')
+
     def _on_load_session(self) -> None:
         """Prompt for a JSON path and restore advanced settings from it.
 
@@ -3023,6 +3106,10 @@ class AppWindow(QMainWindow):
 
     def _on_advanced_settings(self) -> None:
         """Open the Advanced Settings dialog modally."""
+        self._adv_dialog.exec()
+
+    def _open_practice_wind(self):
+        self._adv_dialog.sections.setCurrentIndex(0)
         self._adv_dialog.exec()
 
     def _on_load_airframe_json(self) -> None:
@@ -3302,7 +3389,8 @@ class AppWindow(QMainWindow):
         self._progress.setValue(max(0, min(100, value)))
         lbl = getattr(self, '_phase_label', None)
         if label:
-            self._progress.setFormat("%p%")
+            self._progress.setFormat(label + " · %p%")
+            self._progress.setToolTip(label)
             if lbl is not None:
                 lbl.setText(label)
         elif lbl is not None and value == 0:

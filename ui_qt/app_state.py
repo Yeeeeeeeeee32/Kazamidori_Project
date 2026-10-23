@@ -251,6 +251,7 @@ class AppState(QObject):
     parachute_cd_changed    = Signal(object)   # parachute drag coefficient (dimensionless)
     parachute_area_changed  = Signal(object)   # parachute reference area (m²)
     parachute_lag_changed   = Signal(object)   # parachute deployment lag (s)
+    parachute_wind_drift_changed = Signal(float)
     backfire_delay_changed  = Signal(object)   # ejection charge delay after burnout (s)
 
     # ── Engine / motor metadata ────────────────────────────────────────────────
@@ -446,6 +447,7 @@ class AppState(QObject):
         self._parachute_cd     = None                    # dimensionless
         self._parachute_area   = None                    # m²
         self._parachute_lag    = None                    # s
+        self._parachute_wind_drift_pct = 100.0
         self._backfire_delay   = None                    # s
 
         # Launch settings — pre-filled with safe operational defaults so the
@@ -1062,6 +1064,7 @@ class AppState(QObject):
     @wind_profile_data.setter
     def wind_profile_data(self, value: list) -> None:
         self._wind_profile_data = value
+        self._wind_profile = value
         # An edited profile is a new input snapshot; the charts must not keep
         # displaying upper-wind readings from the preceding simulation.
         self.append_wind_nodes(value)
@@ -1622,6 +1625,20 @@ class AppState(QObject):
         if self._parachute_lag != val:
             self._parachute_lag = val
             self.parachute_lag_changed.emit(val)
+            self._check_readiness()
+
+    @Property(float, notify=parachute_wind_drift_changed)
+    def parachute_wind_drift_pct(self):
+        return self._parachute_wind_drift_pct
+
+    @parachute_wind_drift_pct.setter
+    def parachute_wind_drift_pct(self, value):
+        value = float(value)
+        if not math.isfinite(value) or not 0 <= value <= 200:
+            raise ValueError('Parachute wind drift must be between 0 and 200%')
+        if value != self._parachute_wind_drift_pct:
+            self._parachute_wind_drift_pct = value
+            self.parachute_wind_drift_changed.emit(value)
             self._check_readiness()
 
     @Property(object, notify=backfire_delay_changed)

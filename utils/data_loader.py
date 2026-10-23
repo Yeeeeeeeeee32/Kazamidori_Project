@@ -220,22 +220,21 @@ def _validate_cp(raw, length):
     return value
 
 
-def load_airframe_config(filepath: str) -> dict[str, float]:
-    """Read the flat Airframe.json format in SI units, without default values."""
-    if str(filepath).lower().endswith(('.ork', '.ork.gz')):
-        from utils.openrocket_airframe import load_openrocket_airframe
-        try:
-            data = load_openrocket_airframe(filepath)
-            return validate_airframe_config(data)
-        except (ValueError, TypeError, IndexError, KeyError, OverflowError) as exc:
-            raise AirframeConfigError(f'OpenRocket import failed: {exc}') from exc
+def load_airframe_config(filepath: str, supplement_path=None) -> dict:
+    """Read explicitly selected files. Never discover or follow another file."""
+    from utils.airframe_pair import read_json, load_pair
     try:
-        with open(filepath, "r", encoding="utf-8-sig") as fh:
-            data = json.load(fh)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise AirframeConfigError(f"Cannot read Airframe JSON: {exc}") from exc
-
-    return validate_airframe_config(data)
+        if str(filepath).lower().endswith(('.ork', '.ork.gz')):
+            data = load_pair(filepath, supplement_path)
+        else:
+            if supplement_path is not None:
+                raise ValueError('Select an OpenRocket file as the primary airframe.')
+            data = read_json(filepath)
+            if 'ork_file' in data:
+                raise ValueError('補完JSONと一緒に使用する.orkファイルを手動で選択してください。')
+        return validate_airframe_config(data)
+    except (OSError, ValueError, TypeError, IndexError, KeyError, OverflowError) as exc:
+        raise AirframeConfigError(f'Cannot load airframe: {exc}') from exc
 
 
 def validate_airframe_config(data: dict, required_keys=None) -> dict:
@@ -248,14 +247,16 @@ def validate_airframe_config(data: dict, required_keys=None) -> dict:
             data = resolve_airframe(data)
         except (ValueError, TypeError) as exc:
             raise AirframeConfigError(str(exc)) from exc
-    required = set(_AIRFRAME_DEFAULTS) if required_keys is None else set(required_keys)
+    motor_fields = {'motor_pos', 'motor_dry_mass', 'backfire_delay'}
+    required = set(_AIRFRAME_DEFAULTS)-motor_fields if required_keys is None else set(required_keys)
     missing = required - data.keys()
     if missing:
         raise AirframeConfigError(f"Missing airframe fields: {', '.join(sorted(missing))}")
 
     positive = {"mass", "length", "radius", "nose_length", "fin_root", "fin_span", "motor_dry_mass"}
     airframe = {}
-    for key in sorted(required):
+    fields = required | (set(data) & motor_fields) if required_keys is None else required
+    for key in sorted(fields):
         raw = data[key]
         if raw is None and 'provenance' in data and required_keys is None:
             # Incomplete imported designs remain saveable; RUN still requires
@@ -294,13 +295,16 @@ def validate_airframe_config(data: dict, required_keys=None) -> dict:
 
 
 def save_airframe_config(filepath: str, data: dict) -> None:
-    """Save the same flat format accepted by load_airframe_config."""
+    """Save a minimal supplement for OR imports, or a standalone manual JSON."""
     validated = validate_airframe_config(data)
     try:
+        from utils.airframe_pair import supplement_for_save
+        validated = supplement_for_save(filepath, validated)
+        validated = {k:v for k,v in validated.items() if k not in ('motor_pos', 'motor_dry_mass', 'backfire_delay')}
         with open(filepath, "w", encoding="utf-8") as fh:
             json.dump(validated, fh, ensure_ascii=False, indent=4)
             fh.write("\n")
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise AirframeConfigError(f"Cannot save Airframe JSON: {exc}") from exc
 
 
@@ -901,7 +905,16 @@ def parse_parachute_json(filepath: str) -> dict:
     if area <= 0.0:
         raise RocketConfigError(f"Parachute area must be > 0, got {area}")
 
-    return {"cd": cd, "area": area, "lag": lag}
+    result = {"cd": cd, "area": area, "lag": lag}
+    if 'wind_drift_pct' in raw:
+        try:
+            drift = float(raw['wind_drift_pct'])
+        except (TypeError, ValueError):
+            raise RocketConfigError('wind_drift_pct must be numeric') from None
+        if not _math.isfinite(drift) or not 0 <= drift <= 200:
+            raise RocketConfigError('wind_drift_pct must be between 0 and 200')
+        result['wind_drift_pct'] = drift
+    return result
 
 
 # ── Mach-dependent Cd curve parser (Phase C) ──────────────────────────────────

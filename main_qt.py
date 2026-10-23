@@ -75,6 +75,13 @@ if __name__ == "__main__":
 
     # Shared data bus: holds computed simulation results for all future views.
     app_state = AppState(config=DEFAULT_CONFIG)
+    from utils.configuration import CONFIG_PATH, read_config, apply_config
+    config_error = None
+    if CONFIG_PATH.exists():
+        try:
+            apply_config(app_state, read_config(CONFIG_PATH))
+        except (OSError, ValueError, TypeError) as exc:
+            config_error = str(exc)
     print(f"=== main_qt.py === Created global AppState: id={id(app_state)}")
 
     # Inject the global app_state to unify instances and resolve the map view unresponsiveness
@@ -85,6 +92,8 @@ if __name__ == "__main__":
     # Must be assigned to a variable so it is not garbage-collected while
     # the event loop runs.
     controller = SimController(window, app_state)
+    if config_error:
+        window.set_status(f'Config load failed: {config_error}', '#f38ba8')
 
     sys.exit(app.exec())
 

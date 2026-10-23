@@ -1,4 +1,4 @@
-"""Versioned result archives and analysis CSVs; no dependency on Qt or physics."""
+"""Versioned result archives, statistical migrations and CSVs; no Qt dependency."""
 from __future__ import annotations
 
 import csv
@@ -198,7 +198,22 @@ def load_archive(path):
             archive = json.load(stream, parse_constant=reject_constant)
     except (ValueError, UnicodeError) as exc:
         raise ResultFileError(f"Cannot read result JSON: {exc}") from exc
-    return validate_archive(archive)
+    validate_archive(archive)
+    # Older archives stored a north-clockwise angle in a field consumed by
+    # Matplotlib as east-counterclockwise. Refit from the original samples;
+    # rotating alone would retain the old artificial minimum minor axis.
+    from core.monte_carlo import compute_error_ellipse
+    result = archive['result']
+    points = result.get('scatter_points') or result.get('scatter') or list(zip(
+        result.get('mc_scatter_x', []), result.get('mc_scatter_y', [])))
+    for key in ('ellipse', 'cep_ellipse'):
+        ellipse = result.get(key)
+        if ellipse and ellipse.get('angle_convention') != 'east_ccw':
+            result[key] = compute_error_ellipse(points, result.get('landing_prob',90))
+            archive.setdefault('migration_notes', []).append(
+                f'{key}: recalculated from ENU samples with east_ccw angle convention'
+                if result[key] else f'{key}: hidden because fewer than four samples are available')
+    return archive
 
 
 def save_csv(path, archive):

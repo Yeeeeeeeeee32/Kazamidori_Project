@@ -2,6 +2,7 @@
 import json
 import math
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -129,12 +130,24 @@ def test_pressure_altitude_is_inverse_of_hydrostatic_lapse_relation():
 
 @pytest.mark.physics
 def test_heading_rotation_in_calm_air_preserves_flight():
+    from rocketpy import Environment, Flight
     p=json.loads((Path(__file__).parents[1]/'fixtures/simulation_params.json').read_text())
     p.update(thrust_data=[[0,0],[.1,12],[.3,7],[1.1,0]],motor_burn_time=1.1)
-    north=simulate_once(84,0,p)
-    east=simulate_once(84,90,p)
+    # Rotational symmetry holds for a nonrotating Earth. Real RocketPy includes
+    # Coriolis acceleration; do not remove it from the production flight model.
+    def environment(**kwargs):
+        env = Environment(**kwargs)
+        env.earth_rotation_vector = (0.,0.,0.)
+        return env
+    def flight(**kwargs):
+        kwargs.update(rtol=1e-9, atol=1e-9, max_time_step=.005)
+        return Flight(**kwargs)
+    with patch('core.simulation.Environment',side_effect=environment), \
+         patch('core.simulation.Flight',side_effect=flight):
+        north=simulate_once(84,0,p)
+        east=simulate_once(84,90,p)
     assert north['ok'] and east['ok']
-    assert east['impact_x']==pytest.approx(north['impact_y'],abs=.02)
-    assert east['impact_y']==pytest.approx(-north['impact_x'],abs=.02)
-    assert east['apogee_m']==pytest.approx(north['apogee_m'],abs=.01)
-    assert east['hang_time']==pytest.approx(north['hang_time'],abs=.01)
+    assert east['impact_x']==pytest.approx(north['impact_y'],abs=.001)
+    assert east['impact_y']==pytest.approx(-north['impact_x'],abs=.001)
+    assert east['apogee_m']==pytest.approx(north['apogee_m'],abs=.001)
+    assert east['hang_time']==pytest.approx(north['hang_time'],abs=.001)

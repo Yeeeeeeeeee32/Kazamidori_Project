@@ -3,7 +3,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QDateTime, QThread, QTimeZone, Signal
 from PySide6.QtWidgets import (QDialog, QFormLayout, QDateTimeEdit, QPushButton,
-                              QDialogButtonBox, QFileDialog, QLabel, QMessageBox)
+                              QDialogButtonBox, QFileDialog, QLabel, QMessageBox, QCheckBox)
 
 from utils.wind_data import fetch_wind_csv, read_wind_snapshot
 
@@ -23,8 +23,9 @@ class WindDataWorker(QThread):
             if self.fetch:
                 fetch_wind_csv(self.path, p['latitude'], p['longitude'], p['start'], p['end'],
                                cancelled=self.isInterruptionRequested, progress=self.status.emit)
-            read_wind_snapshot(self.path, p['target'], p['pressure'], p['temperature'],
-                               p['latitude'], p['longitude'], cancelled=self.isInterruptionRequested)
+            if not p.get('download_only', False):
+                read_wind_snapshot(self.path, p['target'], p['pressure'], p['temperature'],
+                                   p['latitude'], p['longitude'], cancelled=self.isInterruptionRequested)
             self.ready.emit(self.path)
         except Exception as exc:
             self.error.emit(str(exc))
@@ -51,6 +52,9 @@ class WindDataDialog(QDialog):
         form.addRow('API Start (UTC)', self.start)
         form.addRow('API End (UTC)', self.end)
         form.addRow('Simulation time (UTC)', self.target)
+        self.apply_download = QCheckBox('Use downloaded data for this simulation')
+        self.apply_download.setChecked(False)
+        form.addRow(self.apply_download)
         saved = state.phase4_options['wind_time_utc']
         if saved:
             from PySide6.QtCore import Qt
@@ -60,7 +64,7 @@ class WindDataDialog(QDialog):
         self.path_label = QLabel(state.phase4_options['wind_csv'] or 'Manual wind profile')
         self.path_label.setWordWrap(True)
         form.addRow(self.path_label)
-        self.fetch_btn, self.load_btn = QPushButton('Fetch and Save CSV…'), QPushButton('Load Wind CSV…')
+        self.fetch_btn, self.load_btn = QPushButton('Download Specified Period…'), QPushButton('Load Wind CSV…')
         self.use_btn, self.clear_btn = QPushButton('Apply target time'), QPushButton('Use Manual Wind')
         for button in (self.fetch_btn, self.load_btn, self.use_btn, self.clear_btn):
             form.addRow(button)
@@ -98,11 +102,15 @@ class WindDataDialog(QDialog):
         target = self._iso(self.target)
         p = dict(latitude=self.state.launch_lat, longitude=self.state.launch_lon,
                  pressure=self.state.env_pressure, temperature=self.state.env_temp,
-                 start=self._iso(self.start), end=self._iso(self.end), target=target)
+                 start=self._iso(self.start), end=self._iso(self.end), target=target,
+                 download_only=fetch and not self.apply_download.isChecked())
         self.worker = WindDataWorker(path, p, fetch, self)
         def ready(saved):
-            self.state.phase4_options = dict(wind_csv=str(Path(saved).resolve()), wind_time_utc=target)
-            self.path_label.setText(f'{Path(saved).name} — {target}')
+            if not p['download_only']:
+                self.state.phase4_options = dict(wind_csv=str(Path(saved).resolve()), wind_time_utc=target)
+                self.path_label.setText(f'{Path(saved).name} — {target}')
+            else:
+                self.path_label.setText(f"Downloaded: {Path(saved).name}\n{p['start']} — {p['end']}")
         self.worker.ready.connect(ready)
         self.worker.error.connect(lambda msg: QMessageBox.warning(self, 'Wind data error', msg))
         self.worker.status.connect(self.path_label.setText)
@@ -111,7 +119,7 @@ class WindDataDialog(QDialog):
         self.worker.start()
 
     def _busy(self, busy):
-        for widget in (self.fetch_btn, self.load_btn, self.use_btn, self.clear_btn, self.start, self.end, self.target):
+        for widget in (self.fetch_btn, self.load_btn, self.use_btn, self.clear_btn, self.start, self.end, self.target, self.apply_download):
             widget.setEnabled(not busy)
 
     def reject(self):

@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 import warnings
@@ -23,6 +24,7 @@ from ui_qt.app_window import AppWindow
 from ui_qt.sim_controller import SimController
 from utils.data_loader import AirframeConfigError, load_airframe_config, save_airframe_config
 from ui_qt.fin_editor import FinOutlineDialog
+from ui_qt.airframe_load_dialog import AirframeLoadDialog
 
 
 AIRFRAME = {
@@ -63,12 +65,11 @@ class TestAirframeLoader(AirframeFixture):
         self.write(AIRFRAME)
         self.assertEqual(load_airframe_config(str(self.path)), AIRFRAME)
 
-    def test_missing_motor_field_is_rejected(self):
+    def test_airframe_does_not_require_motor_fields(self):
         data = dict(AIRFRAME)
         del data["motor_pos"]
         self.write(data)
-        with self.assertRaisesRegex(AirframeConfigError, "motor_pos"):
-            load_airframe_config(str(self.path))
+        self.assertNotIn('motor_pos', load_airframe_config(str(self.path)))
 
     def test_invalid_values_are_rejected(self):
         for value in (None, True, "bad", float("nan"), float("inf"), -1, 0):
@@ -113,9 +114,10 @@ class TestAirframeImport(AirframeFixture):
         self.controller.deleteLater()
         self.window.deleteLater()
 
-    def load(self, path=None):
-        with patch("ui_qt.sim_controller.QFileDialog.getOpenFileName",
-                   return_value=(str(self.path) if path is None else path, "")) as dialog:
+    def load(self, path=None, supplement=None):
+        path = str(self.path) if path is None else str(path)
+        selection = ((path, str(supplement or '')) if path.endswith(('.ork', '.ork.gz')) else ('', path)) if path else None
+        with patch("ui_qt.sim_controller.select_airframe_files", return_value=selection) as dialog:
             self.window.sig_load_airframe_json_clicked.emit()
         return dialog
 
@@ -124,8 +126,8 @@ class TestAirframeImport(AirframeFixture):
         buttons = [b for b in self.window.findChildren(QPushButton)
                    if b.text() in ("📂  Load Airframe", "Load airframe")]
         self.assertEqual(len(buttons), 2)
-        with patch("ui_qt.sim_controller.QFileDialog.getOpenFileName",
-                   return_value=(str(self.path), "")):
+        with patch("ui_qt.sim_controller.select_airframe_files",
+                   return_value=("", str(self.path))):
             buttons[-1].click()
         for key, widget in (
             ("mass", "af_mass_input"), ("cg", "af_cg_input"),
@@ -178,7 +180,7 @@ class TestAirframeImport(AirframeFixture):
 
         self.assertIn("failed", self.window._status_label.text())
         dialog = self.load(path="")
-        self.assertTrue(dialog.call_args.args[2].endswith("Airframe.json"))
+        dialog.assert_called_once()
         self.assertEqual(self.window.airframe_label.text(), label)
 
     def run_manual(self, action):
@@ -375,6 +377,102 @@ class TestAirframeImport(AirframeFixture):
         self.assertFalse(self.window.motor_cg_input.isReadOnly())
         self.assertFalse(self.state.airframe_provenance)
 
+    def test_two_file_load_displays_both_names_and_editable_supplement(self):
+        ork = self.path.parent / 'design.ork'
+        shutil.copyfile(Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork', ork)
+        self.write(dict(ork_file=ork.name, motor_dry_mass=.016))
+        self.load(str(ork), self.path)
+        self.assertEqual(self.state.motor_dry_mass, .016)
+        self.assertEqual(self.state.rocket_dry_mass, .25)
+        self.assertIn('design.ork + Airframe.json', self.window.airframe_label.text())
+        self.assertIn('補完JSON', self.window.motor_dry_mass_input.toolTip())
+        self.assertTrue(self.window.af_mass_input.isReadOnly())
+        self.assertFalse(self.window.motor_dry_mass_input.isReadOnly())
+        self.window.motor_dry_mass_input.setText('.018')
+        self.assertEqual(self.state.motor_dry_mass, .018)
+        self.window.lat_input.setValue(35)
+        self.window.lon_input.setValue(139)
+        with patch('utils.magnetic.declination_for_site', return_value=-7):
+            self.assertEqual(self.controller._collect_params()['motor_dry_mass'], .018)
+        self.load(str(ork), self.path)
+        self.assertEqual(self.state.motor_dry_mass, .016)
+        before = self.window.airframe_label.text()
+        self.write(dict(motor_dry_mass=-1))
+        self.load(str(ork), self.path)
+        self.assertIn('failed', self.window._status_label.text())
+        self.assertEqual(self.state.motor_dry_mass, .016)
+        self.assertEqual(self.window.airframe_label.text(), before)
+
+    def test_real_file_selection_dialog_loads_only_manually_chosen_pair(self):
+        self.load()
+        folder = self.path.parent / 'other'
+        folder.mkdir()
+        ork = folder / 'another_design.ork'
+        shutil.copyfile(Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork', ork)
+        supplement = self.path.parent / 'measurements.json'
+        supplement.write_text(json.dumps(dict(motor_dry_mass=.023)), encoding='utf-8')
+        # A similarly named neighbor must not be loaded automatically.
+        ork.with_suffix('.json').write_text(json.dumps(dict(motor_dry_mass=.099)))
+        errors = []
+        def choose():
+            dialog = self.app.activeModalWidget()
+            try:
+                self.assertIsInstance(dialog, AirframeLoadDialog)
+                self.assertEqual(dialog.ork_path.text(), '')
+                self.assertEqual(dialog.json_path.text(), '')
+                dialog.accept()
+                self.assertTrue(dialog.isVisible())
+                self.assertTrue(dialog.error_label.text())
+                with patch('ui_qt.airframe_load_dialog.QFileDialog.getOpenFileName',
+                           side_effect=[(str(ork), ''), ('', ''), (str(supplement), '')]):
+                    dialog.ork_browse.click()
+                    dialog.json_browse.click()  # Cancelling a picker keeps the ORK selection.
+                    self.assertEqual(dialog.ork_path.text(), str(ork))
+                    self.assertEqual(dialog.json_path.text(), '')
+                    dialog.json_browse.click()
+                self.assertEqual(self.state.motor_dry_mass, AIRFRAME['motor_dry_mass'])
+                dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).click()
+            except BaseException as exc:
+                errors.append(exc)
+                dialog.reject()
+        QTimer.singleShot(0, choose)
+        self.window.sig_load_airframe_json_clicked.emit()
+        if errors:
+            raise errors[0]
+        self.assertEqual(self.state.motor_dry_mass, .023)
+        self.assertIn('another_design.ork + measurements.json', self.window.airframe_label.text())
+        before = self.window.airframe_label.text()
+        def cancel():
+            dialog = self.app.activeModalWidget()
+            dialog.json_path.setText(str(self.path))
+            dialog.reject()
+        QTimer.singleShot(0, cancel)
+        self.window.sig_load_airframe_json_clicked.emit()
+        self.assertEqual(self.state.motor_dry_mass, .023)
+        self.assertEqual(self.window.airframe_label.text(), before)
+
+    def test_two_file_staging_and_minimal_save(self):
+        self.load()
+        ork = self.path.parent / 'design.ork'
+        shutil.copyfile(Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork', ork)
+        self.write(dict(ork_file=ork.name, motor_dry_mass=.016))
+        def cancel():
+            self.load(str(ork), self.path)
+            self.assertEqual(self.state.motor_dry_mass, AIRFRAME['motor_dry_mass'])
+            self.window._manual_dialog.reject()
+        self.run_manual(cancel)
+        self.assertEqual(self.state.rocket_dry_mass, AIRFRAME['mass'])
+        def apply():
+            self.load(str(ork), self.path)
+            with patch('ui_qt.sim_controller.QFileDialog.getSaveFileName', return_value=(str(self.path), '')):
+                self.window._manual_dialog.sig_save_json.emit()
+            self.window._manual_dialog.sig_apply.emit()
+        self.run_manual(apply)
+        self.assertEqual(self.state.rocket_dry_mass, .25)
+        self.assertEqual(self.state.motor_dry_mass, .016)
+        self.assertEqual(json.loads(self.path.read_text(encoding='utf-8')),
+                         {})
+
     def test_whole_openrocket_staged_cancel_apply_and_save_preserve_priority(self):
         self.load()
         fixture = Path(__file__).parents[1] / 'fixtures' / 'single_stage.ork'
@@ -404,10 +502,10 @@ class TestAirframeImport(AirframeFixture):
             self.window._manual_dialog.reject()
         self.run_manual(save)
         self.assertTrue(saved.exists())
-        data=load_airframe_config(saved)
+        data=load_airframe_config(fixture, saved)
         self.assertEqual(data['provenance']['sources']['mass'],'ork')
         self.assertIsNone(data['motor_dry_mass'])
-        self.load(str(saved))
+        self.load(str(fixture), saved)
         self.assertTrue(self.window.af_mass_input.isReadOnly())
 
     def test_imported_parachute_wins_over_json_but_lag_is_manual(self):
@@ -448,7 +546,7 @@ class TestAirframeImport(AirframeFixture):
         self.run_manual(edit)
         values = load_airframe_config(str(saved))
         self.assertEqual(values["cg"], 0.3)
-        self.assertEqual(values["motor_dry_mass"], AIRFRAME["motor_dry_mass"])
+        self.assertNotIn('motor_dry_mass', values)
 
     def test_staged_load_apply_includes_motor_values(self):
         self.load()

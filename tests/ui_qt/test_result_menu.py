@@ -110,7 +110,7 @@ class TestResultMenu(unittest.TestCase):
                 self.assertFalse(any(label.startswith(prefix) for label in labels), labels)
             self.assertFalse(any(isinstance(c, QuadContourSet) for c in ax.collections))
         self.assertEqual(self.state.simulation_result["landing_prob"], 75)
-        self.assertAlmostEqual(self.state.r90_radius, np.sqrt(18))
+        self.assertAlmostEqual(self.state.r90_radius, np.quantile(np.sqrt([13,5,10,18]),.75))
         self.assertEqual(len(self.state.simulation_result["trajectory_x"]), 4)
         self.state.show_cep = True
         self.assertTrue(w.action_show_cep.isChecked())
@@ -123,6 +123,66 @@ class TestResultMenu(unittest.TestCase):
         self.window.action_show_apogee.trigger()
         self.window.action_show_burnout.trigger()
         self.assertFalse(any(s.startswith(("Burnout", "Apogee")) for s in self.labels(self.window.profile_ax)))
+
+    def test_actual_map_and_3d_ellipse_align_with_kde_after_probability_change(self):
+        from matplotlib.patches import Ellipse, Circle
+        from core.monte_carlo import compute_error_ellipse, compute_kde_grid
+        self.load_result()
+        angle=np.deg2rad(12)
+        rotation=np.array([[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]])
+        points=np.random.default_rng(173).normal(size=(600,2))*[9,1.5]
+        points=points@rotation.T+[60,30]
+        result=dict(self.state.simulation_result)
+        result.update(ellipse=compute_error_ellipse(points),kde=compute_kde_grid(points),
+                      mc_scatter_x=points[:,0].tolist(),mc_scatter_y=points[:,1].tolist())
+        self.state.cached_mc_scatter=points
+        self.state.simulation_result=result
+        for probability in (90,75):
+            self.window.cep_prob_input.setValue(probability)
+            current=self.state.simulation_result['ellipse']
+            patches=[p for p in self.window.map_view.ax.patches if type(p) is Ellipse]
+            self.assertEqual(len(patches),1)
+            major_tip=patches[0].get_patch_transform().transform([[1,0]])[0]
+            expected=points.mean(axis=0)+current['a']*np.array([
+                np.cos(current['angle_rad']),np.sin(current['angle_rad'])])
+            np.testing.assert_allclose(major_tip,expected,atol=1e-10)
+            lines=[line for line in self.window.profile_ax.lines if line.get_label().startswith('CEP ')]
+            self.assertEqual(len(lines),1)
+            x,y,_=lines[0].get_data_3d()
+            np.testing.assert_allclose([x[0],y[0]],expected,atol=1e-10)
+            circles=[p for p in self.window.map_view.ax.patches if type(p) is Circle and p.get_linestyle()=='--']
+            self.assertTrue(any(np.allclose(p.center,points.mean(axis=0)) for p in circles))
+            # Extract the largest KDE boundary and independently compare its axis.
+            contours=[c for c in self.window.map_view.ax.collections if isinstance(c,QuadContourSet)]
+            self.assertEqual(len(contours),1)
+            polygon=max((p.vertices for p in contours[0].get_paths()),key=len)
+            _,axes=np.linalg.eigh(np.cov(polygon,rowvar=False))
+            direction=(major_tip-points.mean(axis=0))/current['a']
+            self.assertGreater(abs(direction@axes[:,-1]),.99)
+
+    def test_target_containment_rejects_biased_cloud_and_failed_trials(self):
+        self.load_result()
+        self.state.flight_mode='定点滞空'
+        self.state.target_radius=10
+        self.state.target_x=0
+        self.state.target_y=0
+        self.state.launch_lat=35.5
+        self.state.launch_lon=139.5
+        for center,attempted,expected in ((100,10,False),(0,20,False),(0,10,True)):
+            points=[(center+i/100,0) for i in range(10)]
+            stats=SimulationWorker._compute_stats(points,90)
+            stats['n_attempted']=attempted
+            nominal = copy.deepcopy(self.sample['result'])
+            for axis in 'xyz':
+                nominal[f'{axis}_vals'] = nominal.pop(f'trajectory_{axis}')
+            nominal['t_vals'] = nominal.pop('t_hist')
+            nominal['r_horiz'] = float(np.hypot(nominal['impact_x'], nominal['impact_y']))
+            payload=SimulationWorker._package_result(nominal,points,stats,90,cancelled=False)
+            payload.update(nominal_surf_spd=3,nominal_surf_dir=0)
+            self.controller._on_mc_done(payload)
+            self.assertEqual(self.state.phase2_active,expected)
+        self.assertEqual(self.state._locked_mu,(0.,-3.))
+        self.state.check_tolerance(3,0)
 
     def test_export_menu_writes_images_csv_and_restorable_json(self):
         self.load_result()

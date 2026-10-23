@@ -301,8 +301,58 @@ SAは85°から開始し、射角60–90°・周期的な方位角を探索し�
 
 優先順位は **.ork → Kazamidori自動計算 → 手入力**。Manual Configの一覧と入力欄のツールチップで出典を確認できます。取得済みの値は手入力で上書きされないよう固定し、計算へ渡す際にも優先順位を適用します。機体形状の変更はOpenRocketで編集して再読込します。通常のJSON／手動設定では従来の編集操作を使えます。
 
-Save airframeは値と`provenance`（元ファイル名、取得値、計算値、出典、注意事項）を保存します。モーター質量などが未取得でも、取込済み機体はJSONに保存できます。再読込後も優先順位を維持します。必要値が不足する間は計算を実行できません。別の機体を読み込むと、前のモーター推力曲線・未取得の質量・パラシュート設定を引き継ぎません。モーター位置欄は実際の計算上の意味に合わせて **Motor Nozzle Pos. [m]** としました。
+出典情報はメモリ内の`provenance`で保持します。2026-10-17以降、Save airframeは不足項目だけを補完JSONへ保存します（第15節）。旧形式の`provenance`付きJSONも読み込めます。モーター質量などが未取得でも保存でき、必要値が不足する間は計算を実行できません。別の機体を読み込むと、前のモーター推力曲線・未取得の質量・パラシュート設定を引き継ぎません。モーター位置欄は実際の計算上の意味に合わせて **Motor Nozzle Pos. [m]** としました。
 
 取込対象は単段・一定直径の胴体・対応ノーズ・対称フィン1組（3〜8枚）です。無効なステージは除外します。有効な多段、ポッド、複数モーター、段差や未対応ノーズはエラーを表示して読み込みを中止します。OpenRocketが保存したモーター型番だけから推力曲線や燃焼後質量を推測しないため、この2項目は別途指定が必要です。質量・CGの推定値はOpenRocketの計算結果との完全一致を意味しません。
 
 実装：`utils/openrocket_airframe.py`（部品ツリー解析）、`core/airframe_parameters.py`（CP計算と出典優先順位）。参照：[OpenRocketファイル仕様](https://openrocket.readthedocs.io/en/latest/dev_guide/file_specification.html)、[上書き値の仕様](https://github.com/openrocket/openrocket/blob/unstable/docs/source/user_guide/overrides_and_surface_finish.rst)。回帰テストは`tests/fixtures/single_stage.ork`を使い、位置基準、質量／CG上書き、既定モーターの選択、不足値、JSON往復、Apply／Cancel、優先順位が実行パラメータへ反映されることを検証します。
+
+## 14. 数学・物理検証（2026-10-17）
+
+90%楕円とKDEの向きが異なる問題を、ENU角度基準の統一で修正しました。確率倍率、KDEの確率質量、CEP円の中心、目標円の包含率によるGO/NO-GO、旧保存結果の角度移行も検証しています。[検証報告と比較図](MATH_PHYSICS_REVIEW.md)に、試験項目と開傘時刻などの未解消のモデル制約をまとめています。
+
+## 15. .orkと補完JSONの手動選択（2026-10-17）
+
+**Load Airframe**を押すと、OpenRocketと補完JSONの2つの選択欄が開きます。
+
+1. **Select .ork…**で機体の`.ork`または`.ork.gz`を選択します。
+2. **Select JSON…**で、その機体に使用する補完JSONを選択します。
+3. 両方の選択内容を確認して**Load**を押します。Cancelでは現在の機体を保持します。
+
+それぞれ任意のファイル名・フォルダから選択できます。周囲のJSONの自動検索やJSONからの.ork自動読込は行いません。旧JSONに`ork_file`が残っていても、自動参照や組み合わせの制約には使わず、画面で選択した.orkを使用します。ジョイくん・モンブランはテスト用データであり、機体名に依存する処理はありません。
+
+補完JSONの例は次のとおりです。`ork_file`の記載は不要です。
+
+```json
+{}
+```
+
+- 優先順位は **.ork → Kazamidori自動計算 → 補完JSON・手入力**。JSONで取得済みの形状等を上書きしません。未計算の質量・CGなどもJSONで補完できます。Manual Configには出典を表示し、補完値は編集可能です。
+- .ork単体も読み込めます。補完JSONを選択しなければ不足項目は空欄になります。全パラメータを持つ従来のJSONは、OpenRocket欄を空欄にしてJSON単体で読み込めます。
+- ファイルの欠損・不正なJSON・誤った項目名では読込を中止し、既存設定を保持します。
+- **Save airframe**は、.ork取込後なら不足項目だけをJSONへ保存します。形状・計算済みCG/CP・内部の出典情報・.ork参照を重複保存しません。再読込時には.orkと保存したJSONをそれぞれ選択します。手入力のみの機体は従来の単独JSONとして保存します。
+- ロードボタン横には、選択した`.ork + 補完JSON`の両ファイル名を表示します。Manual Config内での読込は、さらにApplyで適用、Cancelで取消です。
+
+テスト用の`Airframe_Joykun.json`と`Airframe_Montblanc.json`は、自動取得できない機体項目だけを置く補完ファイルです。2026-10-22にモーター燃焼後質量をそれぞれ`Motor_Joykun.json`、`Motor_Montblanc.json`の`dry_mass_kg`へ移しました。対応する機体・Motor Configはそれぞれ手動で選択します。形状・モーター取付位置・遅延は.ork、質量・CG・CPは取得値または自動計算を使用します。
+
+推力曲線は**Load Thrust Curve**から読み込みます。パラシュートの面積・Cdは.orkで取得できればそちらを優先し、開傘ラグは既存のParachute JSONまたは手入力で指定します。
+
+実装は`ui_qt/airframe_load_dialog.py`、`utils/airframe_pair.py`、`utils/data_loader.py`。テストでは任意の名前・別フォルダの2ファイル選択、自動検索しないこと、旧参照の非使用、優先順位、保存内容、欠損・不正ファイルを検証します。Qtの実ダイアログでも個別選択、選択途中の状態保持、Load／Cancelを確認します。
+
+変更後の全体テストは209件、サブテスト52件が成功しました。
+
+## 16. 運用画面・設定・進捗の更新（2026-10-22）
+
+- **方位表示**：3D軌道図の外側にE/N/Upの方位軸を配置しました。カメラ回転と同期し、軌道の座標範囲に影響しません。
+- **事前風データ取得**：風パネルの「Download GPV / Wind Data…」から開始・終了時刻をUTCで指定してCSV保存できます。提供元は既存のOpen-Meteoです。事前ダウンロードだけならSimulation timeを対象期間に合わせる必要はありません。「Use downloaded data for this simulation」を選択したときだけ現在の計算へ適用します。現場ではLoad Wind CSVと対象時刻を指定して利用します。取得可能期間は提供元に依存します。
+- **モーター設定**：「Motor Specifications」をAirframeから独立したページに移しました。推力曲線のファイル名をLoadボタン右に表示し、Load/Save Motor Configで設定を読み書きします。Motor Configの項目は`nozzle_pos_m`, `dry_mass_kg`, `backfire_delay_s`, `isp_s`, `propellant_density`です。旧Airframeのモーター項目は互換読込できますが、新しいAirframe保存には含めません。.orkから取得できた取付位置・遅延は従来の出典優先順位を維持します。
+- **パラシュート横流れ**：Recovery / Parachuteの「Horizontal Wind Drift」を0〜200%で指定します。100%はその高度の風速と同じ水平速度、50%は半分、0%は開傘後の水平移動なしです。Parachute JSONの任意キー`wind_drift_pct`、およびconfigにも保存できます。
+- **練習用の風編集**：「Edit Practice Wind…」で高度別の基準風速・風向（FROM）を編集します。基準値とランダムな模擬観測値は分離し、毎秒の風速・風向の揺らぎとMCの乱数を維持します。手動編集するとCSV風の選択を解除します。
+- **進捗**：通常実行は準備・公称軌道0〜25%、MC25〜90%、集計90〜98%、完了100%。探索付きは探索2〜65%、公称軌道65〜75%、MC75〜94%、集計95〜98%、完了100%です。プログレスバーの説明と下部の進行表示に同じ文言を使用し、終了後は100%を保持します。割合は処理段階の目安で、残り時間の推定ではありません。
+- **config.json**：起動時に読み込む共通設定を追加しました。simulation、motor、parachute、aerodynamics、practice_windを管理します。File → Save Config / Load Configで保存・復元できます。機体ファイルや推力曲線の自動選択は行いません。従来のSessionは詳細設定用として利用できます。
+
+横流れの割合指定は、開傘前の軌道を保持し、開傘後の水平速度を`比率 × 高度に対応するENU風ベクトル`として時間積分する**運動学的な近似**です。鉛直方向はRocketPyの結果を使用します。パラシュートの空力・慣性を再計算するモデルではありません。通常計算・最適化・高速MCへ同じ処理を適用します。割合の指定がない従来のコア呼び出しはRocketPyの元の水平運動を維持します。
+
+追加実装：`core/parachute_drift.py`（横流れ積分）、`utils/configuration.py`（検証・保存）、`config.json`（初期設定）。追加テストは`tests/core/test_operator_features.py`と`tests/ui_qt/test_operator_features.py`です。風データ取得は通信をモックして検証し、この変更で外部サービスへの実データ送信は行っていません。
+
+検証結果：全体224件・サブテスト52件が成功。最終調整後は、追加の探索〜完了の進捗テストを含む関連25件も成功しました。
