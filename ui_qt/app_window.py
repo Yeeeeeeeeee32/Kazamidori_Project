@@ -402,7 +402,7 @@ class ManualSetupDialog(QDialog):
         frm.addRow(self.edit_fin_btn)
         frm.addRow(self.load_ork_fins_btn)
         frm.addRow(self.fin_shape_note)
-        self.airframe_sources_note = QLabel('Load airframe は JSON / OpenRocket (.ork) に対応しています。')
+        self.airframe_sources_note = QLabel('Load airframe で OpenRocket (.ork / .ork.gz) を選択してください。')
         self.airframe_sources_note.setWordWrap(True)
         self.airframe_sources_note.setTextFormat(Qt.TextFormat.PlainText)
         frm.addRow(self.airframe_sources_note)
@@ -493,12 +493,12 @@ class ManualSetupDialog(QDialog):
                 self.airframe_sources_table.setItem(row,col,item)
         if provenance:
             note = (f"{provenance.get('file','OpenRocket')}\n"
-                    '優先順位：.ork → Kazamidori自動計算 → 補完JSON・手入力。取得済み項目は固定されます。\n'
+                    '優先順位：.ork → Kazamidori自動計算 → 手入力。取得済み項目は固定されます。\n'
                     '形状を変更する場合はOpenRocketで編集して再読込してください。\n')
             if provenance.get('supplement_path'):
                 from pathlib import Path
                 note += f"補完JSON：{Path(provenance['supplement_path']).name}\n"
-            note += 'Save airframeは不足項目だけをJSONに保存します。読込時は2ファイルを選択してください。\n'
+            note += 'Load airframeは.ork単体で読み込みます。不足項目はManual Configで入力してください。\n'
             note += '\n'.join(provenance.get('warnings', []))
             self.airframe_sources_note.setText(note)
         else:
@@ -1146,7 +1146,7 @@ class AppWindow(QMainWindow):
     sig_get_location_clicked = Signal()
     sig_import_results_clicked = Signal()
 
-    OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由")
+    OPERATION_MODES = ("定点滞空", "高度", "有翼", "自由", "モンブラン")
 
     def __init__(self, state: AppState, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -1614,6 +1614,26 @@ class AppWindow(QMainWindow):
 
         mode_lay.addRow("飛行モード:",    self.mode_combo)
         mode_lay.addRow("Maximum Radius:", self.rmax_input)
+        self.montblanc_group = QGroupBox('Montblanc landing conditions', mode_grp)
+        mb_layout = QFormLayout(self.montblanc_group)
+        self.montblanc_inputs = {}
+        from core.montblanc import DEFAULTS
+        for key, title, unit in (
+            ('max_speed_ms', '最大水平速度', ' m/s'),
+            ('window_s', '着地直前の評価時間', ' s'),
+            ('max_variation_ms', '許容速度変動幅 (最大−最小)', ' m/s')):
+            spin = QDoubleSpinBox(self.montblanc_group)
+            spin.setDecimals(2)
+            spin.setRange(.01 if key == 'window_s' else 0., 120. if key == 'window_s' else 1000.)
+            spin.setSuffix(unit)
+            spin.setValue(DEFAULTS[key])
+            spin.wheelEvent = lambda event: event.ignore()
+            self.montblanc_inputs[key] = spin
+            mb_layout.addRow(title, spin)
+        note = QLabel('対地水平速度。評価時間全体で上限と変動幅を判定。\n初期値は仮設定です。チームの条件を入力してください。\n振り子運動・能動制御は含みません。')
+        note.setWordWrap(True)
+        mb_layout.addRow(note)
+        mode_lay.addRow(self.montblanc_group)
 
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         # Initial _on_mode_changed call is deferred until after self.res_labels
@@ -1682,6 +1702,10 @@ class AppWindow(QMainWindow):
         # can safely run.
         self._on_mode_changed("自由")
 
+        self.montblanc_result_label = QLabel('Montblanc: —')
+        self.montblanc_result_label.setWordWrap(True)
+        self.montblanc_result_label.setVisible(False)
+        res_lay.addRow(self.montblanc_result_label)
         self.mc_quality_label = QLabel('MC: —')
         self.mc_quality_label.setWordWrap(True)
         res_lay.addRow(self.mc_quality_label)
@@ -3073,6 +3097,8 @@ class AppWindow(QMainWindow):
                 for key in context:
                     if key in snapshot:
                         context[key] = snapshot[key]
+                if context['flight_mode'] == 'モンブラン':
+                    context['montblanc_options'] = snapshot.get('montblanc_options', s.montblanc_options)
                 archive = make_archive(s.simulation_result, s.nominal_result, context)
                 (save_csv if kind == "csv" else save_archive)(filepath, archive)
         except (OSError, ValueError, TypeError) as exc:
@@ -3339,6 +3365,8 @@ class AppWindow(QMainWindow):
         is_free = "free" in mode.lower() or "自由" in mode
         if is_free:
             keys = ["apogee", "hdist", "hang", "mc_avg_apo", "mc_min_apo", "mc_avg_hdist", "mc_max_hdist"]
+        elif mode == "モンブラン":
+            keys = ["angle", "azimuth", "hdist", "hang"]
         elif mode == "定点滞空":
             keys = ["angle", "azimuth", "score", "hdist", "hang", "mc_avg_score", "mc_min_score"]
         elif mode == "高度":
@@ -3355,6 +3383,10 @@ class AppWindow(QMainWindow):
                 lbl_val.setVisible(True)
 
     def _on_mode_changed(self, mode: str) -> None:
+        from core.montblanc import is_montblanc
+        self.montblanc_group.setVisible(is_montblanc(mode))
+        if hasattr(self, 'montblanc_result_label'):
+            self.montblanc_result_label.setVisible(is_montblanc(mode))
         is_free = "free" in mode.lower() or "自由" in mode
         self.rmax_input.setEnabled(not is_free)
         if is_free:

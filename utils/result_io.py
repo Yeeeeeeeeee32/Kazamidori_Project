@@ -158,8 +158,16 @@ def validate_archive(archive):
     if archive.get("version") != 1 or archive.get("coordinates") != "ENU_m":
         raise ResultFileError("Unsupported result format version or coordinate system.")
     context = archive.get("context")
-    if not isinstance(context, dict) or context.get("flight_mode") not in ("定点滞空", "高度", "有翼", "自由"):
+    if not isinstance(context, dict) or context.get("flight_mode") not in ("定点滞空", "高度", "有翼", "自由", "モンブラン"):
         raise ResultFileError("Missing or invalid flight mode.")
+    if context.get('flight_mode') == 'モンブラン' and 'montblanc_options' not in context:
+        raise ResultFileError('Missing Montblanc landing conditions')
+    if 'montblanc_options' in context:
+        from core.montblanc import normalize_options
+        try:
+            normalize_options(context['montblanc_options'])
+        except (TypeError, ValueError) as exc:
+            raise ResultFileError(str(exc)) from exc
     lat, lon = context.get("launch_lat"), context.get("launch_lon")
     if (lat is None) != (lon is None):
         raise ResultFileError("Both launch coordinates are required.")

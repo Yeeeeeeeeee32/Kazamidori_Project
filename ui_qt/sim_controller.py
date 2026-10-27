@@ -193,6 +193,17 @@ class SimController(QObject):
         # Bidirectional binding: spinbox → AppState on user edit; AppState signal
         # → spinbox.setValue on JSON load or external state change.
         self._wire_airframe_spinboxes()
+        for key, spin in window.montblanc_inputs.items():
+            spin.setValue(state.montblanc_options[key])
+            spin.valueChanged.connect(lambda value, key=key: setattr(state, 'montblanc_options', {key:value}))
+        def sync_montblanc(values):
+            for key, spin in window.montblanc_inputs.items():
+                was_blocked = spin.blockSignals(True)
+                try:
+                    spin.setValue(values[key])
+                finally:
+                    spin.blockSignals(was_blocked)
+        state.montblanc_options_changed.connect(sync_montblanc)
 
         # ── Load Rocket JSON button → controller ──────────────────────────────
         # AppWindow emits sig_load_airframe_json_clicked instead of opening the
@@ -252,7 +263,7 @@ class SimController(QObject):
                  'motor_cg_pos','motor_dry_mass','parachute_cd','parachute_area','parachute_lag',
                  'backfire_delay','launch_angle','launch_rail','flight_mode','target_radius',
                  'launch_lat','launch_lon','wind_uncertainty','thrust_uncertainty','gust_speed',
-                 'landing_prob','mc_n_runs','target_x','target_y',
+                 'landing_prob','mc_n_runs','target_x','target_y','montblanc_options',
                  'power_on_cd','power_off_cd','motor_isp','motor_propellant_density',
                  'fin_count','nose_shape','hellmann_alpha','phase4_options','fin_options',
                  'cd_curve_power_on','cd_curve_power_off','wind_profile_data')
@@ -343,7 +354,7 @@ class SimController(QObject):
             s._nose_length, s._fin_root_chord, s._fin_tip_chord, s._fin_span,
             s._fin_position
         )):
-            missing.append("Rocket Geometry (Load an OpenRocket design with its supplement JSON, or fill the fields manually)")
+            missing.append("Rocket Geometry (Load an OpenRocket .ork design, or fill the missing fields in Manual Config)")
 
         if s.motor_cg_pos is None or s.motor_dry_mass is None:
             missing.append("Motor Physical Parameters (Motor CG Pos and Motor Dry Mass must be filled manually)")
@@ -724,6 +735,24 @@ class SimController(QObject):
         w.mc_quality_label.setText(f"MC: {n}/{attempted} completed; "
             f"{mc_data.get('mc_disqualified_count',0)} disqualified; {attempted-n} failed. Scores: valid trials only.")
         is_free = "free" in mode.lower() or "自由" in mode
+        from core.montblanc import is_montblanc
+        if is_montblanc(mode):
+            values = dict(mc_data)
+            values.update(nominal_data)
+            def metric(key):
+                value = values.get(key)
+                return '-' if value is None else f'{value:.2f}'
+            w.montblanc_result_label.setText(
+                f"着地水平速度: {metric('landing_horizontal_speed_ms')} m/s\n"
+                f"直前区間の最大速度: {metric('landing_window_max_speed_ms')} m/s\n"
+                f"速度変動幅: {metric('landing_speed_variation_ms')} m/s\n"
+                f"評価時間の確保: {'OK' if values.get('landing_window_covered') else '不足 / 不明'}\n"
+                f"公称条件: {'適合' if values.get('montblanc_pass') else '不適合 / 不明'}\n"
+                f"MC全条件適合: {mc_data.get('mc_montblanc_joint_count',0)}/{attempted}")
+            for label, key, unit in ((w.lbl_res_angle,'elev',' °'), (w.lbl_res_azimuth,'azi',' °'),
+                                     (w.lbl_res_hdist,'r_horiz',' m'), (w.lbl_res_hang,'hang_time',' s')):
+                value = values.get(key)
+                label.setText('-' if value is None else f'{value:.2f}{unit}')
 
         def set_val(lbl, val, fmt, suffix=""):
             if val is not None and val != "N/A":
@@ -853,6 +882,8 @@ class SimController(QObject):
             self._window.update_status_indicator(
                 f"NO-GO — Nominal {_nom_dist:.0f} m > Target {_target_r:.0f} m  |  MC running…"
             )
+        elif _mode_str == 'モンブラン' and not payload.get('montblanc_pass', False):
+            self._window.update_status_indicator('NO-GO — 水平速度・安定条件が不適合 / 評価時間不足 | MC running…')
         else:
             self._window.update_status_indicator(
                 f"CALCULATING — Nominal {_nom_dist:.0f} m / {_target_r:.0f} m  |  MC running…"
@@ -1008,6 +1039,21 @@ class SimController(QObject):
                 f"Apogee: {apogee:.0f} m  |  ToF: {tof:.1f} s  ({n} runs)",
                 "#f9e2af",
             )
+        elif _mode_str_mc == 'モンブラン':
+            attempted = int(result.get('n_attempted', len(_scatter)))
+            joint = int(result.get('mc_montblanc_joint_count', 0))
+            fraction = joint / attempted if attempted > 0 else 0.
+            nominal_ok = bool(result.get('montblanc_pass', False))
+            is_safe = nominal_ok and len(_scatter) >= 4 and fraction >= prob / 100.
+            verdict = 'GO' if is_safe else 'NO-GO'
+            self._window.update_status_indicator(
+                f'{verdict} (Montblanc 全条件 {fraction:.1%}; 必要 {prob}%)')
+            self._window.set_status(
+                f'{verdict} | 水平速度・安定・着地範囲: {joint}/{attempted} | '
+                '実行時条件の判定。速度条件のライブ再評価には再計算が必要。',
+                '#a6e3a1' if is_safe else '#f9e2af')
+            # Surface-wind tolerance alone cannot revalidate a speed window.
+            self._state.phase2_active = False
         else:
             from core.monte_carlo import landing_region_fraction
             fraction = landing_region_fraction(
@@ -1286,6 +1332,7 @@ class SimController(QObject):
             "thrust_unc": w.thrust_unc_input.value(),
             # ── Mode and gust — sourced from AppState ──────────────────────────
             "flight_mode":  s.flight_mode,
+            "montblanc_options": s.montblanc_options,
             "is_free_mode": ("free" in str(s.flight_mode).lower() or "自由" in str(s.flight_mode)),
             "gust_speed":   s.gust_speed,
             # ── Turbulence (auto-computed from 60s wind history) ───────────────
@@ -1647,7 +1694,7 @@ class SimController(QObject):
 
     @Slot()
     def _on_load_airframe_json(self) -> None:
-        """Load a design and its supplement together, with staged Apply/Cancel."""
+        """Select ORK with staged Apply/Cancel; retain legacy internal tuples."""
         from pathlib import Path
 
         selection = select_airframe_files(self._window._manual_dialog if self._manual_editing else self._window)
@@ -2027,6 +2074,8 @@ class SimController(QObject):
         s.target_x,s.target_y = context.get('target_x',0.),context.get('target_y',0.)
         w.mode_combo.setCurrentText(context["flight_mode"])
         s.flight_mode = context["flight_mode"]
+        if 'montblanc_options' in context:
+            s.montblanc_options = context['montblanc_options']
         # Mode changes install convenient defaults; restore the recorded
         # radius afterwards so importing cannot silently change the target.
         s.target_radius = context.get("target_radius")

@@ -224,6 +224,10 @@ def p1_objective_score(
     is_precision = "precision" in mode.lower() or "定点" in mode
     is_altitude  = "altitude"  in mode.lower() or "高度" in mode
     is_winged    = "winged"    in mode.lower() or "有翼" in mode
+    from .montblanc import is_montblanc
+    if is_montblanc(mode):
+        if not res.get('montblanc_pass', False):
+            return -math.inf
 
     # ── Step 3: target-relative distance boundary check (non-Free modes only) ─
     # Use the Euclidean distance from the actual impact point to the TARGET
@@ -245,6 +249,8 @@ def p1_objective_score(
         return float('-inf')
 
     # ── Step 4: mode-specific scoring ─────────────────────────────────────────
+    if is_montblanc(mode):
+        return -(res['landing_window_max_speed_ms'] + res['landing_speed_variation_ms'])
     if is_free:
         # Free Mode: no target radius — maximise time aloft.
         # Return hang_time as positive baseline; fall back to r_horiz if absent.
@@ -282,7 +288,7 @@ def optimize_launch_angle(
 ) -> dict:
     """Simulated annealing followed by independent Monte Carlo verification."""
     from core.annealing import anneal
-    base_params = dict(base_params, verification_radius=r_max, target_x=target_x, target_y=target_y)
+    base_params = dict(base_params, flight_mode=mode, verification_radius=r_max, target_x=target_x, target_y=target_y)
     is_free = "free" in mode.lower() or "自由" in mode
     score_a = float(base_params.get('score_a', 1.0))
     score_b = float(base_params.get('score_b', 1.0))
@@ -337,7 +343,7 @@ def optimize_launch_angle(
         details = '\n'.join(f'- {count}/{N}: {reason}' for reason, count in failures.most_common(3))
         raise SimulationInputError(f'Simulation failed for all {N} candidates.\n{details}')
     if not candidates:
-        raise SimulationInputError('No candidate satisfies the maximum landing radius. Check the target and wind settings.')
+        raise SimulationInputError('No candidate satisfies the landing constraints (radius / Montblanc speed and stability). Check the wind, parachute and limits.')
 
     # Phase 2: MC verification on top-5
     top_n    = min(5, len(candidates))
@@ -456,6 +462,9 @@ def _monte_carlo_r90(
 
         r = simulate_once(elev, azi, p)
         if r['ok']:
+            from .montblanc import is_montblanc
+            if is_montblanc(base_params.get('flight_mode', '')) and not r.get('montblanc_pass', False):
+                continue
             distance = math.hypot(r['impact_x'] - target_x, r['impact_y'] - target_y)
             distances.append(distance)
             within += distance <= radius_limit

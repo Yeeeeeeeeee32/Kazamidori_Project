@@ -8,6 +8,11 @@ from utils.result_io import atomic_write
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / 'config.json'
 SECTIONS = {
+    'montblanc': {
+        'max_speed_ms': ('montblanc_max_speed_ms', 0, 1000),
+        'window_s': ('montblanc_window_s', .01, 120),
+        'max_variation_ms': ('montblanc_max_variation_ms', 0, 1000),
+    },
     'simulation': {
         'wind_uncertainty': ('wind_uncertainty', 0, 1),
         'thrust_uncertainty': ('thrust_uncertainty', 0, 1),
@@ -90,6 +95,10 @@ def apply_config(state, data):
     data = validate_config(data)  # Validate every section before changing state.
     for section, fields in SECTIONS.items():
         for key, value in data[section].items():
+            if section == 'montblanc':
+                if value is not None:
+                    state.montblanc_options = {key: value}
+                continue
             prop = fields[key][0]
             provenance = getattr(state, 'airframe_provenance', {})
             source_key = {'nozzle_pos_m': 'motor_pos', 'backfire_delay_s': 'backfire_delay'}.get(key)
@@ -110,6 +119,9 @@ def apply_config(state, data):
 def state_config(state):
     data = {'version': 1, 'practice_wind': state.wind_profile_data}
     for section, fields in SECTIONS.items():
+        if section == 'montblanc':
+            data[section] = state.montblanc_options
+            continue
         data[section] = {key:getattr(state, prop) for key,(prop,_,_) in fields.items()}
     return validate_config(data)
 

@@ -477,8 +477,21 @@ def simulate_once(elev: float, azi: float, params: dict[str, Any], trial_idx: in
         from .parachute_drift import apply_parachute_drift
         x,y = apply_parachute_drift(t,x,y,z,open_time,params['wind_u_prof'],params['wind_v_prof'],
                                    params.get('para_wind_drift_ratio'))
+        from .montblanc import is_montblanc, landing_metrics
+        landing = {}
+        if is_montblanc(params.get('flight_mode', '')):
+            vx, vy = solution[:,4].copy(), solution[:,5].copy()
+            ratio = params.get('para_wind_drift_ratio')
+            if ratio is not None:
+                # Differentiate the prescribed advection analytically, rather
+                # than the discretized positions or the pre-correction state.
+                deployed = t >= open_time
+                for velocity, profile in ((vx, params['wind_u_prof']), (vy, params['wind_v_prof'])):
+                    nodes = np.asarray(profile, dtype=float)
+                    velocity[deployed] = float(ratio) * np.interp(z[deployed], nodes[:,0], nodes[:,1])
+            landing = landing_metrics(t, vx, vy, open_time, params.get('montblanc_options'))
         index = lambda time: int(np.argmin(np.abs(t-time)))
-        return dict(ok=True,termination_reason='ground_impact',parachute_deployed=True,
+        return dict(ok=True,termination_reason='ground_impact',parachute_deployed=True,**landing,
             apogee_m=float(z.max()),hang_time=float(t[-1]),impact_x=float(x[-1]),impact_y=float(y[-1]),
             r_horiz=math.hypot(x[-1],y[-1]),t_vals=t,x_vals=x,y_vals=y,z_vals=z,vz_vals=vz,
             idx_burnout=index(burn_time),idx_bf=index(bf_time),idx_para=index(open_time),

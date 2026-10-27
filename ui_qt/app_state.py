@@ -89,6 +89,21 @@ class AppState(QObject):
             self.phase4_options_changed.emit(dict(options))
             self.effective_declination_changed.emit(self.effective_declination)
 
+    montblanc_options_changed = Signal(object)
+
+    @Property(object, notify=montblanc_options_changed)
+    def montblanc_options(self):
+        from core.montblanc import normalize_options
+        return normalize_options(getattr(self, '_montblanc_options', None))
+
+    @montblanc_options.setter
+    def montblanc_options(self, value):
+        from core.montblanc import normalize_options
+        options = normalize_options(dict(self.montblanc_options, **value))
+        if options != self.montblanc_options:
+            self._montblanc_options = options
+            self.montblanc_options_changed.emit(dict(options))
+
     # ── Simulation configuration ───────────────────────────────────────────────
     wind_uncertainty_changed   = Signal(object)
     magnetic_declination_changed = Signal(float)

@@ -134,6 +134,7 @@ def state_to_dict(state: "object") -> dict[str, Any]:
     return {
         "schema_version": _SCHEMA_VERSION,
         "phase4": dict(getattr(state, 'phase4_options', {})),
+        "montblanc": dict(getattr(state, 'montblanc_options', {})),
         "aerodynamics": {
             "power_on_cd":         float(state.power_on_cd),
             "power_off_cd":        float(state.power_off_cd),
@@ -155,6 +156,12 @@ def _session_changes(state: "object", data: dict[str, Any]) -> dict:
     if isinstance(schema,bool) or not isinstance(schema,int) or not 1 <= schema <= _SCHEMA_VERSION:
         raise SessionError('Unsupported session schema_version')
     changes = {}
+    if 'montblanc' in data:
+        from core.montblanc import normalize_options
+        try:
+            changes['montblanc_options'] = normalize_options(data['montblanc'])
+        except (TypeError, ValueError) as exc:
+            raise SessionError(str(exc)) from exc
     try:
         for section,fields in {
             'aerodynamics':{'power_on_cd':('power_on_cd',0,10),'power_off_cd':('power_off_cd',0,10)},

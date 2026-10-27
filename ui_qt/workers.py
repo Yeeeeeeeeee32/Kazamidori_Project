@@ -344,6 +344,7 @@ class SimulationWorker(QThread):
             # and avoids any Matplotlib background imports.
             mc_scatter_x_filtered = []
             mc_scatter_y_filtered = []
+            kde_grid = stats.get("kde")
 
             if scatter:
                 sx = [pt["x"] if isinstance(pt, dict) else pt[0] for pt in scatter]
@@ -558,6 +559,7 @@ class SimulationWorker(QThread):
 
         return {
             "t_vals":     t,
+            **{k:v for k,v in nominal.items() if k.startswith('landing_') or k == 'montblanc_pass'},
             **{k:nominal.get(k) for k in ('termination_reason','parachute_deployed',
                                          'para_open_time','solver_settings','burn_time_s')},
             "x_vals":     x,
@@ -699,6 +701,7 @@ class SimulationWorker(QThread):
                 h_time = max(0.0, h_time - bf_t)
 
             scatter.append({
+                **{k:v for k,v in r.items() if k.startswith('landing_') or k == 'montblanc_pass'},
                 "x":          float(r["impact_x"]),
                 "y":          float(r["impact_y"]),
                 "apogee":     float(r["apogee_m"]),
@@ -780,7 +783,10 @@ class SimulationWorker(QThread):
 
         extra = {}
         if scatter and isinstance(scatter[0], dict):
-            extra = dict(mc_avg_apogee=avg_alt,
+            if 'montblanc_pass' in scatter[0]:
+                extra['mc_montblanc_joint_count'] = sum(
+                    bool(pt.get('montblanc_pass')) and math.isfinite(pt['score']) for pt in scatter)
+            extra.update(mc_avg_apogee=avg_alt,
                 mc_min_apogee=min(pt['apogee'] for pt in scatter),
                 mc_avg_hdist=sum(math.hypot(pt['x'],pt['y']) for pt in scatter)/len(scatter),
                 mc_max_hdist=max(math.hypot(pt['x'],pt['y']) for pt in scatter),
@@ -875,6 +881,7 @@ class SimulationWorker(QThread):
 
         return {
             "cancelled":      cancelled,
+            **{k:v for k,v in nom_pkg.items() if k.startswith('landing_') or k == 'montblanc_pass'},
             **{k:nom_pkg.get(k) for k in ('termination_reason','parachute_deployed',
                                          'para_open_time','bf_abs_time','solver_settings','burn_time_s')},
             **{k:v for k,v in stats.items() if k.startswith('mc_')},

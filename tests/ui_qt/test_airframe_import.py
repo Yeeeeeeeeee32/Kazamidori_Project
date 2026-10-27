@@ -403,7 +403,7 @@ class TestAirframeImport(AirframeFixture):
         self.assertEqual(self.state.motor_dry_mass, .016)
         self.assertEqual(self.window.airframe_label.text(), before)
 
-    def test_real_file_selection_dialog_loads_only_manually_chosen_pair(self):
+    def test_real_file_selection_dialog_loads_only_manually_chosen_ork(self):
         self.load()
         folder = self.path.parent / 'other'
         folder.mkdir()
@@ -419,17 +419,21 @@ class TestAirframeImport(AirframeFixture):
             try:
                 self.assertIsInstance(dialog, AirframeLoadDialog)
                 self.assertEqual(dialog.ork_path.text(), '')
-                self.assertEqual(dialog.json_path.text(), '')
+                self.assertFalse(hasattr(dialog, 'json_path'))
+                self.assertFalse(hasattr(dialog, 'json_browse'))
                 dialog.accept()
                 self.assertTrue(dialog.isVisible())
                 self.assertTrue(dialog.error_label.text())
                 with patch('ui_qt.airframe_load_dialog.QFileDialog.getOpenFileName',
-                           side_effect=[(str(ork), ''), ('', ''), (str(supplement), '')]):
+                           side_effect=[(str(ork), ''), ('', '')]):
                     dialog.ork_browse.click()
-                    dialog.json_browse.click()  # Cancelling a picker keeps the ORK selection.
+                    dialog.ork_browse.click()  # Cancelling keeps the chosen design.
                     self.assertEqual(dialog.ork_path.text(), str(ork))
-                    self.assertEqual(dialog.json_path.text(), '')
-                    dialog.json_browse.click()
+                dialog.ork_path.setText(str(supplement))
+                dialog.accept()
+                self.assertTrue(dialog.isVisible())
+                self.assertIn('.ork', dialog.error_label.text())
+                dialog.ork_path.setText(str(ork))
                 self.assertEqual(self.state.motor_dry_mass, AIRFRAME['motor_dry_mass'])
                 dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).click()
             except BaseException as exc:
@@ -439,16 +443,16 @@ class TestAirframeImport(AirframeFixture):
         self.window.sig_load_airframe_json_clicked.emit()
         if errors:
             raise errors[0]
-        self.assertEqual(self.state.motor_dry_mass, .023)
-        self.assertIn('another_design.ork + measurements.json', self.window.airframe_label.text())
+        self.assertIsNone(self.state.motor_dry_mass)
+        self.assertEqual(self.window.airframe_label.text(), 'another_design.ork')
         before = self.window.airframe_label.text()
         def cancel():
             dialog = self.app.activeModalWidget()
-            dialog.json_path.setText(str(self.path))
+            dialog.ork_path.setText(str(ork))
             dialog.reject()
         QTimer.singleShot(0, cancel)
         self.window.sig_load_airframe_json_clicked.emit()
-        self.assertEqual(self.state.motor_dry_mass, .023)
+        self.assertIsNone(self.state.motor_dry_mass)
         self.assertEqual(self.window.airframe_label.text(), before)
 
     def test_two_file_staging_and_minimal_save(self):

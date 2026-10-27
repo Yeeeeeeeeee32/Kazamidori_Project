@@ -1,4 +1,4 @@
-"""Explicit, independent selection of an airframe design and its supplement."""
+"""Explicit selection of one OpenRocket design; no Airframe JSON input."""
 from pathlib import Path
 
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
@@ -10,27 +10,23 @@ class AirframeLoadDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Load Airframe')
-        self.resize(660, 230)
+        self.resize(660, 190)
         layout = QVBoxLayout(self)
-        note = QLabel('機体の.orkと補完JSONをそれぞれ選択してください。ファイル名・保存場所は自由です。\n'
-                      '.ork単体、または全パラメータを持つ従来のJSON単体も読み込めます。')
+        note = QLabel('機体の.orkファイルを選択してください。補完JSONは不要です。\n'
+                      '取得できない機体項目はManual Configで入力してください。')
         note.setWordWrap(True)
         layout.addWidget(note)
         form = QFormLayout()
         layout.addLayout(form)
         self.ork_path = QLineEdit()
-        self.json_path = QLineEdit()
         self.ork_browse = QPushButton('Select .ork…')
-        self.json_browse = QPushButton('Select JSON…')
-        for label, field, button in (('OpenRocket:', self.ork_path, self.ork_browse),
-                                     ('補完JSON:', self.json_path, self.json_browse)):
+        for label, field, button in (('OpenRocket:', self.ork_path, self.ork_browse),):
             field.setClearButtonEnabled(True)
             row = QHBoxLayout()
             row.addWidget(field, 1)
             row.addWidget(button)
             form.addRow(label, row)
         self.ork_browse.clicked.connect(lambda: self._browse(self.ork_path, 'OpenRocket (*.ork *.ork.gz)'))
-        self.json_browse.clicked.connect(lambda: self._browse(self.json_path, 'Airframe JSON (*.json)'))
         self.error_label = QLabel()
         self.error_label.setStyleSheet('color: #f38ba8;')
         layout.addWidget(self.error_label)
@@ -46,15 +42,12 @@ class AirframeLoadDialog(QDialog):
             field.setText(path)
 
     def accept(self):
-        ork, supplement = self.ork_path.text().strip(), self.json_path.text().strip()
-        if not ork and not supplement:
+        ork = self.ork_path.text().strip()
+        if not ork:
             self.error_label.setText('読み込むファイルを選択してください。')
             return
         if ork and not ork.lower().endswith(('.ork', '.ork.gz')):
             self.error_label.setText('OpenRocket欄には.orkまたは.ork.gzを選択してください。')
-            return
-        if supplement and not supplement.lower().endswith('.json'):
-            self.error_label.setText('補完JSON欄には.jsonを選択してください。')
             return
         super().accept()
 
@@ -63,4 +56,5 @@ def select_airframe_files(parent):
     dialog = AirframeLoadDialog(parent)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
-    return dialog.ork_path.text().strip(), dialog.json_path.text().strip()
+    # Preserve the internal tuple contract for legacy callers.
+    return dialog.ork_path.text().strip(), ''
