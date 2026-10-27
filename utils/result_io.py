@@ -71,6 +71,12 @@ def _parallel_arrays(data, keys):
 def _validate_payload(data):
     if not isinstance(data, dict):
         raise ResultFileError("Result data must be an object.")
+    snapshot = data.get('input_snapshot')
+    if snapshot is not None:
+        if not isinstance(snapshot,dict):
+            raise ResultFileError('input_snapshot must be an object')
+        if 'flight_mode' in snapshot and not isinstance(snapshot['flight_mode'],str):
+            raise ResultFileError('input_snapshot.flight_mode must be a string')
     for keys in (("trajectory_x", "trajectory_y", "trajectory_z"),
                  ("x_vals", "y_vals", "z_vals"),
                  ("mc_scatter_x", "mc_scatter_y"),
@@ -160,6 +166,9 @@ def validate_archive(archive):
     if lat is not None and not (-90 <= _number(lat, "latitude") <= 90 and -180 <= _number(lon, "longitude") <= 180):
         raise ResultFileError("Launch coordinates are outside their valid range.")
     radius = context.get("target_radius")
+    for key in ('target_x','target_y'):
+        if key in context:
+            _number(context[key],key)
     if radius is not None and _number(radius, "maximum radius") < 0:
         raise ResultFileError("Maximum radius must be nonnegative.")
     _validate_payload(archive.get("result"))

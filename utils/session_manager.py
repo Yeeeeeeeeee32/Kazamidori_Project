@@ -44,6 +44,7 @@ Phase B / C handed us originally.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Optional
 
 
@@ -108,6 +109,9 @@ def _curve_from_jsonable(
                 f"Cd curve entry #{i} is not numeric: {entry!r}"
             ) from exc
         result.append((mach, cd))
+    if (len(result) < 2 or any(not math.isfinite(v) or v < 0 for p in result for v in p)
+            or any(a[0] >= b[0] for a,b in zip(result,result[1:]))):
+        raise SessionError('Cd curve requires finite non-negative values and increasing Mach')
     return result
 
 
@@ -143,67 +147,45 @@ def state_to_dict(state: "object") -> dict[str, Any]:
     }
 
 
+def _session_changes(state: "object", data: dict[str, Any]) -> dict:
+    """Validate the complete draft before changing any live property."""
+    if not isinstance(data,dict):
+        raise SessionError('Session must be an object')
+    schema = data.get('schema_version',_SCHEMA_VERSION)
+    if isinstance(schema,bool) or not isinstance(schema,int) or not 1 <= schema <= _SCHEMA_VERSION:
+        raise SessionError('Unsupported session schema_version')
+    changes = {}
+    try:
+        for section,fields in {
+            'aerodynamics':{'power_on_cd':('power_on_cd',0,10),'power_off_cd':('power_off_cd',0,10)},
+            'motor':{'isp':('motor_isp',40,300),'propellant_density':('motor_propellant_density',500,2500)}
+        }.items():
+            raw = data.get(section,{})
+            if not isinstance(raw,dict):
+                raise SessionError(f'{section} must be an object')
+            for key,(prop,lo,hi) in fields.items():
+                if key in raw:
+                    value = float(raw[key])
+                    if isinstance(raw[key],bool) or not math.isfinite(value) or not lo <= value <= hi:
+                        raise SessionError(f'{section}.{key} outside its valid range')
+                    changes[prop] = value
+        for key in ('cd_curve_power_on','cd_curve_power_off'):
+            if key in data.get('aerodynamics',{}):
+                changes[key] = _curve_from_jsonable(data['aerodynamics'][key])
+        phase4 = data.get('phase4',{})
+        if not isinstance(phase4,dict):
+            raise SessionError('phase4 must be an object')
+        if phase4:
+            from utils.phase4_settings import normalize_phase4
+            changes['phase4_options'] = normalize_phase4(phase4,state.phase4_options)
+    except (ValueError,TypeError,AttributeError) as exc:
+        raise SessionError(str(exc)) from exc
+    return changes
+
+
 def dict_to_state(state: "object", data: dict[str, Any]) -> None:
-    """Apply a previously-saved snapshot to the live AppState.
-
-    Each field is written through the AppState property *setter* so the
-    change signals fire — UI bindings, plot views, and (any future)
-    persisted snapshot subscribers see the load just as they would see
-    a manual edit in the Advanced Settings dialog.
-
-    Missing keys are silently kept at their current value: this makes
-    partial/legacy session files forward-compatible (e.g. a session
-    saved before Cd curves existed still loads cleanly).
-
-    Raises
-    ------
-    SessionError
-        If the data dict has the wrong top-level shape, an unknown
-        ``schema_version``, or a Cd curve that cannot be re-tupled.
-    """
-    if not isinstance(data, dict):
-        raise SessionError(
-            f"Session file must contain a JSON object, got {type(data).__name__}"
-        )
-
-    schema = data.get("schema_version", _SCHEMA_VERSION)
-    if not isinstance(schema, int) or schema > _SCHEMA_VERSION:
-        raise SessionError(
-            f"Unsupported session schema_version={schema!r} "
-            f"(this build understands ≤ {_SCHEMA_VERSION})"
-        )
-
-    aero = data.get("aerodynamics") or {}
-    phase4 = data.get('phase4', {})
-    if not isinstance(phase4, dict):
-        raise SessionError('phase4 section must be an object')
-    if phase4:
-        try:
-            state.phase4_options = phase4
-        except (ValueError, TypeError) as exc:
-            raise SessionError(str(exc)) from exc
-    if not isinstance(aero, dict):
-        raise SessionError("`aerodynamics` section must be an object")
-
-    if "power_on_cd" in aero:
-        state.power_on_cd = float(aero["power_on_cd"])
-    if "power_off_cd" in aero:
-        state.power_off_cd = float(aero["power_off_cd"])
-
-    # Cd curves: critical tuple re-conversion happens inside _curve_from_jsonable.
-    if "cd_curve_power_on" in aero:
-        state.cd_curve_power_on = _curve_from_jsonable(aero["cd_curve_power_on"])
-    if "cd_curve_power_off" in aero:
-        state.cd_curve_power_off = _curve_from_jsonable(aero["cd_curve_power_off"])
-
-    motor = data.get("motor") or {}
-    if not isinstance(motor, dict):
-        raise SessionError("`motor` section must be an object")
-
-    if "isp" in motor:
-        state.motor_isp = float(motor["isp"])
-    if "propellant_density" in motor:
-        state.motor_propellant_density = float(motor["propellant_density"])
+    for key,value in _session_changes(state,data).items():
+        setattr(state,key,value)
 
 
 def save_session(state: "object", filepath: str) -> None:
@@ -212,9 +194,9 @@ def save_session(state: "object", filepath: str) -> None:
     Raises :class:`OSError` if the file cannot be written.
     """
     payload = state_to_dict(state)
-    with open(filepath, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
+    _session_changes(state,payload)
+    from utils.result_io import atomic_write
+    atomic_write(filepath,(json.dumps(payload,indent=2,ensure_ascii=False,allow_nan=False)+'\n').encode('utf-8'))
 
 
 def load_session(state: "object", filepath: str) -> None:

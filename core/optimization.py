@@ -125,60 +125,25 @@ def _perturb_wind_profile(
     wu: float,
     gust_intensity: float = 0.0,
 ) -> tuple[list, list, list]:
-    """Apply stochastic perturbations to a (u, v) wind profile.
+    """Compatibility wrapper around the canonical wind uncertainty model.
 
-    Each altitude level has its wind speed multiplied by a lognormal factor
-    drawn from N(0, wu) in log-space (i.e. speed_scale = exp(N(0,wu))).
-    An additional short-timescale gust component scaled by ``gust_intensity``
-    is added on top.
+    Uses shared column scaling/rotation, local component noise and absolute
+    gust noise. See core.monte_carlo for the distribution contract.
 
     Args:
         base_u:         List of (altitude_m, u_m_s) tuples (eastward component).
         base_v:         List of (altitude_m, v_m_s) tuples (northward component).
         rng:            Seeded :class:`random.Random` instance.
-        wu:             Fractional wind uncertainty (std-dev in log-space).
-        gust_intensity: Extra additive gust std-dev as a fraction of local
-                        speed (0.0 disables gusts, used during optimisation MC).
+        wu:             Fractional wind uncertainty.
+        gust_intensity: Absolute component standard deviation in m/s.
 
     Returns:
         (u_prof, v_prof, spd_prof) where each element is a list of
         (altitude_m, value) tuples and spd_prof contains the perturbed
         scalar speed at each level.
     """
-    if not base_u:
-        return [], [], []
-
-    u_prof: list = []
-    v_prof: list = []
-    spd_prof: list = []
-
-    # Draw a single correlated "bulk" scale factor that shifts the whole
-    # column together (captures synoptic-scale uncertainty), then add a
-    # smaller independent perturbation at each level.
-    bulk_log_scale = rng.gauss(0.0, wu * 0.7) if wu > 0 else 0.0
-
-    for (z_u, u), (_, v) in zip(base_u, base_v):
-        spd = math.hypot(u, v)
-
-        # Per-level independent component
-        local_log_scale = rng.gauss(0.0, wu * 0.5) if wu > 0 else 0.0
-        scale = math.exp(bulk_log_scale + local_log_scale)
-
-        # Optional high-frequency gust (zero during optimisation MC)
-        if gust_intensity > 0.0 and spd > 1e-6:
-            gust_u = rng.gauss(0.0, gust_intensity * spd)
-            gust_v = rng.gauss(0.0, gust_intensity * spd)
-        else:
-            gust_u = gust_v = 0.0
-
-        pu = u * scale + gust_u
-        pv = v * scale + gust_v
-
-        u_prof.append((z_u, pu))
-        v_prof.append((z_u, pv))
-        spd_prof.append((z_u, math.hypot(pu, pv)))
-
-    return u_prof, v_prof, spd_prof
+    from .monte_carlo import _perturb_wind_profile as canonical
+    return canonical(base_u,base_v,rng,wu,gust_intensity=gust_intensity)
 
 
 def build_perturbed_wind_prof(
@@ -199,8 +164,9 @@ def build_perturbed_wind_prof(
     base_u = params.get('wind_u_prof', [(0, 0.0)])
     base_v = params.get('wind_v_prof', [(0, 0.0)])
 
-    # 0 gust intensity for optimization MC (phase 1)
-    u_prof, v_prof, spd_prof = _perturb_wind_profile(base_u, base_v, rng, wu, gust_intensity=0.0)
+    auto = float(params.get('auto_gust_ms',0))
+    gust = auto if auto > 0 else float(params.get('gust_speed',params.get('gust_intensity',0)))
+    u_prof, v_prof, spd_prof = _perturb_wind_profile(base_u, base_v, rng, wu, gust_intensity=gust)
 
     surf_spd = math.hypot(u_prof[0][1], v_prof[0][1]) if u_prof else 0.0
     up_spd = math.hypot(u_prof[-1][1], v_prof[-1][1]) if u_prof else 0.0
@@ -316,6 +282,7 @@ def optimize_launch_angle(
 ) -> dict:
     """Simulated annealing followed by independent Monte Carlo verification."""
     from core.annealing import anneal
+    base_params = dict(base_params, verification_radius=r_max, target_x=target_x, target_y=target_y)
     is_free = "free" in mode.lower() or "自由" in mode
     score_a = float(base_params.get('score_a', 1.0))
     score_b = float(base_params.get('score_b', 1.0))
@@ -333,10 +300,9 @@ def optimize_launch_angle(
         iy = float(res.get('impact_y', 0.0))
         dist = math.hypot(ix - target_x, iy - target_y)
 
-        # Hard constraint check incorporating MC spread radius if available.
-        # Phase 2 passes mc_r to verify the 90% ellipse stays within target.
+        # MC radius is target-relative and includes failed attempts.
         if not is_free:
-            check_dist = dist if mc_r is None else dist + mc_r
+            check_dist = dist if mc_r is None else mc_r
             if check_dist > r_max:
                 return float('-inf')
 
@@ -403,7 +369,7 @@ def optimize_launch_angle(
     if best is None:
         raise ValueError(
             f'No candidate satisfies constraint '
-            f'(r + MC {landing_prob}% circle ≤ {r_max:.1f} m).\n'
+            f'(MC target containment {landing_prob}% within {r_max:.1f} m).\n'
             'Try increasing r_max or adjusting wind / airframe settings.')
 
     score, best_e, best_a, _, best_mc_r = best
@@ -443,6 +409,7 @@ def optimize_launch_angle(
         'result':      full_best_res,
         'mc_r':        reported_mc_r,
         'mc_success':  final_mc_succ,
+        'mc_containment': final_mc_succ,
         'mc_trials':   final_mc_trials,
     }
 
@@ -458,12 +425,12 @@ def _monte_carlo_r90(
 ) -> tuple[float, float]:
     """Run n_trials perturbed simulations; return (r_p, success_rate).
 
-    r_p is the ``landing_prob``-th percentile of impact distances.
+    r_p is the empirical target-relative quantile over ALL attempts.
+    The second value is target containment, counting failed trials as outside.
     Returns (inf, 0) if all trials fail.
     """
     distances: list[float] = []
     succeeded = 0
-    rng = _random_mod.Random(base_params.get('random_seed', 0) + n_trials)
     nominal = simulate_once(elev, azi, base_params)
     if not nominal.get('ok'):
         return float('inf'), 0.0
@@ -471,7 +438,11 @@ def _monte_carlo_r90(
     tu  = max(thrust_uncertainty, 0.0)
     raw_thrust = base_params['thrust_data']
 
-    for _ in range(n_trials):
+    within = 0
+    target_x, target_y = base_params.get('target_x',0.), base_params.get('target_y',0.)
+    radius_limit = base_params.get('verification_radius',float('inf'))
+    for trial in range(n_trials):
+        rng = _random_mod.Random(int(base_params.get('random_seed',0)) + n_trials * 1000003 + trial)
         if stop_flag is not None and stop_flag.is_set():
             break
         u_prof, v_prof, _, _, _ = build_perturbed_wind_prof(base_params, rng, wu)
@@ -485,16 +456,19 @@ def _monte_carlo_r90(
 
         r = simulate_once(elev, azi, p)
         if r['ok']:
-            distances.append(math.hypot(r['impact_x'] - nominal['impact_x'], r['impact_y'] - nominal['impact_y']))
+            distance = math.hypot(r['impact_x'] - target_x, r['impact_y'] - target_y)
+            distances.append(distance)
+            within += distance <= radius_limit
             succeeded += 1
 
     if not distances:
         return float('inf'), 0.0
+    # Failed trials are outside every finite target. The nearest-rank
+    # quantile over ALL attempts has the same meaning as empirical containment.
+    distances.extend([math.inf] * (n_trials-len(distances)))
     distances.sort()
-    p_idx = max(0, min(
-        len(distances) - 1,
-        int(round((landing_prob / 100.0) * len(distances))) - 1))
-    return distances[p_idx], succeeded / n_trials
+    index = max(0, min(n_trials-1, math.ceil(landing_prob/100*n_trials)-1))
+    return distances[index], within / n_trials
 
 
 # ── Phase-1 helpers ───────────────────────────────────────────────────────────
@@ -676,6 +650,7 @@ def run_phase1(
     sigma_nom = wu * max(mu_nom, 1.0)
 
     from core.annealing import anneal
+    base_params = dict(base_params, verification_radius=r_max, target_x=target_x, target_y=target_y)
     p_nom = p1_params_at_wind(base_params, mu_nom)
     def evaluate(e, a):
         res = simulate_once(e, a, p_nom)

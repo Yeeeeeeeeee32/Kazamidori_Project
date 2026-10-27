@@ -1130,6 +1130,15 @@ class AppWindow(QMainWindow):
     state : AppState  — drives profile / map / wind canvases via needs_redraw
     """
 
+    sig_thrust_curve_changed = Signal()
+
+    def closeEvent(self, event):
+        guard = getattr(self,'_shutdown_guard',None)
+        if guard is not None and not guard():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     sig_load_airframe_json_clicked = Signal()   # Load flat Airframe.json
     sig_load_para_json_clicked   = Signal()   # Load parachute-only JSON
     sig_save_rocket_json_clicked = Signal()   # Export rocket.json
@@ -1659,8 +1668,8 @@ class AppWindow(QMainWindow):
             "mc_min_apo":  (QLabel("MC Min Apogee (m):"), self.lbl_res_mc_min_apo),
             "mc_avg_hdist":(QLabel("MC Avg H-dist (m):"), self.lbl_res_mc_avg_hdist),
             "mc_max_hdist":(QLabel("MC Max H-dist (m):"), self.lbl_res_mc_max_hdist),
-            "mc_avg_score":(QLabel("MC Avg Score (pts):"), self.lbl_res_mc_avg_score),
-            "mc_min_score":(QLabel("MC Min Score (pts):"), self.lbl_res_mc_min_score),
+            "mc_avg_score":(QLabel("MC Avg Valid Score (pts):"), self.lbl_res_mc_avg_score),
+            "mc_min_score":(QLabel("MC Min Valid Score (pts):"), self.lbl_res_mc_min_score),
             "mc_avg_hang": (QLabel("MC Avg Hang time (s):"), self.lbl_res_mc_avg_hang),
             "mc_min_hang": (QLabel("MC Min Hang time (s):"), self.lbl_res_mc_min_hang),
         }
@@ -1673,6 +1682,9 @@ class AppWindow(QMainWindow):
         # can safely run.
         self._on_mode_changed("自由")
 
+        self.mc_quality_label = QLabel('MC: —')
+        self.mc_quality_label.setWordWrap(True)
+        res_lay.addRow(self.mc_quality_label)
         lay.addWidget(self._results_grp)
 
         # ── Run button ────────────────────────────────────────────────────────
@@ -2615,7 +2627,8 @@ class AppWindow(QMainWindow):
                          for e in entries] for alt, entries in history.items()}
         result = self.state.simulation_result or {}
         nodes_by_alt = {float(n['alt_m']): dict(n) for n in self.state.wind_profile_data}
-        nodes_by_alt.update({float(n['alt_m']): dict(n) for n in result.get('wind_nodes', [])})
+        if not getattr(self.state,'result_inputs_stale',False):
+            nodes_by_alt.update({float(n['alt_m']): dict(n) for n in result.get('wind_nodes', [])})
         for alt in set(nodes_by_alt) | set(history):
             latest = self.state.get_wind_zoh(alt)
             if latest:
@@ -3051,10 +3064,16 @@ class AppWindow(QMainWindow):
                 atomic_write(filepath, buffer.getvalue())
             else:
                 s = self.state
-                archive = make_archive(s.simulation_result, s.nominal_result, {
+                context = {
                     "flight_mode": s.flight_mode, "launch_lat": s.launch_lat,
                     "launch_lon": s.launch_lon, "target_radius": s.target_radius,
-                })
+                    "target_x": s.target_x, "target_y": s.target_y,
+                }
+                snapshot = s.simulation_result.get('input_snapshot') or {}
+                for key in context:
+                    if key in snapshot:
+                        context[key] = snapshot[key]
+                archive = make_archive(s.simulation_result, s.nominal_result, context)
                 (save_csv if kind == "csv" else save_archive)(filepath, archive)
         except (OSError, ValueError, TypeError) as exc:
             self.set_status(f"Export failed: {exc}", "#f38ba8")
@@ -3301,6 +3320,7 @@ class AppWindow(QMainWindow):
                 # Persist for SimController._collect_params()
                 self._motor_thrust_data = [list(pt) for pt in thrust_data]
                 self._motor_burn_time   = burn_time
+                self.sig_thrust_curve_changed.emit()
             else:
                 self.motor_label.setText(f"{name}  (no data)")
                 self.set_status(f"No valid thrust rows found in {name}", "#f38ba8")

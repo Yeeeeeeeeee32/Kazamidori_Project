@@ -40,6 +40,34 @@ _SURFACE_ALT: float = OBS_ALT   # 自作風速計 (hardware anemometer) altitude
 
 
 class AppState(QObject):
+    target_x_changed = Signal(float)
+    target_y_changed = Signal(float)
+
+    @Property(float, notify=target_x_changed)
+    def target_x(self):
+        return getattr(self,'_target_x',0.)
+
+    @target_x.setter
+    def target_x(self,value):
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError('Target East offset must be finite')
+        if value != self.target_x:
+            self._target_x = value
+            self.target_x_changed.emit(value)
+
+    @Property(float, notify=target_y_changed)
+    def target_y(self):
+        return getattr(self,'_target_y',0.)
+
+    @target_y.setter
+    def target_y(self,value):
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError('Target North offset must be finite')
+        if value != self.target_y:
+            self._target_y = value
+            self.target_y_changed.emit(value)
 
     phase4_options_changed = Signal(object)
 
@@ -54,30 +82,8 @@ class AppState(QObject):
 
     @phase4_options.setter
     def phase4_options(self, value):
-        if not isinstance(value, dict):
-            raise ValueError('Phase 4 settings must be an object')
-        options = self.phase4_options
-        options.update({k: v for k, v in value.items() if k in options})
-        for key, lo, hi in (('score_a', -1e6, 1e6), ('score_b', -1e6, 1e6),
-                            ('launch_alt_m', -1000, 10000), ('manual_declination', -180, 180)):
-            options[key] = float(options[key])
-            if not math.isfinite(options[key]) or not lo <= options[key] <= hi:
-                raise ValueError(f'{key} must be between {lo} and {hi}')
-        budget = float(options['sa_budget'])
-        if not budget.is_integer() or not 8 <= budget <= 10000:
-            raise ValueError('SA budget must be 8–10000')
-        options['sa_budget'] = int(budget)
-        seed = float(options['random_seed'])
-        if not seed.is_integer() or not 0 <= seed <= 2147483647:
-            raise ValueError('Random seed must be an integer between 0 and 2147483647')
-        options['random_seed'] = int(seed)
-        if not all(isinstance(options[k], str) for k in ('wind_csv', 'wind_time_utc')):
-            raise ValueError('Wind CSV path and time must be strings')
-        if options['wind_csv']:
-            from utils.wind_data import utc_time
-            utc_time(options['wind_time_utc'])
-        if options['declination_mode'] not in ('auto', 'manual') or options['azimuth_reference'] not in ('true', 'magnetic'):
-            raise ValueError('Invalid bearing reference or declination mode')
+        from utils.phase4_settings import normalize_phase4
+        options = normalize_phase4(value,self.phase4_options)
         if self.phase4_options != options:
             self._phase4_options = options
             self.phase4_options_changed.emit(dict(options))
@@ -1196,6 +1202,14 @@ class AppState(QObject):
             dict with keys ``ts``, ``speed_ms``, ``dir_deg`` — or ``None``.
         """
         return self._wind_zoh.get(float(alt_m))
+
+    def reset_upper_wind(self):
+        """A new weather source must not average against the preceding one."""
+        for altitude,history in self._wind_history.items():
+            if altitude != _SURFACE_ALT:
+                history.clear()
+                self._wind_zoh[altitude] = None
+        self.wind_history_updated.emit(self._wind_history)
 
     # ── Phase B wind baseline + O(1) tolerance monitoring ─────────────────────
 

@@ -301,9 +301,8 @@ def save_airframe_config(filepath: str, data: dict) -> None:
         from utils.airframe_pair import supplement_for_save
         validated = supplement_for_save(filepath, validated)
         validated = {k:v for k,v in validated.items() if k not in ('motor_pos', 'motor_dry_mass', 'backfire_delay')}
-        with open(filepath, "w", encoding="utf-8") as fh:
-            json.dump(validated, fh, ensure_ascii=False, indent=4)
-            fh.write("\n")
+        from utils.result_io import atomic_write
+        atomic_write(filepath,(json.dumps(validated,ensure_ascii=False,indent=4,allow_nan=False)+'\n').encode('utf-8'))
     except (OSError, ValueError) as exc:
         raise AirframeConfigError(f"Cannot save Airframe JSON: {exc}") from exc
 

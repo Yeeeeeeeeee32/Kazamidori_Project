@@ -51,9 +51,8 @@ def test_final_mc_failure_is_not_replaced_by_earlier_good_result():
             optimize_launch_angle('高度', {}, 100, 90, 0, 0, threading.Event(), lambda *_: None)
 
 
-def test_mc_radius_measures_spread_not_distance_from_launch_pad():
-    # Perfect repeatability at a target 400 m away has zero spread.
-    p = dict(thrust_data=[[0, 1], [1, 0]], wind_u_prof=[(0, 0), (1000, 0)], wind_v_prof=[(0, 0), (1000, 0)])
+def test_mc_radius_measures_distance_from_target_not_launch_pad():
+    p = dict(target_x=400,target_y=0,verification_radius=10,thrust_data=[[0, 1], [1, 0]], wind_u_prof=[(0, 0), (1000, 0)], wind_v_prof=[(0, 0), (1000, 0)])
     with patch('core.optimization.simulate_once', return_value=dict(ok=True, impact_x=400, impact_y=0)):
         radius, success = _monte_carlo_r90(85, 0, p, 8, 90, 0, 0)
     assert radius == 0

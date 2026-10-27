@@ -1,0 +1,128 @@
+{
+  "versions": {
+    "rocketpy": "1.13.0",
+    "PySide6": "6.12.0",
+    "numpy": "2.2.6",
+    "scipy": "1.15.3"
+  },
+  "parachute_not_deployed": {
+    "ok": true,
+    "time_s": 9.199795001457138,
+    "height_m": 6.711179687334873e-08,
+    "reported_open_time_s": 5.1607146844482985,
+    "actual_flights": [
+      {
+        "end_s": 4.6607146844482985,
+        "parachute_events_s": [],
+        "pressure_round_trip_m": [
+          1948.9080050133753,
+          1948.9080050133753,
+          1948.9080050133753
+        ]
+      },
+      {
+        "end_s": 9.199795001457138,
+        "parachute_events_s": [],
+        "pressure_round_trip_m": [
+          1948.9080050133753,
+          1948.9080050133753,
+          1948.9080050133753
+        ]
+      }
+    ],
+    "reported_impact_m": [
+      -0.04292500952601102,
+      36.92703168206219
+    ]
+  },
+  "timeout_with_diagnostic_true_height_trigger": {
+    "ok": true,
+    "end_s": 120.0,
+    "height_at_end_m": 51.65180715279613,
+    "note": "Trigger substituted only for this diagnostic; production code unchanged"
+  },
+  "ejection_delay": {
+    "requested_ejection_time_s": 101.1,
+    "reported_ejection_time_s": 4.6607146844482985,
+    "reported_open_time_s": 5.1607146844482985,
+    "flight_end_s": 9.199795001457138
+  },
+  "search_acceptance": {
+    "returned_radius_m": 14.0,
+    "returned_success_rate": 0.9375,
+    "target_radius_m": 14,
+    "acceptance_conditions_satisfied": true,
+    "actual_fraction_within_target": 0.875
+  },
+  "wind_models_at_zero_mean": {
+    "search": [
+      [
+        1.5,
+        0.0,
+        0.0
+      ],
+      [
+        10.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "final": [
+      [
+        1.5,
+        0.003980148536295715,
+        -0.045872619058297905
+      ],
+      [
+        10.0,
+        -0.06553039290624849,
+        0.001880071009903012
+      ]
+    ]
+  },
+  "conditional_scores": {
+    "trial_scores": [
+      100,
+      100,
+      100,
+      "disqualified"
+    ],
+    "reported_mean": 100.0,
+    "reported_minimum": 100
+  },
+  "binomial_confidence": {
+    "45_of_50_two_sided_95_exact_lower": 0.7818646335657977,
+    "50_of_50_one_sided_95_exact_lower": 0.9418449208830241
+  },
+  "spline_overshoot": {
+    "node_values": [
+      1.0,
+      10.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "minimum_between_nodes": -7.948689002054618,
+    "maximum_between_nodes": 31.57507604925207
+  },
+  "edit_keeps_monitor_active": true,
+  "results_panel": {
+    "worker_mc_avg_alt": 100.0,
+    "displayed_mc_avg_apogee": "N/A"
+  },
+  "mutable_completion_context": {
+    "go_at_current_radius_100": true,
+    "monitor_still_active_after_edit_to_10": true,
+    "go_after_reprocessing_same_payload_at_radius_10": false
+  },
+  "forecast_overwritten_by_mock_tick": {
+    "before_ms": 20.0,
+    "after_ms": 2.0
+  },
+  "session_partial_mutation": {
+    "before_cd": 0.45,
+    "after_failed_load_cd": 0.9,
+    "error": "could not convert string to float: 'invalid'"
+  }
+}

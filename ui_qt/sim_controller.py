@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import math
 import random
+import time
+import uuid
+from copy import deepcopy
+from importlib.metadata import version
 
 import numpy as np
 from PySide6.QtCore import QObject, QThread, QTimer, Slot, Signal, QSignalBlocker, Qt
@@ -55,6 +59,12 @@ class SimController(QObject):
         self._state:  AppState                = state
         print(f"=== SimController.__init__ === Received AppState: id={id(self._state)}")
         self._worker: SimulationWorker | None = None
+        self._input_revision = 0
+        self._run_snapshot = None
+        self._applying_result = False
+        self._closing_requested = False
+        self._forecast_nodes = {}
+        window._shutdown_guard = self.request_shutdown
         self._manual_editing = False
         self._manual_pending_airframe = None
         self._manual_pending_path = None
@@ -159,7 +169,7 @@ class SimController(QObject):
                 lambda v: setattr(state, 'target_radius', float(v))
             )
             state.target_radius_changed.connect(
-                lambda v: _rmax.setValue(float(v))
+                lambda v: _rmax.setValue(float(v)) if v is not None else None
             )
 
         # ── Gust Input → AppState.gust_speed ───────────────────────────────────
@@ -237,6 +247,66 @@ class SimController(QObject):
         # mode_combo → window.state.sim_mode binding in _bind_state), but no
         # redraw is triggered on mode change.  Fire one here.
         state.flight_mode_changed.connect(lambda _: window.update_map_plot())
+        names = ('rocket_dry_mass','rocket_cg','rocket_cp','rocket_length','rocket_diameter',
+                 'nose_length','fin_root_chord','fin_tip_chord','fin_span','fin_position',
+                 'motor_cg_pos','motor_dry_mass','parachute_cd','parachute_area','parachute_lag',
+                 'backfire_delay','launch_angle','launch_rail','flight_mode','target_radius',
+                 'launch_lat','launch_lon','wind_uncertainty','thrust_uncertainty','gust_speed',
+                 'landing_prob','mc_n_runs','target_x','target_y',
+                 'power_on_cd','power_off_cd','motor_isp','motor_propellant_density',
+                 'fin_count','nose_shape','hellmann_alpha','phase4_options','fin_options',
+                 'cd_curve_power_on','cd_curve_power_off','wind_profile_data')
+        for name in names:
+            getattr(state,name+'_changed').connect(self._invalidate_inputs)
+        state.parachute_wind_drift_changed.connect(self._invalidate_inputs)
+        state.moi_updated.connect(self._invalidate_inputs)
+        window.sig_thrust_curve_changed.connect(self._invalidate_inputs)
+        state.koinobori_status = 'Practice (simulated)'
+        self._forecast_key = self._forecast_source_key()
+        for signal in (state.phase4_options_changed,state.launch_lat_changed,state.launch_lon_changed):
+            signal.connect(self._reset_forecast)
+
+    def _forecast_source_key(self):
+        p = self._state.phase4_options
+        return (p['wind_csv'],p['wind_time_utc'],self._state.launch_lat,self._state.launch_lon)
+
+    def _reset_forecast(self,*_args):
+        key = self._forecast_source_key()
+        if key != self._forecast_key:
+            self._forecast_key = key
+            self._forecast_nodes = {}
+            self._window._upper_wind_means = {}
+            self._state.reset_upper_wind()
+            self._state.gpv_last_fetch_time = ('Pending — run to load selected CSV' if key[0] else 'Manual practice wind')
+
+    def _invalidate_inputs(self, *_args):
+        if self._applying_result:
+            return
+        self._input_revision += 1
+        self._state.result_inputs_stale = True
+        was_active = self._state.phase2_active
+        self._state.phase2_active = False
+        if was_active or self._state.has_sim_result:
+            self._window.update_status_indicator('INPUT CHANGED — RECALCULATE')
+
+    def request_shutdown(self):
+        workers = [w for w in [self._worker] + self._window.findChildren(QThread) if w is not None]
+        active = []
+        for worker in workers:
+            try:
+                if worker.isRunning():
+                    active.append(worker)
+                    worker.stop() if hasattr(worker,'stop') else worker.requestInterruption()
+            except RuntimeError:
+                pass
+        if not active:
+            self._tray_icon.hide()
+            return True
+        self._closing_requested = True
+        self._wind_timer.stop()
+        self._window.set_status('Waiting for background operations to stop…')
+        QTimer.singleShot(100,self._window.close)
+        return False
 
     # ── Button rewiring ────────────────────────────────────────────────────────
 
@@ -326,7 +396,11 @@ class SimController(QObject):
             return False
 
         # ── 60-second surface wind buffer check ───────────────────────────────
-        surface_hist = list(self._state.wind_history_for_alt(ANEMOMETER_ALT))
+        now = time.monotonic()
+        surface_hist = [e for e in self._state.wind_history_for_alt(ANEMOMETER_ALT) if now-e['ts'] <= 60]
+        if surface_hist and now-surface_hist[-1]['ts'] > 5:
+            self._window.set_status('Surface wind data is stale. Wait for new readings.', '#f38ba8')
+            return False
         print(f"[DIAG] wind_history_for_alt(ANEMOMETER_ALT) sample count: {len(surface_hist)}")
         if len(surface_hist) < 5:
             print(f"[DIAG] BLOCKED: Wind buffer insufficient ({len(surface_hist)} samples < 5). Returning False.")
@@ -603,12 +677,16 @@ class SimController(QObject):
     @Slot(float, float)
     def _on_optimization_done(self, elev: float, azi: float) -> None:
         """Update the UI dynamically when the optimal angle is found"""
+        if self._run_snapshot and self._run_snapshot['input_revision'] != self._input_revision:
+            return
+        self._applying_result = True
         self._state.launch_angle = elev
         from utils.magnetic import input_bearing
-        reference = self._state.phase4_options['azimuth_reference']
-        declination = self._state.effective_declination
+        reference,declination = getattr(self,'_run_bearing',
+            (self._state.phase4_options['azimuth_reference'],self._state.effective_declination))
         self._window.azim_input.setValue(input_bearing(azi, reference, declination))
         self._window.elev_input.setValue(elev)
+        self._applying_result = False
 
 
     # ── Stop ───────────────────────────────────────────────────────────────────
@@ -640,6 +718,11 @@ class SimController(QObject):
         w._results_grp.setVisible(True)
 
         mode = self._state.flight_mode
+        mode = mc_data.get('input_snapshot',{}).get('flight_mode',mode)
+        n = mc_data.get('n_runs',0)
+        attempted = mc_data.get('n_attempted',n)
+        w.mc_quality_label.setText(f"MC: {n}/{attempted} completed; "
+            f"{mc_data.get('mc_disqualified_count',0)} disqualified; {attempted-n} failed. Scores: valid trials only.")
         is_free = "free" in mode.lower() or "自由" in mode
 
         def set_val(lbl, val, fmt, suffix=""):
@@ -690,6 +773,9 @@ class SimController(QObject):
 
     @Slot(dict)
     def _on_nominal_done(self, payload: dict) -> None:
+        snapshot = payload.get('input_snapshot') or {}
+        if snapshot and snapshot.get('input_revision') != self._input_revision:
+            return
         """Invoked on the GUI thread when the nominal single run completes.
 
         Sets AppState.nominal_result, which automatically emits both
@@ -775,6 +861,13 @@ class SimController(QObject):
         # profile — one call covers all 5 altitudes at once.
         wind_nodes = payload.get("wind_nodes", [])
         if wind_nodes:
+            if self._state.phase4_options['wind_csv']:
+                self._window._upper_wind_means = {}
+                self._state.reset_upper_wind()
+                self._forecast_nodes = {float(n['alt_m']):dict(n) for n in wind_nodes
+                                        if float(n['alt_m']) > ANEMOMETER_ALT}
+                from utils.time_display import format_jst
+                self._state.gpv_last_fetch_time = 'Forecast target: ' + format_jst(self._state.phase4_options['wind_time_utc'])
             self._state.append_wind_nodes(wind_nodes)
             self._window._update_wind_table(nodes=wind_nodes)
 
@@ -808,6 +901,17 @@ class SimController(QObject):
     def _on_mc_done(self, result: dict) -> None:
         print(f"[DIAG] _on_mc_done ENTERED — cancelled={result.get('cancelled')}", flush=True)
         self._state.mc_running = False
+        snapshot = result.get('input_snapshot') or {}
+        if snapshot and snapshot.get('input_revision') != self._input_revision:
+            self._state.phase2_active = False
+            self._state.is_calculating = False
+            self._state.simulation_result = None
+            self._state.has_sim_result = False
+            self._set_run_buttons_enabled(True)
+            self._window.update_status_indicator('INPUT CHANGED — RECALCULATE')
+            self._window.set_status('Inputs changed during calculation; stale result discarded.', '#f9e2af')
+            return
+        self._state.result_inputs_stale = False
 
         if result.get("cancelled"):
             self._state.is_calculating    = False
@@ -821,15 +925,13 @@ class SimController(QObject):
 
         # ── Convert metric impact offsets -> geographic coordinates ───────────
         # impact_x = East offset (m), impact_y = North offset (m) from launch.
-        lat     = self._window.lat_input.value()
-        lon     = self._window.lon_input.value()
+        lat     = snapshot.get('launch_lat',self._window.lat_input.value())
+        lon     = snapshot.get('launch_lon',self._window.lon_input.value())
         off_e   = result.get("impact_x", 0.0)
         off_n   = result.get("impact_y", 0.0)
-        cos_lat = math.cos(math.radians(lat))
 
-        land_lat = lat + off_n / 111_320.0
-        land_lon = (lon + off_e / (111_320.0 * cos_lat)
-                    if cos_lat > 1e-9 else lon)
+        from utils.geo_math import offset_to_latlon
+        land_lat,land_lon = offset_to_latlon(lat,lon,off_e,off_n)
 
         # ── Push scalar summaries into individual AppState properties ─────────
         # scatter_points is the canonical key; "scatter" is the backward-compat alias.
@@ -870,8 +972,8 @@ class SimController(QObject):
 
         # Phase A verification: target containment at the selected probability.
         # FREE MODE: no target radius / landing zone concept — skip entirely.
-        target_r = self._state.target_radius
-        _mode_str_mc = str(self._state.flight_mode)
+        target_r = snapshot.get('target_radius',self._state.target_radius)
+        _mode_str_mc = str(snapshot.get('flight_mode',self._state.flight_mode))
         _is_free_mode_mc = "free" in _mode_str_mc.lower() or "自由" in _mode_str_mc
         print(
             f"[DIAG] _on_mc_done Phase A check: "
@@ -924,7 +1026,7 @@ class SimController(QObject):
                 lowest_wind = sorted(self._state.wind_profile_data, key=lambda n: n["alt_m"])[0] if self._state.wind_profile_data else {"speed_ms": 0.0, "dir_deg": 0.0}
                 surf_spd = result.get("nominal_surf_spd", lowest_wind["speed_ms"])
                 surf_dir = result.get("nominal_surf_dir", lowest_wind["dir_deg"])
-                wind_unc = float(self._window.wind_unc_input.value())
+                wind_unc = float(snapshot.get('wind_unc',self._window.wind_unc_input.value()))
                 from core.wind_model import speed_dir_to_uv
                 mu_u, mu_v = speed_dir_to_uv(surf_spd, surf_dir)
                 self._state.set_wind_lock(mu_u, mu_v, wind_unc)
@@ -1108,8 +1210,8 @@ class SimController(QObject):
 
         Turbulence intensity
         --------------------
-        μ and σ are computed from the 60-second surface wind history buffer
-        (1.5 m AGL, updated at 1 Hz by the hardware anemometer).  The absolute
+        μ and σ describe the retained surface samples (up to 60 samples,
+        1.5 m AGL; currently generated by the practice timer). The absolute
         gust noise passed to the MC perturbation engine is:
 
             auto_gust_ms = σ   (m/s)
@@ -1140,8 +1242,8 @@ class SimController(QObject):
                 node for node in profile if float(node['alt_m']) != ANEMOMETER_ALT]
 
         # ── Turbulence intensity from 60s surface wind history ────────────────
-        # Use population std-dev (÷N, not ÷(N-1)) — we have the full population
-        # over the 60s window, not a sample from an infinite process.
+        # Descriptive standard deviation (ddof=0), not an estimate with a
+        # guaranteed confidence level for the true atmospheric process.
         _hist = list(s.wind_history_for_alt(ANEMOMETER_ALT))
         if len(_hist) >= 2:
             _speeds     = [e["speed_ms"] for e in _hist]
@@ -1259,6 +1361,10 @@ class SimController(QObject):
                 if resolved['provenance']['sources'].get('cp') in ('ork','json','manual') else None)
             for key,value in s.airframe_provenance.get('parachute', {}).items():
                 params['para_'+key] = value
+        params.update(run_id=str(uuid.uuid4()),input_revision=self._input_revision,
+                      model_version='time-events-v2',
+                      dependencies={k:version(k) for k in ('rocketpy','numpy','scipy','PySide6')})
+        self._run_snapshot = deepcopy(params)
         return params
 
     @Slot(str)
@@ -1719,6 +1825,9 @@ class SimController(QObject):
     def _on_wind_tick(self) -> None:
         # Surface and upper wind baselines now live in wind_profile_data
         wp = self._state.wind_profile_data or []
+        forecast = self._forecast_nodes if self._state.phase4_options['wind_csv'] else {}
+        if forecast:
+            wp = [n for n in wp if float(n['alt_m']) == ANEMOMETER_ALT] + list(forecast.values())
         lowest_wind = sorted(wp, key=lambda n: n["alt_m"])[0] if wp else {"speed_ms": 0.0, "dir_deg": 0.0}
         highest_wind = sorted(wp, key=lambda n: n["alt_m"])[-1] if wp else {"speed_ms": 0.0, "dir_deg": 0.0}
         
@@ -1730,7 +1839,7 @@ class SimController(QObject):
         direction = (base_dir + random.gauss(0.0, 3.0)) % 360.0
 
         # Global AppState: (speed, direction) tuples for future Phase-2 consumers.
-        nodes = [dict(alt_m=float(n['alt_m']),
+        nodes = [dict(n) if float(n['alt_m']) in forecast else dict(alt_m=float(n['alt_m']),
                       speed_ms=max(0., float(n['speed_ms']) + random.gauss(0., float(n['speed_ms'])*.05+.1)),
                       dir_deg=(float(n['dir_deg'])+random.gauss(0.,3.))%360)
                  for n in wp]
@@ -1915,9 +2024,12 @@ class SimController(QObject):
         s.phase2_active = False
         s.cached_mc_scatter = None  # Do not recompute the old result on probability change.
         s.launch_lat, s.launch_lon = lat, lon
-        s.target_radius = context.get("target_radius")
+        s.target_x,s.target_y = context.get('target_x',0.),context.get('target_y',0.)
         w.mode_combo.setCurrentText(context["flight_mode"])
         s.flight_mode = context["flight_mode"]
+        # Mode changes install convenient defaults; restore the recorded
+        # radius afterwards so importing cannot silently change the target.
+        s.target_radius = context.get("target_radius")
         probability = result.get("landing_prob", 90)
         s.landing_prob = int(probability)
         s.cep_probability = float(probability)
@@ -1948,6 +2060,18 @@ class SimController(QObject):
         w.set_status(f"Results imported: {Path(filepath).name}", "#a6e3a1")
 
     def _set_run_buttons_enabled(self, enabled: bool) -> None:
+        from PySide6.QtWidgets import QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox
+        if not enabled and not getattr(self,'_disabled_controls',None):
+            controls = []
+            for kind in (QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox,QPushButton):
+                controls.extend(self._window.findChildren(kind))
+            self._disabled_controls = [c for c in controls if c.isEnabled() and c.objectName() != 'btn_stop']
+            for control in self._disabled_controls:
+                control.setEnabled(False)
+        elif enabled:
+            for control in getattr(self,'_disabled_controls',[]):
+                control.setEnabled(True)
+            self._disabled_controls = []
         self._window.action_run.setEnabled(enabled)
         self._window.action_stop.setEnabled(self._state.is_calculating)
         for btn in self._window.findChildren(QPushButton, "btn_run"):

@@ -160,6 +160,8 @@ class MapView(QWidget):
 
         if hasattr(self._state, 'target_radius_changed'):
             self._state.target_radius_changed.connect(lambda _: self._render_result())
+        self._state.target_x_changed.connect(lambda _: self._render_result())
+        self._state.target_y_changed.connect(lambda _: self._render_result())
 
         # Connect Coordinate Changes
         if hasattr(self._state, 'launch_lat_changed'):
@@ -205,11 +207,12 @@ class MapView(QWidget):
             self.ax.scatter(0, 0, marker='*', s=150, color='#4488ff', label='Launch Site', zorder=10)
 
             target_radius = _safe_float(getattr(self._state, 'target_radius', 0.0))
+            target_x,target_y = self._state.target_x,self._state.target_y
             if target_radius > 0:
-                target_circle = patches.Circle((0, 0), radius=target_radius, edgecolor='#0055ff', facecolor='none', linestyle='--', zorder=5)
+                target_circle = patches.Circle((target_x, target_y), radius=target_radius, edgecolor='#0055ff', facecolor='none', linestyle='--', zorder=5)
                 self.ax.add_patch(target_circle)
-                all_x.extend([-target_radius, target_radius])
-                all_y.extend([-target_radius, target_radius])
+                all_x.extend([target_x-target_radius, target_x+target_radius])
+                all_y.extend([target_y-target_radius, target_y+target_radius])
 
             if not result:
                 self.canvas.draw()

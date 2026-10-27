@@ -87,4 +87,4 @@ def test_cp_applied_to_both_nominal_passes_and_mc_real_flights(fin_settings):
         assert nominal['ok'], nominal.get('error')
         mc = simulate_once_mc(84, 0, p, nominal['backfire_alt'])
         assert mc['ok'], mc.get('error')
-    assert applied == pytest.approx([.32]*3)
+    assert applied == pytest.approx([.32]*4)  # Two time-continuation segments per run, including MC.

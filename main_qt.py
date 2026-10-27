@@ -13,12 +13,8 @@ Responsibilities
 
 Architecture note
 -----------------
-AppWindow defines its own lightweight AppState (with a needs_redraw Signal)
-to drive the live 3-D plot without polling.  The ui_qt.app_state.AppState
-created here is the broader application data bus that holds final simulation
-results and will be consumed by future views (map overlay, Phase 2 panel,
-etc.).  These are intentionally separate objects; the controller mediates
-writes to both.
+The window and controller share ui_qt.app_state.AppState. Workers receive
+independent input snapshots and return results with their execution context.
 """
 
 import os
@@ -42,9 +38,7 @@ DEFAULT_CONFIG: dict = {
     "wind_uncertainty":   0.20,
     "thrust_uncertainty": 0.05,
     "landing_prob":        90,
-    # 50 runs is statistically sufficient for the CEP ellipse (CLT holds at n≥30)
-    # and keeps MC wall-time under ~30 s on a mid-range laptop.
-    # Increase to 100-200 for final competition analysis if time allows.
+    # Default computational budget; this is not a statistical confidence guarantee.
     "mc_n_runs":          50,
 }
 

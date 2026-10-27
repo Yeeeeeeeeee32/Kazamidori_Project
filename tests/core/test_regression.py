@@ -1,4 +1,4 @@
-"""Numerical baselines recorded before Phase 4 changes (RocketPy 1.13).
+"""Numerical baselines with actual timed deployment (RocketPy 1.13).
 
 These tolerances detect unit/coordinate regressions, not flight certification.
 """
@@ -21,8 +21,9 @@ def test_reference_flight():
     r = simulate_once(84, 0, p)
     assert r['ok'], r.get('error')
     assert r['apogee_m'] == pytest.approx(93.4254, abs=.5)
-    assert r['hang_time'] == pytest.approx(9.1998, abs=.1)
-    assert r['impact_y'] == pytest.approx(36.927, abs=.5)
+    assert r['parachute_deployed']
+    assert r['hang_time'] == pytest.approx(27.5436, abs=.1)
+    assert r['impact_y'] == pytest.approx(25.5181, abs=.5)
     assert abs(r['impact_x']) < .2
 
 

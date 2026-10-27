@@ -47,6 +47,7 @@ Result dict keys  (finished signal payload)
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 import threading
 from typing import Any
 
@@ -136,7 +137,7 @@ class SimulationWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._params     = dict(params)
+        self._params     = deepcopy(params)
         self._stop_event = threading.Event()
 
     # ── Public control ─────────────────────────────────────────────────────────
@@ -220,6 +221,7 @@ class SimulationWorker(QThread):
             nom_pkg['score'] = p1_objective_score(nominal, p.get('flight_mode', ''),
                 p.get('target_radius', float('inf')), p.get('target_x', 0), p.get('target_y', 0),
                 p.get('score_a', 1.), p.get('score_b', 1.))
+            nom_pkg['input_snapshot'] = deepcopy(p)
             nom_pkg.update({
                 "turb_mu":        float(p.get("turb_mu",        0.0)),
                 "turb_sigma":     float(p.get("turb_sigma",     0.0)),
@@ -325,100 +327,11 @@ class SimulationWorker(QThread):
             # ════════════════════════════════════════════════════════════════
 
             prob_pct = int(p.get("cep_prob", 90))
-            n_pts    = len(scatter)
-
-            # ── Fast stats: percentile radius + covariance (~ms) ─────────────
             self.progress.emit(92)
             self.sig_status_text.emit("Computing landing statistics...")
-
-            if n_pts > 0:
-                if scatter and isinstance(scatter[0], dict):
-                    pts_tuples = [(pt["x"], pt["y"]) for pt in scatter]
-                    scores = [pt["score"] for pt in scatter if pt["score"] != float('-inf')]
-                    avg_score = sum(scores) / len(scores) if scores else float('-inf')
-                    min_score = min(scores) if scores else float('-inf')
-                    avg_alt = sum(pt["apogee"] for pt in scatter) / n_pts
-                    avg_hang = sum(pt["hang_time"] for pt in scatter) / n_pts
-                else:
-                    pts_tuples = scatter
-                    avg_score = float('-inf')
-                    min_score = float('-inf')
-                    avg_alt = 0.0
-                    avg_hang = 0.0
-
-                _cx = sum(x for x, _ in pts_tuples) / n_pts
-                _cy = sum(y for _, y in pts_tuples) / n_pts
-                _radii = sorted(math.hypot(x - _cx, y - _cy) for x, y in pts_tuples)
-                r_N    = float(np.quantile(_radii, prob_pct / 100.0))
-                cep_val   = compute_cep(pts_tuples)
-                cov_matrix = None
-                if n_pts >= 4:
-                    _arr = np.array(pts_tuples, dtype=np.float64)
-                    cov_matrix = np.cov(_arr[:, 0], _arr[:, 1]).tolist()
-            else:
-                r_N = 0.0
-                cep_val    = 0.0
-                cov_matrix = None
-                pts_tuples = []
-                avg_score = float('-inf')
-                min_score = float('-inf')
-                avg_alt = 0.0
-                avg_hang = 0.0
-
-            # ── Error ellipse — numpy eigendecomposition (~ms) ───────────────
-            QThread.yieldCurrentThread()
-            self.progress.emit(93)
-            self.sig_status_text.emit("Fitting error ellipse...")
-            ellipse = compute_error_ellipse(pts_tuples, prob_pct=prob_pct)
-
-            # ── Proposal E: emit fast results NOW so scatter + ellipse appear ─
-            # KDE contours / density grid are visual-only extras that take 2-5 s.
-            # We emit a first-pass sig_mc_done (no KDE) immediately so the map
-            # updates while heavy KDE runs below, then overwrite with the full
-            # payload once KDE is ready.
-            _fast_stats = {
-                "r_N_radius":   r_N,
-                "cep":          cep_val,
-                "ellipse":      ellipse,
-                "cep_circle":   compute_cep_circle(pts_tuples),
-                "kde_contours": [],      # populated after heavy KDE below
-                "kde":          None,
-                "cov_matrix":   cov_matrix,
-                "n_attempted": int(p.get("mc_runs", 50)),
-                "mc_avg_score": avg_score,
-                "mc_min_score": min_score,
-                "mc_avg_alt":   avg_alt,
-                "mc_avg_hang_time": avg_hang,
-            }
-            self.progress.emit(95)
-            self.sig_status_text.emit("Rendering scatter (KDE loading)...")
-            self.sig_mc_done.emit(self._package_mc(scatter, _fast_stats, prob_pct))
-            QThread.yieldCurrentThread()   # let the GUI thread paint scatter + ellipse
-
-            # ── KDE grid — scipy only (HEAVY, ~1 s) ───────────────────────────
-            # Grid evaluation is computed here on the background thread.
-            # Contours are drawn directly on the main thread in MapView.
-            QThread.yieldCurrentThread()
-            self.progress.emit(97)
-            self.sig_status_text.emit("Computing KDE density grid...")
-            kde_grid = compute_kde_grid(pts_tuples)
-            kde_contours = []
-
-            # ── Assemble full stats dict with KDE ─────────────────────────────
-            stats = {
-                "r_N_radius":   r_N,
-                "cep":          cep_val,
-                "ellipse":      ellipse,
-                "cep_circle":   compute_cep_circle(pts_tuples),
-                "kde_contours": kde_contours,
-                "kde":          kde_grid,
-                "cov_matrix":   cov_matrix,
-                "n_attempted": int(p.get("mc_runs", 50)),
-                "mc_avg_score": avg_score,
-                "mc_min_score": min_score,
-                "mc_avg_alt":   avg_alt,
-                "mc_avg_hang_time": avg_hang,
-            }
+            stats = self._compute_stats(scatter, prob_pct)
+            stats["n_attempted"] = int(p.get("mc_runs",50))
+            stats["mc_failed_count"] = stats["n_attempted"] - len(scatter)
 
             self.progress.emit(98)
             self.sig_status_text.emit("Packaging results...")
@@ -452,6 +365,7 @@ class SimulationWorker(QThread):
 
             # Emit single combined payload (nominal + MC + turbulence baseline)
             result = self._package_result(nom_pkg, scatter, stats, prob_pct, cancelled=False)
+            result['input_snapshot'] = deepcopy(p)
             result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
             result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
             self.sig_finished.emit(result)
@@ -644,6 +558,8 @@ class SimulationWorker(QThread):
 
         return {
             "t_vals":     t,
+            **{k:nominal.get(k) for k in ('termination_reason','parachute_deployed',
+                                         'para_open_time','solver_settings','burn_time_s')},
             "x_vals":     x,
             "y_vals":     y,
             "z_vals":     z,
@@ -724,7 +640,7 @@ class SimulationWorker(QThread):
         _MAX_PROG_SIGNALS = 20
         _emit_every = max(1, n_total // _MAX_PROG_SIGNALS)
 
-        base_seed = _random.randint(0, 2**31 - 1)
+        base_seed = int(p.get('random_seed', 0))
 
         with open("mc_diagnostics.log", "w", encoding="utf-8") as _diag:
             _diag.write("--- Kazamidori Diagnostics Log ---\n")
@@ -862,7 +778,16 @@ class SimulationWorker(QThread):
         # compute_kde_grid returns Python lists of lists — Qt signal safe.
         kde_grid = compute_kde_grid(pts)
 
+        extra = {}
+        if scatter and isinstance(scatter[0], dict):
+            extra = dict(mc_avg_apogee=avg_alt,
+                mc_min_apogee=min(pt['apogee'] for pt in scatter),
+                mc_avg_hdist=sum(math.hypot(pt['x'],pt['y']) for pt in scatter)/len(scatter),
+                mc_max_hdist=max(math.hypot(pt['x'],pt['y']) for pt in scatter),
+                mc_avg_hang=avg_hang,mc_min_hang=min(pt['hang_time'] for pt in scatter),
+                mc_valid_score_count=len(scores),mc_disqualified_count=len(scatter)-len(scores))
         return {
+            **extra,
             "r_N_radius":   r_N,
             "cep":          compute_cep(pts),
             # ellipse carries both math keys and UI-ready keys:
@@ -895,6 +820,7 @@ class SimulationWorker(QThread):
         pts = [(pt["x"], pt["y"]) for pt in scatter] if scatter and isinstance(scatter[0], dict) else scatter
         return {
             # ── Canonical unified payload keys ────────────────────────────────
+            **{k:v for k,v in stats.items() if k.startswith('mc_')},
             "scatter_points": pts,   # list[(x_east_m, y_north_m)] — canonical name
             # ellipse: covariance error ellipse at prob_pct.
             #   Math keys:  cx, cy, a (semi-major m), b (semi-minor m), angle_rad
@@ -949,6 +875,9 @@ class SimulationWorker(QThread):
 
         return {
             "cancelled":      cancelled,
+            **{k:nom_pkg.get(k) for k in ('termination_reason','parachute_deployed',
+                                         'para_open_time','bf_abs_time','solver_settings','burn_time_s')},
+            **{k:v for k,v in stats.items() if k.startswith('mc_')},
             "has_sim_result": not cancelled,
 
             # ── Canonical unified payload (structured, matches sig_mc_done) ───
@@ -1079,7 +1008,7 @@ class OptimizationWorker(QThread):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self._params     = dict(params)
+        self._params     = deepcopy(params)
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -1172,6 +1101,7 @@ class OptimizationWorker(QThread):
 
             nom_pkg = SimulationWorker._package_nominal(nominal, wind_nodes, flight_mode=mode)
             nom_pkg['score'] = opt_res['score']
+            nom_pkg['input_snapshot'] = deepcopy(p)
             nom_pkg.update({
                 "turb_mu":        float(p.get("turb_mu",        0.0)),
                 "turb_sigma":     float(p.get("turb_sigma",     0.0)),
@@ -1223,6 +1153,7 @@ class OptimizationWorker(QThread):
 
             stats = SimulationWorker._compute_stats(scatter, prob_pct)
             stats["n_attempted"] = int(p.get("mc_runs",50))
+            stats['mc_failed_count'] = stats['n_attempted'] - len(scatter)
 
             self.progress.emit(98)
             self.sig_status_text.emit("Packaging results...")
@@ -1230,6 +1161,7 @@ class OptimizationWorker(QThread):
             self.sig_mc_done.emit(SimulationWorker._package_mc(scatter, stats, prob_pct))
 
             result = SimulationWorker._package_result(nom_pkg, scatter, stats, prob_pct, cancelled=False)
+            result['input_snapshot'] = deepcopy(p)
             result["nominal_surf_spd"] = float(p.get("surf_spd", 0.0))
             result["nominal_surf_dir"] = float(p.get("surf_dir", 0.0))
             result["score"] = opt_res['score']
