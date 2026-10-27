@@ -1,27 +1,24 @@
+# Local test inputs
 Parachute_joykun.json
 Parachute_Montblanc.json
 ジョイくん.ork
 モンブラン.ork
-
-memo.txt
-Roadmap.txt
-Concept.txt
 
 Estes_B4.csv
 Estes_B6.csv
 Estes_C5.csv
 Estes_G40.csv
 
-技術メモ/
+# Python and test caches
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
-mc_diagnostics.log
-assets/offline_map/
-log.txt
-stats
-/test_run.log
+# Generated logs, map cache and profiling output
+*.log
+/log.txt
+/assets/offline_map/
+/stats
 /tempCodeRunnerFile.py
 /archive/stats_*
