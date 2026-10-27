@@ -68,7 +68,8 @@ def test_progress_is_monotonic_and_messages_agree(ui):
     controller._on_progress_updated(80,100,'Monte Carlo (5/10)')
     assert state.progress_percentage == win._progress.value() == 80
     assert win._phase_label.text() == win._status_label.text() == 'Monte Carlo (5/10)'
-    assert 'Monte Carlo (5/10)' in win._progress.format()
+    assert win._progress.format() == '%p%'
+    assert win._phase_label.toolTip() == 'Monte Carlo (5/10)'
     controller._on_progress(25)
     assert win._progress.value() == 80
 

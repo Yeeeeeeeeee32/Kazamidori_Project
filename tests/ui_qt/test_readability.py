@@ -86,7 +86,7 @@ def test_buttons_and_go_nogo_have_plain_text_and_solid_phase1_color(ui):
     texts += [box.itemText(i) for box in win.findChildren(QToolBox) for i in range(box.count())]
     assert not any(emoji.search(text) for text in texts)
     assert 'qlineargradient' not in win.styleSheet()
-    assert win.findChild(QPushButton,'btn_phase1_run').text() == 'Run Phase 1 Simulation'
+    assert win.findChild(QPushButton,'btn_phase1_run') is None
     state.flight_mode = '定点滞空'
     state.set_wind_lock(0,-3,.2)
     state.phase2_active = True

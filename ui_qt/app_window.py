@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (    QLineEdit,
 from PySide6.QtGui import QAction, QColor, QDoubleValidator
 from ui_qt.map_view import MapView
 from ui_qt.app_state import AppState
+from ui_qt.layout_widgets import ElidedLabel
 from core.monte_carlo import ellipse_points
 from core.wind_model import ANEMOMETER_ALT, WIND_SAMPLE_ALTS
 
@@ -128,15 +129,6 @@ QPushButton#btn_run  { background: #a8e6a1; color: #1e1e1e; border-color: #a8e6a
 QPushButton#btn_run:hover  { background: #8ed9a8; }
 QPushButton#btn_stop { background: #f38ba8; color: #1e1e1e; border-color: #f38ba8; }
 QPushButton#btn_stop:hover { background: #eba0ac; }
-QPushButton#btn_phase1_run {
-    background: #7eb3ff;
-    color: #1e1e1e; border: none; border-radius: 6px;
-    font-size: 10pt; font-weight: bold; padding: 10px 16px;
-}
-QPushButton#btn_phase1_run:hover {
-    background: #9dc5ff;
-}
-QPushButton#btn_phase1_run:pressed { background: #7eb3ff; color: #1e1e1e; }
 QPushButton#btn_adv_settings {
     background: transparent; border: 1px solid #555555; border-radius: 4px;
     padding: 4px 10px; color: #aaaaaa; font-size: 8pt;
@@ -1400,9 +1392,10 @@ class AppWindow(QMainWindow):
         btn_run  = QPushButton("Run",  tb); btn_run.setObjectName("btn_run")
         btn_stop = QPushButton("Stop", tb); btn_stop.setObjectName("btn_stop")
 
-        btn_run.setFixedWidth(90);  btn_run.clicked.connect(self._on_run)
+        btn_run.setFixedWidth(90)
         btn_run.setShortcut("F5")
-        btn_stop.setFixedWidth(74); btn_stop.clicked.connect(self._on_stop)
+        btn_run.setToolTip('自由モード: 指定角度で計算。それ以外: 発射角探索とMC検証。 (F5)')
+        btn_stop.setFixedWidth(74)
         btn_stop.setShortcut("Esc")
 
         tb.addWidget(btn_run)
@@ -1415,14 +1408,15 @@ class AppWindow(QMainWindow):
         tb.addWidget(spacer)
 
         self._progress = QProgressBar(tb)
-        self._progress.setFixedWidth(280)
+        self._progress.setFixedWidth(180)
         self._progress.setValue(0)
         self._progress.setFormat("%p%")
         self._progress.setTextVisible(True)
         tb.addWidget(self._progress)
 
-        self._phase_label = QLabel("Idle", tb)
-        self._phase_label.setFixedWidth(120)
+        self._phase_label = ElidedLabel("Idle", tb)
+        self._phase_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self._phase_label.setFixedWidth(200)
         self._phase_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._phase_label.setStyleSheet(
             "color: #a6adc8; font-size: 8pt; background: transparent; padding: 0 4px;")
@@ -1436,17 +1430,18 @@ class AppWindow(QMainWindow):
         sb = QStatusBar(self)
         self.setStatusBar(sb)
 
-        self._status_label = QLabel("Ready", sb)
+        self._status_label = ElidedLabel("Ready", sb)
         self._status_label.setContentsMargins(8, 0, 8, 0)
 
-        self._wind_status = QLabel(
+        self._wind_status = ElidedLabel(
             "Surface: -- m/s @ --°   |   Upper: -- m/s @ --°", sb)
+        self._wind_status.setMaximumWidth(380)
         self._wind_status.setAlignment(Qt.AlignmentFlag.AlignRight)
         self._wind_status.setContentsMargins(8, 0, 8, 0)
         self._wind_status.setStyleSheet("color: #7eb3ff;")
 
         sb.addWidget(self._status_label, stretch=1)
-        sb.addPermanentWidget(self._wind_status)
+        sb.addPermanentWidget(self._wind_status, stretch=1)
 
     # ── Nested splitter layout ─────────────────────────────────────────────────
     #
@@ -1485,6 +1480,8 @@ class AppWindow(QMainWindow):
         # Main horizontal: params | right (trajectories + wind)
         self._main_splitter.addWidget(self._params_panel)
         self._main_splitter.addWidget(self._right_splitter)
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
 
     # ── Column sizing (deferred to first paint) ───────────────────────────────
 
@@ -1661,21 +1658,21 @@ class AppWindow(QMainWindow):
 
         _res_tag = "QLabel { font-weight: bold; color: #a6e3a1; font-family: 'Consolas', monospace; }"
 
-        self.lbl_res_angle       = QLabel("—")
-        self.lbl_res_azimuth     = QLabel("—")
-        self.lbl_res_apogee      = QLabel("—")
-        self.lbl_res_hdist       = QLabel("—")
-        self.lbl_res_hang        = QLabel("—")
-        self.lbl_res_score       = QLabel("—")
+        self.lbl_res_angle       = ElidedLabel("—")
+        self.lbl_res_azimuth     = ElidedLabel("—")
+        self.lbl_res_apogee      = ElidedLabel("—")
+        self.lbl_res_hdist       = ElidedLabel("—")
+        self.lbl_res_hang        = ElidedLabel("—")
+        self.lbl_res_score       = ElidedLabel("—")
 
-        self.lbl_res_mc_avg_apo  = QLabel("—")
-        self.lbl_res_mc_min_apo  = QLabel("—")
-        self.lbl_res_mc_avg_hdist= QLabel("—")
-        self.lbl_res_mc_max_hdist= QLabel("—")
-        self.lbl_res_mc_avg_score= QLabel("—")
-        self.lbl_res_mc_min_score= QLabel("—")
-        self.lbl_res_mc_avg_hang = QLabel("—")
-        self.lbl_res_mc_min_hang = QLabel("—")
+        self.lbl_res_mc_avg_apo  = ElidedLabel("—")
+        self.lbl_res_mc_min_apo  = ElidedLabel("—")
+        self.lbl_res_mc_avg_hdist= ElidedLabel("—")
+        self.lbl_res_mc_max_hdist= ElidedLabel("—")
+        self.lbl_res_mc_avg_score= ElidedLabel("—")
+        self.lbl_res_mc_min_score= ElidedLabel("—")
+        self.lbl_res_mc_avg_hang = ElidedLabel("—")
+        self.lbl_res_mc_min_hang = ElidedLabel("—")
 
         self.res_labels = {
             "angle":       (QLabel("Angle (deg):"), self.lbl_res_angle),
@@ -1711,15 +1708,30 @@ class AppWindow(QMainWindow):
         res_lay.addRow(self.mc_quality_label)
         lay.addWidget(self._results_grp)
 
-        # ── Run button ────────────────────────────────────────────────────────
-        btn_run = QPushButton("Run Phase 1 Simulation", container)
-        btn_run.setObjectName("btn_phase1_run")
-        btn_run.setMinimumHeight(48)
-        btn_run.clicked.connect(self._on_phase1)
-        btn_run.setShortcut("F6")
-        lay.addWidget(btn_run)
-
-        return container
+        # Changing text must not force a new splitter width. Scrolling keeps
+        # inputs and results reachable even at small window heights.
+        for form in container.findChildren(QFormLayout):
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        for label in container.findChildren(QLabel):
+            if not isinstance(label, ElidedLabel):
+                label.setWordWrap(True)
+        for combo in container.findChildren(QComboBox):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(6)
+            combo.setMinimumWidth(0)
+        for _, value in self.res_labels.values():
+            value.setMinimumWidth(0)
+            value.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._go_nogo_label.setWordWrap(True)
+        for label in (self._go_nogo_label, self.mc_quality_label, self.montblanc_result_label):
+            label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setMinimumWidth(260)
+        scroll.setWidget(container)
+        return scroll
 
 
     # ── Airframe tab ──────────────────────────────────────────────────────────
@@ -2159,12 +2171,12 @@ class AppWindow(QMainWindow):
         status_lay.setContentsMargins(4, 0, 4, 0)
         status_lay.setSpacing(8)
 
-        self.lbl_koinobori_status = QLabel("Koinobori: Disconnected", right_col)
+        self.lbl_koinobori_status = ElidedLabel("Koinobori: Disconnected", right_col)
         self.lbl_koinobori_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
         self.lbl_koinobori_status.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        self.lbl_gpv_status = QLabel("GPV Updated: N/A", right_col)
+        self.lbl_gpv_status = ElidedLabel("GPV Updated: N/A", right_col)
         self.lbl_gpv_status.setStyleSheet("color: #a6adc8; font-size: 8pt;")
         self.lbl_gpv_status.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -2178,9 +2190,9 @@ class AppWindow(QMainWindow):
         # ── Telemetry stats ────────────────────────────────────────────────────
         telemetry_lay = QHBoxLayout()
         telemetry_lay.setContentsMargins(4, 4, 4, 0)
-        self.lbl_max_gust = QLabel("Max Gust: —", right_col)
-        self.lbl_mean_wind = QLabel("Mean Wind: —", right_col)
-        self.lbl_std_dev = QLabel("Std Dev: —", right_col)
+        self.lbl_max_gust = ElidedLabel("Max Gust: —", right_col)
+        self.lbl_mean_wind = ElidedLabel("Mean Wind: —", right_col)
+        self.lbl_std_dev = ElidedLabel("Std Dev: —", right_col)
         for _lbl in (self.lbl_max_gust, self.lbl_mean_wind, self.lbl_std_dev):
             _lbl.setStyleSheet("color: #cdd6f4; font-size: 8pt;")
             _lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3281,22 +3293,6 @@ class AppWindow(QMainWindow):
         _set(self.af_finspan_input,   "fin_span")
         _set(self.af_finpos_input,    "fin_pos")
 
-    def _on_run(self) -> None:
-        self.set_status("Simulation running…", "#f9e2af")
-        self._progress.setFormat("Simulating…"); self._progress.setValue(30)
-
-    def _on_stop(self) -> None:
-        self.set_status("Stopped.", "#f38ba8")
-        self._progress.setFormat("Idle"); self._progress.setValue(0)
-
-    def _on_mc(self) -> None:
-        self.set_status("Monte Carlo running…", "#89b4fa")
-        self._progress.setFormat("Monte Carlo…"); self._progress.setValue(10)
-
-    def _on_phase1(self) -> None:
-        self.set_status("Phase 1 optimisation running…", "#fab387")
-        self._progress.setFormat("Phase 1 Opt…"); self._progress.setValue(50)
-
     def _on_get_location(self) -> None:
         self.sig_get_location_clicked.emit()
 
@@ -3480,7 +3476,7 @@ class AppWindow(QMainWindow):
         self._progress.setValue(max(0, min(100, value)))
         lbl = getattr(self, '_phase_label', None)
         if label:
-            self._progress.setFormat(label + " · %p%")
+            self._progress.setFormat("%p%")
             self._progress.setToolTip(label)
             if lbl is not None:
                 lbl.setText(label)

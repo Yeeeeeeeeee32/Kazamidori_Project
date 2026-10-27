@@ -78,7 +78,7 @@ class SimController(QObject):
         self._tray_icon.show()
 
         self._rewire_buttons()
-        window.action_run.triggered.connect(self._on_run_clicked)
+        window.action_run.triggered.connect(self._on_run_requested)
         window.action_stop.triggered.connect(self._on_stop_clicked)
         window.sig_import_results_clicked.connect(self._on_import_results)
         self._location_service = LocationService(self)
@@ -327,13 +327,10 @@ class SimController(QObject):
         slots.
         """
         for btn in self._window.findChildren(QPushButton, "btn_run"):
-            btn.clicked.connect(self._on_run_clicked)
+            btn.clicked.connect(self._on_run_requested)
 
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
             btn.clicked.connect(self._on_stop_clicked)
-
-        for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
-            btn.clicked.connect(self._on_phase1_clicked)
 
         if hasattr(self._window, "btn_download_map"):
             self._window.btn_download_map.clicked.connect(self._on_download_map_clicked)
@@ -519,6 +516,13 @@ class SimController(QObject):
         self._state.is_calculating = False
         self._window.btn_download_map.setEnabled(True)
         self._set_run_buttons_enabled(True)
+
+    @Slot()
+    def _on_run_requested(self) -> None:
+        if self._state.is_free_mode:
+            self._on_run_clicked()
+        else:
+            self._on_phase1_clicked()
 
     @Slot()
     def _on_run_clicked(self) -> None:
@@ -2124,8 +2128,6 @@ class SimController(QObject):
         self._window.action_run.setEnabled(enabled)
         self._window.action_stop.setEnabled(self._state.is_calculating)
         for btn in self._window.findChildren(QPushButton, "btn_run"):
-            btn.setEnabled(enabled)
-        for btn in self._window.findChildren(QPushButton, "btn_phase1_run"):
             btn.setEnabled(enabled)
         for btn in self._window.findChildren(QPushButton, "btn_stop"):
             btn.setEnabled(self._state.is_calculating)
